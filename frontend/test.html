@@ -1,0 +1,15 @@
+<!doctype html>
+<html><body>
+<button id="testBtn" onclick="alert('click works')">Test</button>
+<div id="output">testing...</div>
+<script type="module">
+import { api } from './js/api.js';
+document.getElementById('output').textContent = 'module loaded';
+try {
+  const r = await api.health();
+  document.getElementById('output').textContent = 'health: ' + JSON.stringify(r);
+} catch(e) {
+  document.getElementById('output').textContent = 'error: ' + e.message;
+}
+</script>
+</body></html>
