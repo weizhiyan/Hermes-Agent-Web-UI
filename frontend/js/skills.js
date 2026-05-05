@@ -1,5 +1,5 @@
 import { api } from './api.js';
-import { toast, escapeHtml } from './store.js';
+import { escapeHtml, toast } from './store.js';
 
 const $ = id => document.getElementById(id);
 
@@ -10,7 +10,12 @@ let selectedSkillId = null;
 let editingId = null;
 
 export async function initSkills() {
-  if (!$('skillSearch')) { await new Promise(r => setTimeout(r, 200)); }
+  const maxRetry = 20;
+  let retry = 0;
+  while (!$('skillSearch') && retry < maxRetry) {
+    await new Promise(r => setTimeout(r, 100));
+    retry++;
+  }
   if (!$('skillSearch')) { console.error('initSkills: DOM not ready'); return; }
   $('skillSearch').addEventListener('input', e => {
     keyword = e.target.value.toLowerCase();

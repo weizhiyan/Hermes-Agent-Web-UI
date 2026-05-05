@@ -74,9 +74,6 @@ function initCommands() {
   $('cmdBtn').onclick = (e) => {
     e.stopPropagation();
     menu.classList.toggle('open');
-    // Remove the slash from input when menu is triggered by typing /
-    const input = $('input');
-    if (input && input.value === '/') input.value = '';
   };
   document.addEventListener('click', () => menu.classList.remove('open'));
 
@@ -134,7 +131,7 @@ async function renderSkillToggle() {
   const menu = $('skillToggleMenu');
   let skills;
   try { skills = await api.listSkills(); } catch { skills = []; }
-  menu.innerHTML = skills.length
+  menu.innerHTML = skills.filter(s => s.on).length
     ? skills.map(s => `
       <div class="dropdown-item" style="gap:8px">
         <span>${s.icon || '✨'}</span>
@@ -142,7 +139,7 @@ async function renderSkillToggle() {
         <div class="switch ${s.on ? 'on' : ''}" data-skill-id="${s.id}"></div>
       </div>
     `).join('')
-    : '<div class="dropdown-item" style="color:var(--text-3);font-size:12px">暂无技能</div>';
+    : '<div class="dropdown-item" style="color:var(--text-3);font-size:12px">暂无启用技能</div>';
 
   menu.querySelectorAll('.switch').forEach(sw => {
     sw.onclick = async (e) => {
@@ -167,6 +164,8 @@ export async function initChat() {
     retry++;
   }
   if (!$('newChatBtn')) { console.error('initChat: DOM not ready'); return; }
+  // Ensure $ helper works
+  if (typeof $ !== 'function') window.$ = id => document.getElementById(id);
 
   $('newChatBtn').onclick = newChat;
   $('sendBtn').onclick = send;
@@ -184,7 +183,7 @@ export async function initChat() {
     $('input').style.height = Math.min($('input').scrollHeight, 160) + 'px';
   });
 
-  // Detect / command — just open the menu, don't leave / in input
+  // Detect / commands in input
   $('input').addEventListener('input', e => {
     const val = e.target.value;
     if (val === '/') {
@@ -194,20 +193,23 @@ export async function initChat() {
 
   // File upload
   $('uploadFileBtn').onclick = () => $('fileInput').click();
-  $('fileInput').setAttribute('accept', '.txt,.md,.json,.js,.py,.html,.css,.xml,.yaml,.yml,.csv,.log,.sh,.toml,.ini,.cfg');
   $('fileInput').onchange = async (e) => {
     const files = Array.from(e.target.files || []);
     for (const f of files) {
       if (f.size > 512 * 1024) { toast(`${f.name} 超过 512KB`); continue; }
-      try {
-        attachedFiles.push({ name: f.name, content: await f.text() });
-      } catch {
-        toast(`${f.name} 不是文本文件，已跳过`);
-      }
+      attachedFiles.push({ name: f.name, content: await f.text() });
     }
     renderAttachments();
     e.target.value = '';
   };
+
+  // Export
+  const exportMenu = $('exportMenu');
+  $('exportBtn').onclick = (e) => { e.stopPropagation(); exportMenu.classList.toggle('open'); };
+  document.addEventListener('click', () => exportMenu.classList.remove('open'));
+  exportMenu.querySelectorAll('[data-fmt]').forEach(item => {
+    item.onclick = () => { exportMenu.classList.remove('open'); exportChat(item.dataset.fmt); };
+  });
 
   // Model switch
   $('modelSwitchBtn').onclick = async (e) => {
@@ -241,24 +243,17 @@ export async function initChat() {
   await refreshList();
   if (chats[0]) await openChat(chats[0].id);
   else await newChat();
-
-  // Listen for load-chat from memory page
-  window.addEventListener('load-chat', async (e) => {
-    const id = e.detail?.id;
-    if (id) {
-      await openChat(id);
-    }
-  });
 }
 
 // ── Source panel ──────────────────────────────────────────────────────────
 
 function toggleSourcePanel() {
-  const isOpen = document.body.classList.contains('rpanel-open');
-  if (isOpen) {
-    document.body.classList.remove('rpanel-open');
+  const panel = $('rpanel');
+  const isVisible = panel.classList.contains('visible');
+  if (isVisible) {
+    panel.classList.remove('visible');
   } else {
-    document.body.classList.add('rpanel-open');
+    panel.classList.add('visible');
     $('rpanelTitle').textContent = 'Markdown 源码';
   }
 }
@@ -276,15 +271,8 @@ async function refreshModelSwitch() {
     const label = settings.hermesModel || 'deepseek';
     $('modelSwitchBtn').textContent = `${label} ▾`;
     const menu = $('modelSwitchMenu');
-
-    // Get configured models from backend
-    let models;
-    try { models = await api.getModels(); } catch { models = {}; }
-    const configuredKeys = Object.keys(models).filter(k => k !== 'params' && k !== 'current');
-    const defaultModels = ['deepseek', 'wind', 'anthropic/claude-sonnet-4', 'openai/gpt-4o'];
-    const modelList = configuredKeys.length > 0 ? configuredKeys : defaultModels;
-
-    menu.innerHTML = modelList.map(m =>
+    const models = ['deepseek', 'wind', 'anthropic/claude-sonnet-4', 'openai/gpt-4o', 'google/gemini-2.0-flash'];
+    menu.innerHTML = models.map(m =>
       `<button class="dropdown-item${settings.hermesModel === m ? ' active' : ''}" data-model="${m}">
         <span style="font-family:var(--mono);font-size:12px">${m}</span>
         ${settings.hermesModel === m ? '<span style="margin-left:auto;color:var(--brand)">✓</span>' : ''}
@@ -377,11 +365,7 @@ async function newChat() {
 
 function clearChat() {
   if (!currentId) return;
-  // Remove messages locally and restore welcome screen
-  const welcome = document.getElementById('welcomeScreen');
-  if (welcome) welcome.style.display = '';
   $msgs().innerHTML = '';
-  $msgs().appendChild(welcome);
 }
 
 async function retryLast() {
@@ -400,15 +384,8 @@ async function undoLast() {
     const chat = await api.getChat(currentId);
     if (chat.messages.length >= 2) {
       chat.messages.splice(-2);
-      // Save the updated messages back via a PUT with full messages
-      // We use updateChat API — need to add a messages save. Use renameChat as trigger
-      // Actually, let's write full conversation back
-      const now = Date.now();
-      chat.updatedAt = now;
-      // We'll send the full updated chat messages via save
-      // Bridge doesn't have bulk save, so we store locally + re-render
+      await api.renameChat(currentId, chat.title); // trigger save
       renderMessages(chat.messages);
-      toast('已撤销');
     }
   } catch {}
 }
@@ -457,15 +434,7 @@ function formatTime(ts) {
 
 function renderMessages(msgs) {
   const welcome = document.getElementById('welcomeScreen');
-  if ((msgs || []).length > 0) {
-    if (welcome) welcome.remove();
-  } else {
-    // Show welcome if no messages, but only add if it's not already in DOM
-    // Already handled by the else block
-    if (!welcome || !document.body.contains(welcome)) {
-      // Re-create or show the welcome placeholder
-    }
-  }
+  if ((msgs || []).length > 0 && welcome) welcome.remove();
   $msgs().innerHTML = (msgs || []).length
     ? (msgs || []).map((m, i) => buildMsgHtml(m, i)).join('')
     : `<div class="msg asst" style="max-width:90%;align-self:center;text-align:center;opacity:.6">
@@ -618,9 +587,6 @@ function appendMsg(role, content) {
   if (copyBtn) copyBtn.onclick = () => navigator.clipboard.writeText(div.querySelector('.bubble').textContent).then(() => toast('已复制'));
   const regenBtn = div.querySelector('.regen-btn');
   if (regenBtn) regenBtn.onclick = async () => { if (sending) return; const idx = Array.from($msgs().querySelectorAll('.msg')).indexOf(div); await regenerateFrom(idx); };
-  // Remove welcome screen when adding first real message
-  const welcome = document.getElementById('welcomeScreen');
-  if (welcome) welcome.remove();
   $msgs().appendChild(div);
   $msgs().scrollTop = $msgs().scrollHeight;
   return div;
@@ -628,7 +594,6 @@ function appendMsg(role, content) {
 
 function renderAttachments() {
   const container = $('attachments');
-  if (!container) return;
   if (!attachedFiles.length) { container.innerHTML = ''; return; }
   container.innerHTML = attachedFiles.map((f, i) => `
     <div class="attachment-chip">

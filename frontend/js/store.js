@@ -1,18 +1,18 @@
+/** Tiny localStorage wrapper. Reset old keys on first load. */
 const PREFIX = 'hermes:';
 
 try {
   ['hermes.settings', 'hermes.model', 'hermes.skills', 'hermes.chats'].forEach(k => {
     localStorage.removeItem(k);
   });
+  const oldBase = localStorage.getItem(PREFIX + 'apiBase');
+  if (oldBase && JSON.parse(oldBase).includes('172.27.105.206')) {
+    localStorage.removeItem(PREFIX + 'apiBase');
+  }
   if (!localStorage.getItem(PREFIX + 'apiBase')) {
     localStorage.setItem(PREFIX + 'apiBase', JSON.stringify(''));
   }
 } catch {}
-
-const isHttp = typeof window !== 'undefined' && (window.location.protocol === 'http:' || window.location.protocol === 'https:');
-if (isHttp) {
-  try { localStorage.setItem(PREFIX + 'apiBase', JSON.stringify('')); } catch {}
-}
 
 export const store = {
   get(key, fallback) {
