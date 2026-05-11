@@ -5,6 +5,21 @@ const LS={
   set(k,v){localStorage.setItem(k,JSON.stringify(v))}
 };
 const esc=s=>String(s).replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
+function redactSecrets(value){
+  if(value==null) return value;
+  let text=String(value);
+  text=text.replace(/(X-Auth-Token\s*:\s*)([^\s"'`|\\]+)(?=\\?["'`\s|]|$)/gi,'$1[已隐藏]');
+  text=text.replace(/(Authorization\s*:\s*Bearer\s+)([^\s"'`|\\]+)(?=\\?["'`\s|]|$)/gi,'$1[已隐藏]');
+  text=text.replace(/\b(token|api[_-]?key|secret|password)\s*[:=]\s*[^\s"'`,;|]{8,}/gi,'$1: [已隐藏]');
+  text=text.replace(/\b(sk-[A-Za-z0-9_-]{20,})\b/g,'[已隐藏]');
+  return text;
+}
+function formatBytes(bytes){
+  const n=Number(bytes)||0;
+  if(n<1024) return n+' B';
+  if(n<1024*1024) return (n/1024).toFixed(n<10*1024?1:0)+' KB';
+  return (n/1024/1024).toFixed(1)+' MB';
+}
 
 const SVG={
   chat:'<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>',
@@ -32,8 +47,9 @@ const SVG={
   folder:'<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/></svg>',
   file:'<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>',
   upload:'<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>',
+  sidebar:'<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16"/><path d="M14 9h4"/><path d="M14 12h4"/><path d="M14 15h3"/></svg>',
   panelExpand:'<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16"/><path d="M13 9l4 3-4 3"/></svg>',
-  brain:'<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 2a5 5 0 015 5c0 .91-.244 1.765-.67 2.5H12V2z"/><path d="M12 2a5 5 0 00-5 5c0 .91.244 1.765.67 2.5H12V2z"/><path d="M7.5 9.5A5.5 5.5 0 005 14.5C5 17.538 7.462 20 10.5 20c.91 0 1.765-.244 2.5-.67V9.5H7.5z"/><path d="M16.5 9.5A5.5 5.5 0 0119 14.5c0 3.038-2.462 5.5-5.5 5.5-.91 0-1.765-.244-2.5-.67V9.5h4.5z"/><path d="M12 9.5v10"/></svg>',
+  brain:'<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="4" y="4" width="16" height="16" rx="5"/><path d="M9 9.5h.01"/><path d="M15 9.5h.01"/><path d="M9 14.5h.01"/><path d="M15 14.5h.01"/><path d="M9.2 9.5h5.6"/><path d="M9.2 14.5h5.6"/><path d="M12 9.7v4.6"/><path d="M7 2v2"/><path d="M12 2v2"/><path d="M17 2v2"/><path d="M7 20v2"/><path d="M12 20v2"/><path d="M17 20v2"/></svg>',
   attach:'<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48"/></svg>',
 };
 
@@ -51,7 +67,7 @@ function apiBase() {
 
 async function apiGet(path) {
   try {
-    const r = await fetch(apiBase() + path, { headers: { 'Accept': 'application/json' } });
+    const r = await fetch(apiBase() + path, { cache:'no-store', headers: { 'Accept': 'application/json', 'Cache-Control':'no-cache' } });
     const j = await r.json();
     return j.code === 0 ? j.data : null;
   } catch { return null; }
@@ -59,7 +75,7 @@ async function apiGet(path) {
 async function apiPost(path, body) {
   try {
     const r = await fetch(apiBase() + path, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      method: 'POST', cache:'no-store', headers: { 'Content-Type': 'application/json', 'Cache-Control':'no-cache' },
       body: JSON.stringify(body),
     });
     const j = await r.json();
@@ -69,7 +85,7 @@ async function apiPost(path, body) {
 async function apiPut(path, body) {
   try {
     const r = await fetch(apiBase() + path, {
-      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      method: 'PUT', cache:'no-store', headers: { 'Content-Type': 'application/json', 'Cache-Control':'no-cache' },
       body: JSON.stringify(body),
     });
     const j = await r.json();
@@ -78,7 +94,7 @@ async function apiPut(path, body) {
 }
 async function apiDel(path) {
   try {
-    const r = await fetch(apiBase() + path, { method: 'DELETE' });
+    const r = await fetch(apiBase() + path, { method: 'DELETE', cache:'no-store', headers:{'Cache-Control':'no-cache'} });
     const j = await r.json();
     return j.code === 0;
   } catch { return false; }
@@ -91,6 +107,7 @@ async function apiStream(path, body, callbacks) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
+      signal: callbacks?.signal,
     });
     if (!r.ok || !r.body) { callbacks.onError?.('Connection failed'); return; }
     const reader = r.body.getReader();
@@ -121,6 +138,7 @@ async function apiStream(path, body, callbacks) {
       }
     }
   } catch (e) {
+    if (e && e.name === 'AbortError') { callbacks.onAbort?.(); return; }
     callbacks.onError?.(e.message);
   }
 }
@@ -132,7 +150,9 @@ const state={
   sidebarCollapsed: false,
   _loading: true,
   model: LS.get('hermes.model',{provider:'deepseek',model:'deepseek-v4-flash',base:'https://api.deepseek.com',key:'',temperature:0.7,topP:1,maxTokens:4096}),
-  settings: LS.get('hermes.settings',{lang:'zh',stream:true,history:20,systemPrompt:'',api:''}),
+  modelsConfig: null,
+  chatModelOverride: LS.get('hermes.chatModelOverride','auto'),
+  settings: LS.get('hermes.settings',{lang:'zh',stream:true,quickMode:false,history:16,systemPrompt:'',api:'',mdLibraryDir:''}),
   skills: [],
   skillFilter: {source:null,search:'',category:null},
   selectedSkill: null,
@@ -140,19 +160,24 @@ const state={
   currentChat: null,
   connected: false,
   chatFullData: {},  // id -> full chat data from backend
+  isStreaming: false,
+  streamAbort: null,
+  currentAssistantMsgId: null,
   memories: LS.get('hermes.memories',{core:'',context:'',episodes:[]}),
+  memory: { data:null, selectedType:'core', selectedId:null, current:null, mode:'preview', loading:false, failed:false, editDraft:null, conversationView:'all', sidebarScroll:0 },
   selectedChannel: null,
-  activeProfile: 'default',
+  activeProfile: LS.get('hermes.activeProfile','default'),
   gateways: LS.get('hermes.gateways',[]),
   groupChat: LS.get('hermes.groupChat',{
     userName:'',userDesc:'',connected:false,activeRoom:null,rooms:[],
     messages:{},agents:{},members:{},typing:{},contextStatus:{},
   }),
 };
+if (typeof window !== 'undefined') window.state = state;
 
 const NAV=[
   {id:'chat',label:'对话',icon:'chat'},
-  {id:'groupChat',label:'群聊',icon:'group'},
+  {id:'groupChat',label:'分身',icon:'group'},
   {id:'brain',label:'小脑瓜',icon:'brain'},
   {id:'settingsPage',label:'设置',icon:'settings'},
 ];
@@ -160,10 +185,12 @@ const NAV=[
 function save(){
   LS.set('hermes.theme',state.theme);
   LS.set('hermes.model',state.model);
+  LS.set('hermes.chatModelOverride',state.chatModelOverride);
   LS.set('hermes.settings',state.settings);
   LS.set('hermes.memories',state.memories);
   LS.set('hermes.gateways',state.gateways);
   LS.set('hermes.groupChat',state.groupChat);
+  LS.set('hermes.activeProfile',state.activeProfile);
 }
 
 function navigate(page){
@@ -244,6 +271,7 @@ function renderPage(){
 function afterRender(){
   if(state.page==='chat') initChat();
   if(state.page==='terminal') initTerminal();
+  if(state.page==='brain' && brainTab==='memory' && !state.memory.data && !state.memory.loading && !state.memory.failed) loadMemoryStore();
   if(AgentAsk.isOpen()) AgentAsk._render();
 
   enhanceMessageMarkdown(document.getElementById('mainContent'));
@@ -262,6 +290,7 @@ function renderChat(){
   const c=currentChat();
   const msgs=c?c.messages:[];
   const models=['claude-opus-4-7','gpt-4o','gemini-2.5-pro','deepseek-r1','llama-4-maverick'];
+  const activeProfile=getActiveProfile();
   return `
     <div class="chat-panel">
       <div class="session-sidebar" id="sessionSidebar">
@@ -281,11 +310,12 @@ function renderChat(){
           <div class="chat-header-left">
             <button class="btn-icon" onclick="document.getElementById('sessionSidebar').classList.toggle('collapsed')" title="切换会话列表">${SVG.sidebar}</button>
             <span class="chat-header-title">${c?esc(c.title):'新建对话'}</span>
-            <span class="source-badge">${esc(c._model || state.model.model)}</span>
+            <span class="source-badge">${esc(state.chatModelOverride==='auto'?'自动 · '+effectiveChatModelName():(getModelById(state.chatModelOverride)?.name||state.model.model))}</span>
+            <span class="source-badge">${esc(activeProfile?.name||'默认助手')}</span>
           </div>
           <div class="header-actions">
-            <button class="btn-icon header-toggle-panel-btn" onclick="openLatestPreviewPanel()" title="展开/收起右侧预览">
-              ${SVG.panelExpand} <span class="toggle-text">展开</span>
+            <button class="btn-icon header-toggle-panel-btn" onclick="openLatestPreviewPanel()" title="打开右侧预览" aria-label="打开右侧预览">
+              ${SVG.panelExpand}<span class="sr-only">打开右侧预览</span>
             </button>
           </div>
         </div>
@@ -305,10 +335,11 @@ function renderChat(){
               <div class="chat-input-left">
                 <button class="input-action-btn" onclick="document.getElementById('fileInput').click()" title="上传文件">${SVG.attach}</button>
                 <button class="input-action-btn" onclick="toggleSkillPopup()" title="技能" id="skillPopupBtn">${SVG.skills}</button>
+                <button class="input-action-btn" onclick="toggleProfilePopup()" title="选择角色" id="profilePopupBtn" style="font-size:11px;width:auto;padding:0 8px">${esc(activeProfile?.name||'默认助手')}</button>
               </div>
               <div class="chat-input-right">
-                <button class="input-action-btn" onclick="toggleModelPopup()" title="选择模型" id="modelPopupBtn" style="font-size:11px;font-family:var(--font-mono);width:auto;padding:0 8px">${esc(state.model.model)}</button>
-                <button class="send-btn" id="sendBtn" onclick="sendMessage()">${SVG.send}</button>
+                <button class="input-action-btn" onclick="toggleModelPopup()" title="选择模型" id="modelPopupBtn" style="font-size:11px;font-family:var(--font-mono);width:auto;padding:0 8px">${esc(state.chatModelOverride==='auto'?'自动':(getModelById(state.chatModelOverride)?.name||state.model.model))}</button>
+                <button class="send-btn${state.isStreaming?' stop':''}" id="sendBtn" onclick="${state.isStreaming?'stopGeneration()':'sendMessage()'}" title="${state.isStreaming?'终止任务':'发送'}">${state.isStreaming?'<span class="stop-square"></span>':SVG.send}</button>
               </div>
             </div>
             <div class="skill-popup" id="skillPopup" style="display:none">
@@ -318,6 +349,10 @@ function renderChat(){
             <div class="model-popup" id="modelPopup" style="display:none">
               <div class="model-popup-header">选择模型</div>
               <div class="model-popup-body" id="modelPopupBody"></div>
+            </div>
+            <div class="model-popup profile-popup" id="profilePopup" style="display:none">
+              <div class="model-popup-header">选择角色</div>
+              <div class="model-popup-body" id="profilePopupBody"></div>
             </div>
           </div>
           <input type="file" id="fileInput" style="display:none" onchange="handleFileUpload(this)">
@@ -359,11 +394,10 @@ function renderSettingsPage(){
     {id:'models',label:'模型配置',icon:'models'},
     {id:'logs',label:'日志',icon:'logs'},
     {id:'files',label:'文件',icon:'files'},
-    {id:'gateways',label:'网关',icon:'gateways'},
     {id:'usage',label:'用量统计',icon:'usage'},
   ];
   const active=settingsTab;
-  const renderers={settings:renderSettings,models:renderModels,logs:renderLogs,files:renderFiles,gateways:renderGateways,usage:renderUsage};
+  const renderers={settings:renderSettings,models:renderModels,logs:renderLogs,files:renderFiles,usage:renderUsage};
   return `
     <div style="display:flex;flex-direction:column;height:100%">
       <div class="tabs" style="padding:0 24px">
@@ -408,6 +442,7 @@ function toggleSkillPopup(){
         </div>`).join('');
       }
     }
+    placeInputPopup(popup,$('#skillPopupBtn'),'left');
     popup.style.display='flex';
     setTimeout(()=>document.addEventListener('click',closePopupsOnOutsideClick,{once:true}),10);
   }
@@ -421,40 +456,119 @@ function toggleModelPopup(){
   if(!isVisible){
     const body=$('#modelPopupBody');
     if(body){
-      const models=['claude-opus-4-7','gpt-4o','gemini-2.5-pro','deepseek-r1','llama-4-maverick','deepseek-v4-flash'];
-      body.innerHTML=models.map(m=>`<div class="model-popup-item${state.model.model===m?' active':''}" onclick="selectModel('${m}')">${m}</div>`).join('');
+      const models=getEnabledModels();
+      body.innerHTML=`<div class="model-popup-item${state.chatModelOverride==='auto'?' active':''}" onclick="selectModel('auto')">自动（按场景）</div>`+
+        models.map(m=>`<div class="model-popup-item${state.chatModelOverride===m.id?' active':''}" onclick="selectModel('${esc(m.id)}')">${esc(m.name)} <span style="margin-left:auto;color:var(--c-ink-muted);font-size:11px">${esc(m.provider)}</span></div>`).join('');
     }
+    placeInputPopup(popup,$('#modelPopupBtn'),'right');
     popup.style.display='flex';
     setTimeout(()=>document.addEventListener('click',closePopupsOnOutsideClick,{once:true}),10);
   }
 }
 
+function toggleProfilePopup(){
+  const popup=$('#profilePopup');
+  if(!popup) return;
+  const isVisible=popup.style.display!=='none';
+  closeAllInputPopups();
+  if(!isVisible){
+    const body=$('#profilePopupBody');
+    if(body){
+      const profiles=getProfiles();
+      body.innerHTML=profiles.map(p=>`<div class="model-popup-item${state.activeProfile===p.id?' active':''}" onclick="selectChatProfile('${esc(p.id)}')">
+        <span>${esc(p.name)}</span>
+        <span style="margin-left:auto;color:var(--c-ink-muted);font-size:11px">${esc(p.modelId==='auto'?'自动':(getModelById(p.modelId)?.name||p.model||''))}</span>
+      </div>`).join('');
+    }
+    placeInputPopup(popup,$('#profilePopupBtn'),'left');
+    popup.style.display='flex';
+    setTimeout(()=>document.addEventListener('click',closePopupsOnOutsideClick,{once:true}),10);
+  }
+}
+
+function placeInputPopup(popup,anchor,align){
+  if(!popup||!anchor) return;
+  const box=popup.closest('.chat-input-box');
+  if(!box) return;
+  const a=anchor.getBoundingClientRect();
+  const b=box.getBoundingClientRect();
+  popup.style.left='auto';
+  popup.style.right='auto';
+  popup.style.bottom=(b.bottom-a.top+8)+'px';
+  const width=popup.classList.contains('skill-popup')?360:260;
+  const rawLeft=align==='right'?a.right-b.left-width:a.left-b.left;
+  const maxLeft=Math.max(8,b.width-width-8);
+  popup.style.width=width+'px';
+  popup.style.left=Math.max(8,Math.min(rawLeft,maxLeft))+'px';
+}
+
 function closePopupsOnOutsideClick(e){
   const sp=$('#skillPopup');
   const mp=$('#modelPopup');
+  const pp=$('#profilePopup');
   const skillBtn=$('#skillPopupBtn');
   const modelBtn=$('#modelPopupBtn');
+  const profileBtn=$('#profilePopupBtn');
   if(sp && sp.style.display!=='none' && !sp.contains(e.target) && !skillBtn?.contains(e.target)){
     sp.style.display='none';
   }
   if(mp && mp.style.display!=='none' && !mp.contains(e.target) && !modelBtn?.contains(e.target)){
     mp.style.display='none';
   }
+  if(pp && pp.style.display!=='none' && !pp.contains(e.target) && !profileBtn?.contains(e.target)){
+    pp.style.display='none';
+  }
 }
 
 function closeAllInputPopups(){
   const sp=$('#skillPopup');
   const mp=$('#modelPopup');
+  const pp=$('#profilePopup');
   if(sp) sp.style.display='none';
   if(mp) mp.style.display='none';
+  if(pp) pp.style.display='none';
 }
 
 function selectModel(m){
-  state.model.model=m;
+  state.chatModelOverride=m;
+  if(m!=='auto'){
+    const item=getModelById(m);
+    state.model.model=item?.name||m;
+  }
   save();
   closeAllInputPopups();
   const btn=$('#modelPopupBtn');
-  if(btn) btn.textContent=m;
+  if(btn) btn.textContent=m==='auto'?'自动':(getModelById(m)?.name||m);
+}
+
+function selectChatProfile(id){
+  state.activeProfile=id||'default';
+  const p=getActiveProfile();
+  save();
+  closeAllInputPopups();
+  const btn=$('#profilePopupBtn');
+  if(btn) btn.textContent=p?.name||'默认助手';
+  toast('已切换角色: '+(p?.name||'默认助手'),'success');
+  renderPage();
+}
+
+function getEnabledModels(){
+  const cfg=state.modelsConfig||{};
+  const lib=Array.isArray(cfg.library)?cfg.library:[];
+  if(lib.length) return lib.filter(m=>m.enabled!==false);
+  return [{id:state.model.model,name:state.model.model,provider:state.model.provider||'default'}];
+}
+function getModelById(id){
+  return (state.modelsConfig?.library||[]).find(m=>m.id===id||m.name===id);
+}
+function scenarioModel(scene){
+  const id=state.modelsConfig?.scenarios?.[scene] || state.modelsConfig?.scenarios?.chat || state.model.model;
+  return getModelById(id)?.name || id || state.model.model;
+}
+function effectiveChatModelName(){
+  const p=getActiveProfile();
+  if(p?.modelId && p.modelId!=='auto') return getModelById(p.modelId)?.name || p.model || scenarioModel('chat');
+  return scenarioModel('chat');
 }
 
 function insertSkill(name){
@@ -467,7 +581,7 @@ function insertSkill(name){
 }
 
 let histFilter='all';
-let histSelected=new Set();
+let histPopupSelected=new Set();
 
 function sourceTagClass(src){
   if(!src) return 'other';
@@ -489,7 +603,7 @@ function sourceTagLabel(src){
 
 function openHistoryPopup(){
   histFilter='all';
-  histSelected=new Set();
+  histPopupSelected=new Set();
   const overlay=document.createElement('div');
   overlay.className='history-popup';
   overlay.id='historyOverlay';
@@ -530,26 +644,33 @@ function setHistFilter(f){
   refreshHistBody();
 }
 
-function toggleHistSelect(id){
-  if(histSelected.has(id)) histSelected.delete(id); else histSelected.add(id);
+function toggleHistPopupSelect(id){
+  if(histPopupSelected.has(id)) histPopupSelected.delete(id); else histPopupSelected.add(id);
   const btn=$('#histDeleteBtn');
-  if(btn) btn.style.display=histSelected.size>0?'inline-flex':'none';
+  if(btn) btn.style.display=histPopupSelected.size>0?'inline-flex':'none';
   const item=document.querySelector(`.hist-popup-item[data-id="${id}"]`);
-  if(item) item.classList.toggle('selected',histSelected.has(id));
+  if(item) item.classList.toggle('selected',histPopupSelected.has(id));
   const cb=item?.querySelector('input[type=checkbox]');
-  if(cb) cb.checked=histSelected.has(id);
+  if(cb) cb.checked=histPopupSelected.has(id);
 }
 
 async function deleteSelectedHist(){
-  if(histSelected.size===0) return;
-  for(const id of histSelected){
-    await apiDel('/api/chats/'+id);
-    state.chats=state.chats.filter(c=>c.id!==id);
-    if(state.currentChat===id) state.currentChat=null;
-  }
-  histSelected.clear();
+  if(histPopupSelected.size===0) return;
+  const count=histPopupSelected.size;
+  const ok=await askConfirm(`确认处理选中的 ${count} 个会话？终端会话会从 WebUI 隐藏，WebUI 会话会删除。`);
+  if(!ok) return;
+  for(const id of [...histPopupSelected]) await removeChat(id,{silent:true});
+  histPopupSelected.clear();
   const btn=$('#histDeleteBtn');
   if(btn) btn.style.display='none';
+  refreshHistBody();
+  renderPage();
+}
+
+async function deleteSingleHist(id){
+  const ok=await askConfirm('确认处理该会话？终端会话会从 WebUI 隐藏，WebUI 会话会删除。');
+  if(!ok) return;
+  await removeChat(id);
   refreshHistBody();
   renderPage();
 }
@@ -573,15 +694,18 @@ function refreshHistBody(){
     const cls=sourceTagClass(src);
     const label=sourceTagLabel(src);
     const lastMsg=c.messages?.length?stripArtifactTagsForPreview(c.messages[c.messages.length-1].content||'').slice(0,50)||'':'暂无消息';
-    const sel=histSelected.has(c.id);
+    const readonly=isCliChat(c);
+    const sel=histPopupSelected.has(c.id);
     return `<div class="hist-popup-item${sel?' selected':''}" data-id="${c.id}">
-      <input type="checkbox" ${sel?'checked':''} onclick="event.stopPropagation();toggleHistSelect('${c.id}')">
+      <input type="checkbox" ${sel?'checked':''} onclick="event.stopPropagation();toggleHistPopupSelect('${c.id}')">
       <div class="hist-popup-item-info" onclick="selectChatFromHist('${c.id}')">
         <div class="hist-popup-item-title">${c.pinned?'📌 ':''}${esc(c.title)}</div>
         <div class="hist-popup-item-preview">${esc(lastMsg)}</div>
       </div>
       <div class="hist-popup-item-meta">
         <span class="source-tag ${cls}">${label}</span>
+        ${readonly?'<span class="readonly-tag mini">只读</span>':''}
+        <button class="hist-row-delete" title="${readonly?'隐藏':'删除'}" onclick="event.stopPropagation();deleteSingleHist('${c.id}')">${readonly?'隐藏':'删除'}</button>
       </div>
     </div>`;
   }).join('');
@@ -596,23 +720,23 @@ function histSelectAll(){
   const body=$('#histBody');
   if(!body) return;
   const items=body.querySelectorAll('.hist-popup-item');
-  const allSelected=items.length>0&&[...items].every(i=>histSelected.has(i.dataset.id));
+  const allSelected=items.length>0&&[...items].every(i=>histPopupSelected.has(i.dataset.id));
   items.forEach(item=>{
     const id=item.dataset.id;
     if(allSelected){
-      histSelected.delete(id);
+      histPopupSelected.delete(id);
       item.classList.remove('selected');
       const cb=item.querySelector('input[type=checkbox]');
       if(cb) cb.checked=false;
     } else {
-      histSelected.add(id);
+      histPopupSelected.add(id);
       item.classList.add('selected');
       const cb=item.querySelector('input[type=checkbox]');
       if(cb) cb.checked=true;
     }
   });
   const btn=$('#histDeleteBtn');
-  if(btn) btn.style.display=histSelected.size>0?'inline-flex':'none';
+  if(btn) btn.style.display=histPopupSelected.size>0?'inline-flex':'none';
 }
 
 function renderSessionList(){
@@ -639,10 +763,12 @@ function renderSessionList(){
         const src=c.source||'WebUI';
         const cls=sourceTagClass(src);
         const label=sourceTagLabel(src);
+        const readonly=isCliChat(c);
+        const preview=c.messages?.length?stripArtifactTagsForPreview(c.messages[c.messages.length-1].content||''):(c.preview||'暂无消息');
         return `<div class="session-item${state.currentChat===c.id?' active':''}">
         <div class="session-item-body" onclick="selectChat('${c.id}')">
-          <span class="s-title">${c.pinned?'📌 ':''}${esc(c.title)} <span class="source-tag ${cls}" style="font-size:9px;vertical-align:middle">${label}</span></span>
-          <span class="s-preview">${c.messages?.length?esc(stripArtifactTagsForPreview(c.messages[c.messages.length-1].content||'')):'暂无消息'}</span>
+          <span class="s-title">${c.pinned?'📌 ':''}${esc(c.title)} <span class="source-tag ${cls}" style="font-size:9px;vertical-align:middle">${label}</span>${readonly?' <span class="readonly-tag mini">只读</span>':''}</span>
+          <span class="s-preview">${esc(preview)}</span>
         </div>
         <div class="session-more-wrap">
           <button class="session-more-btn" onclick="event.stopPropagation();toggleSessionMenu('${c.id}')">
@@ -659,7 +785,7 @@ function renderSessionList(){
             </button>
             <button class="danger" onclick="event.stopPropagation();deleteSessionChat('${c.id}')">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg>
-              删除
+              ${readonly?'隐藏':'删除'}
             </button>
           </div>
         </div>
@@ -673,12 +799,12 @@ function renderSessionList(){
 }
 
 function stripArtifactTagsForPreview(raw){
-  const s=String(raw||'');
+  const s=redactSecrets(String(raw||''));
   if(!s||typeof HermesArtifact==='undefined') return s.slice(0,90);
   const p=HermesArtifact.parseHermesStream(s);
   const v=(p.visibleText||'').trim();
   if(!v&&(p.completedArtifacts||[]).length)return '[Artifact]';
-  return v.slice(0,90);
+  return redactSecrets(v).slice(0,90);
 }
 
 function buildArtifactRefHtml(p){
@@ -733,12 +859,8 @@ function openLatestPreviewPanel(){
       HermesArtifact.openRef(titles[titles.length-1]);
       return;
     }
-    const visible=(parsed.visibleText||String(m.content||'')).trim();
-    if(visible){
-      openMarkdownPreview(visible,'Markdown 预览');
-      return;
-    }
   }
+  if(typeof HermesArtifact.openEmpty==='function') HermesArtifact.openEmpty('暂无可预览文件','当前对话还没有输出可预览的本地 Markdown / Artifact 文件。');
 }
 
 function renderMsg(m){
@@ -753,11 +875,11 @@ function renderMsg(m){
     const duration=m.thinkingDuration?` · ${m.thinkingDuration}ms`:'';
     const isStreaming=m._streaming;
     thinkingHtml=`<div class="msg-thinking">
-      <div class="msg-thinking-header" onclick="toggleCollapse('${id}')">
+      <div class="msg-thinking-header" onclick="toggleAllThinking('${id}')">
         <svg class="thinking-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>
         <span class="thinking-label">思考过程${isStreaming?'<span class="thinking-dots"><span></span><span></span><span></span></span>':''}</span>
         <span class="thinking-duration">${duration}</span>
-        <span class="thinking-toggle" id="toggle_${id}">▶</span>
+        <span class="thinking-toggle collapsed" id="toggle_${id}">▶</span>
       </div>
       <div class="msg-thinking-body collapsed" id="body_${id}">${esc(thinkBody)}</div>
     </div>`;
@@ -802,9 +924,22 @@ function renderMsg(m){
   if(m.step) stepHtml=`<div class="msg-step-indicator">Step ${m.step}</div>`;
   const msgId = m._msgId || '';
   // Clean content: remove model normalization warnings
-  let content = m.content || '';
+  let content = redactSecrets(m.content || '');
   content = content.replace(/⚠️\s*Normalized model.*?for deepseek\.?\n?/g, '');
   content = content.replace(/⚠\s*Normalized model.*?for deepseek\.?\n?/g, '');
+
+  // Hide ask_user block or raw JSON block
+  if (content.includes('<ask_user>')) {
+    content = content.replace(/<ask_user>[\s\S]*?(<\/ask_user>|$)/g, '').trim();
+    if (!content) content = '📋 需要你确认...';
+  } else if (content.match(/```json\s*[\s\S]*?"question"[\s\S]*?"options"[\s\S]*?```/i)) {
+    content = content.replace(/```json\s*[\s\S]*?"question"[\s\S]*?"options"[\s\S]*?```/i, '').trim();
+    if (!content) content = '📋 需要你确认...';
+  } else if (content.match(/\{[\s\S]*"question"[\s\S]*"options"[\s\S]*\}/)) {
+    content = content.replace(/\{[\s\S]*"question"[\s\S]*"options"[\s\S]*\}/, '').trim();
+    if (!content) content = '📋 需要你确认...';
+  }
+
   let artifactRefsHtml='';
   let previewActionHtml='';
   if(m.role==='assistant'&&typeof HermesArtifact!=='undefined'){
@@ -836,6 +971,17 @@ function toggleCollapse(id){
     toggle.classList.toggle('collapsed');
   }
 }
+
+function toggleAllThinking(id){
+  const clicked=document.getElementById('body_'+id);
+  const shouldOpen=!clicked || clicked.classList.contains('collapsed');
+  document.querySelectorAll('.msg-thinking-body').forEach(body=>{
+    body.classList.toggle('collapsed',!shouldOpen);
+  });
+  document.querySelectorAll('.msg-thinking .thinking-toggle').forEach(toggle=>{
+    toggle.classList.toggle('collapsed',!shouldOpen);
+  });
+}
 function renderMessageMarkdown(text){
   const raw=String(text||'');
   if(typeof marked!=='undefined'&&marked&&typeof marked.parse==='function'){
@@ -853,6 +999,13 @@ function enhanceMessageMarkdown(root){
       try{hljs.highlightElement(code);}catch(_){ }
     });
   }
+  root.querySelectorAll('table').forEach(table=>{
+    if(table.parentElement?.classList.contains('md-table-scroll')) return;
+    const wrapper=document.createElement('div');
+    wrapper.className='md-table-scroll';
+    table.parentNode.insertBefore(wrapper,table);
+    wrapper.appendChild(table);
+  });
   root.querySelectorAll('pre').forEach(pre => {
     if (pre.querySelector('.copy-code-btn') || pre.parentElement.classList.contains('code-block-wrapper')) return;
 
@@ -884,15 +1037,40 @@ function formatMsg(text){
 
 function currentChat(){return state.chats.find(c=>c.id===state.currentChat)}
 function currentChatFull(){return state.chatFullData[state.currentChat]}
+function isCliChat(c){
+  return !!c && (((c.source||'').toLowerCase()==='cli') || sourceTagClass(c.source||'')==='terminal' || c.readOnly);
+}
+
+async function removeChat(id,{silent=false}={}){
+  const c=state.chats.find(x=>x.id===id);
+  const cli=isCliChat(c);
+  const endpoint=cli?'/api/cli/sessions/':'/api/chats/';
+  const ok=await apiDel(endpoint+encodeURIComponent(id));
+  if(!ok && !cli){
+    toast('删除失败，请检查后端连接', 'error');
+    return false;
+  }
+  state.chats=state.chats.filter(x=>x.id!==id);
+  delete state.chatFullData[id];
+  if(state.currentChat===id) state.currentChat=state.chats[0]?.id||null;
+  if(!silent) toast(cli?'已从 WebUI 隐藏该终端会话':'已删除', 'info');
+  return true;
+}
 
 async function syncCurrentChat(chatId){
   try{
-    const data=await apiGet('/api/chats/'+chatId);
+    const c=state.chats.find(x=>x.id===chatId);
+    const endpoint=isCliChat(c)?'/api/cli/sessions/':'/api/chats/';
+    const data=await apiGet(endpoint+encodeURIComponent(chatId));
     if(data&&data.id){
       const idx=state.chats.findIndex(c=>c.id===chatId);
       if(idx>=0){
         state.chats[idx].title=data.title;
         state.chats[idx].updatedAt=data.updatedAt;
+        state.chats[idx].createdAt=data.createdAt||state.chats[idx].createdAt;
+        state.chats[idx].preview=data.preview||state.chats[idx].preview;
+        state.chats[idx].readOnly=!!data.readOnly;
+        state.chats[idx].source=data.source||state.chats[idx].source;
         state.chats[idx].messages=data.messages||[];
         state.chats[idx].messageCount=(data.messages||[]).length;
       }
@@ -906,7 +1084,7 @@ async function syncCurrentChat(chatId){
 async function newChat(){
   const data = await apiPost('/api/chats', { title: '新建对话' });
   if (data) {
-    state.chats.unshift({ id: data.id, title: data.title, messages: [], updatedAt: data.updatedAt });
+    state.chats.unshift({ id: data.id, title: data.title, source:data.source||'WebUI', messages: [], updatedAt: data.updatedAt, createdAt:data.createdAt });
     state.chatFullData[data.id] = data;
     state.currentChat = data.id;
   } else {
@@ -927,12 +1105,19 @@ async function selectChat(id){
   if (!state.chatFullData[id]) {
     // Check if this is a CLI session or WebUI chat
     const c = state.chats.find(x => x.id === id);
-    const endpoint = c && c.source === 'cli' ? '/api/cli/sessions/' : '/api/chats/';
-    const data = await apiGet(endpoint + id);
+    const endpoint = isCliChat(c) ? '/api/cli/sessions/' : '/api/chats/';
+    const data = await apiGet(endpoint + encodeURIComponent(id));
     if (data) {
       state.chatFullData[id] = data;
       // Sync messages into local chat object
       if (c) {
+        c.title = data.title || c.title;
+        c.source = data.source || c.source;
+        c.preview = data.preview || c.preview;
+        c.createdAt = data.createdAt || c.createdAt;
+        c.updatedAt = data.updatedAt || c.updatedAt;
+        c.readOnly = !!data.readOnly;
+        c.messageCount = data.messageCount || (data.messages||[]).length;
         c.messages = data.messages || [];
         c._model = data.model || state.model.model;
         // Propagate model to each assistant message
@@ -967,6 +1152,38 @@ function autoResizeInput(ta){
   ta.style.height=Math.min(ta.scrollHeight,maxH)+'px';
 }
 
+function updateSendButton(){
+  const btn=$('#sendBtn');
+  if(!btn) return;
+  btn.classList.toggle('stop', !!state.isStreaming);
+  btn.title=state.isStreaming?'终止任务':'发送';
+  btn.onclick=state.isStreaming?stopGeneration:sendMessage;
+  btn.innerHTML=state.isStreaming?'<span class="stop-square"></span>':SVG.send;
+}
+
+function setStreamingState(on,controller=null,msgId=null){
+  state.isStreaming=!!on;
+  state.streamAbort=controller;
+  state.currentAssistantMsgId=msgId;
+  updateSendButton();
+}
+
+function stopGeneration(){
+  if(state.streamAbort) {
+    try{ state.streamAbort.abort(); }catch(_){}
+  }
+  const c=currentChat();
+  const msgId=state.currentAssistantMsgId;
+  const msg=c?.messages?.find(m=>m._msgId===msgId) || [...(c?.messages||[])].reverse().find(m=>m.role==='assistant'&&m._streaming);
+  if(msg){
+    msg._streaming=false;
+    if(!String(msg.content||'').trim()) msg.content='已终止任务。';
+    renderMsgUpdate(msg._msgId||msgId,msg);
+  }
+  setStreamingState(false,null,null);
+  toast('已终止当前任务','info');
+}
+
 async function sendMessage(){
   const ta=$('#chatInput');
   const txt=ta?ta.value.trim():'';
@@ -975,15 +1192,14 @@ async function sendMessage(){
   // If current chat is a CLI session (read-only), create a new WebUI chat
   if (state.currentChat) {
     const cur = currentChat();
-    if (cur && cur.source === 'cli') {
-      // Create a new WebUI chat for this conversation
-      const data = await apiPost('/api/chats', { title: txt.slice(0, 24) });
+    if (cur && isCliChat(cur)) {
+      // Terminal/CLI sessions are read-only snapshots. New input starts a normal WebUI chat.
+      const data = await apiPost('/api/chats', { title: txt.slice(0, 24), source:'WebUI' });
       if (data) {
-        // Copy CLI messages into new chat
-        data.messages = [...(cur.messages || [])];
-        state.chats.unshift({ id: data.id, title: data.title, source: 'webui', messages: data.messages, updatedAt: data.updatedAt });
+        state.chats.unshift({ id: data.id, title: data.title, source: data.source || 'WebUI', messages: [], updatedAt: data.updatedAt, createdAt:data.createdAt });
         state.chatFullData[data.id] = data;
         state.currentChat = data.id;
+        toast('终端会话只读，已为这条消息新建 WebUI 对话', 'info');
       }
     }
   }
@@ -1010,6 +1226,8 @@ async function sendMessage(){
   if (typeof HermesArtifact !== 'undefined') HermesArtifact.resetSession();
 
   renderPage();
+  const streamController = new AbortController();
+  setStreamingState(true,streamController,msgId);
   const area=$('#messagesArea');
   if(area) area.scrollTop=area.scrollHeight;
 
@@ -1018,7 +1236,10 @@ async function sendMessage(){
   let fullReasoning = '';
   const tools = [];
 
-  await apiStream('/api/chats/' + (c._id || c.id) + '/messages', { content: txt }, {
+  const profile=getActiveProfile();
+  const requestModel = state.chatModelOverride !== 'auto' ? state.chatModelOverride : (profile?.modelId && profile.modelId !== 'auto' ? profile.modelId : 'auto');
+  await apiStream('/api/chats/' + (c._id || c.id) + '/messages', { content: txt, scene:'chat', model:requestModel, profileId:profile?.id, profilePrompt:profile?.systemPrompt||'' }, {
+    signal: streamController.signal,
     onToken(text) {
       fullContent += text;
       assistantMsg.content = fullContent;
@@ -1043,7 +1264,7 @@ async function sendMessage(){
     },
     onTool(data) {
       // Check if this is a clarify/ask_user tool call
-      if (data.name === 'clarify' || data.name === 'ask_user') {
+      if (data.name === 'clarify' || data.name === 'ask_user' || data.name === 'AskUserQuestion') {
         assistantMsg._streaming = false;
         assistantMsg.content = '📋 需要你确认...';
         renderMsgUpdate(msgId, assistantMsg);
@@ -1052,44 +1273,66 @@ async function sendMessage(){
         if (typeof qData === 'string') {
           try { qData = JSON.parse(qData); } catch { qData = { question: qData }; }
         }
-        const question = qData.question || qData.label || '请确认';
-        const choices = qData.choices || qData.options || [];
-        if (choices.length > 0) {
-          askUser([{
-            id: 'clarify_q',
-            label: question,
-            type: 'single',
-            options: choices.map(c => ({
+
+        let askQuestions = [];
+        if (qData.questions && Array.isArray(qData.questions)) {
+          // Standard AskUserQuestion format
+          askQuestions = qData.questions.map((q, i) => ({
+            id: 'clarify_q_' + i,
+            label: q.question || q.header || '请确认',
+            type: q.multiSelect ? 'multi' : 'single',
+            options: (q.options || []).map(c => ({
               label: c.label || c,
-              value: c.value || c,
-            })),
-          }]).then(answers => {
-            if (answers && answers.length) {
-              const answer = answers[0].selected[0] || answers[0].custom || 'ok';
-              // Send the answer as a follow-up message
-              const ta = $('#chatInput');
-              if (ta) {
-                ta.value = answer;
-                sendMessage();
-              }
-            }
-          });
+              value: c.label || c,
+              description: c.description || '',
+            }))
+          }));
         } else {
-          // Open-ended question
-          askUser([{
-            id: 'clarify_q',
-            label: question,
-            type: 'single',
-            options: [{ label: '确认', value: '继续' }],
-          }]).then(answers => {
-            const answer = answers?.[0]?.custom || answers?.[0]?.selected?.[0] || '继续';
+          // Legacy format
+          const question = qData.question || qData.label || '请确认';
+          const choices = qData.choices || qData.options || [];
+          if (choices.length > 0) {
+            askQuestions = [{
+              id: 'clarify_q',
+              label: question,
+              type: qData.multiSelect ? 'multi' : 'single',
+              options: choices.map(c => ({
+                label: c.label || c,
+                value: c.value || c.label || c,
+                description: c.description || '',
+              })),
+            }];
+          } else {
+            askQuestions = [{
+              id: 'clarify_q',
+              label: question,
+              type: 'single',
+              options: [{ label: '确认', value: '继续' }],
+            }];
+          }
+        }
+
+        askUser(askQuestions).then(answers => {
+          if (answers && answers.length) {
+            // Format the answer back to the agent
+            let answerText = '';
+            answers.forEach((ans, idx) => {
+              const qLabel = askQuestions[idx].label;
+              const selected = ans.selected.filter(v => v !== '__OTHER__').join(', ');
+              const custom = ans.selected.includes('__OTHER__') ? ans.custom : '';
+              let finalAns = [selected, custom].filter(Boolean).join(' - ');
+              if (!finalAns && ans.selected.includes('__OTHER__')) finalAns = '其他';
+              if (!finalAns) finalAns = '无';
+              answerText += `[${qLabel}] 用户的选择是: ${finalAns}\n`;
+            });
+
             const ta = $('#chatInput');
             if (ta) {
-              ta.value = answer;
+              ta.value = answerText.trim();
               sendMessage();
             }
-          });
-        }
+          }
+        });
         return;
       }
       const tc = { name: data.name, status: 'running', input: data.args || data.preview || '', output: '' };
@@ -1119,6 +1362,84 @@ async function sendMessage(){
     },
     onDone() {
       assistantMsg._streaming = false;
+      setStreamingState(false,null,null);
+
+      // Check for <ask_user> XML tag OR a raw JSON block containing "question" and "options"
+      let qData = null;
+      const contentStr = assistantMsg.content || '';
+      const askMatch = contentStr.match(/<ask_user>([\s\S]*?)<\/ask_user>/);
+
+      if (askMatch) {
+        let jsonStr = askMatch[1].replace(/```json/gi, '').replace(/```/g, '').trim();
+        try { qData = JSON.parse(jsonStr); } catch(e) { console.error('Failed to parse ask_user JSON:', e); }
+      } else {
+        // Fallback: look for a JSON block in the text
+        const jsonMatch = contentStr.match(/```json\s*([\s\S]*?)\s*```/i) || contentStr.match(/\{[\s\S]*"question"[\s\S]*"options"[\s\S]*\}/);
+        if (jsonMatch) {
+          let jsonStr = (jsonMatch[1] || jsonMatch[0]).trim();
+          try {
+            let parsed = JSON.parse(jsonStr);
+            if (parsed.question && parsed.options) qData = parsed;
+            else if (parsed.questions && Array.isArray(parsed.questions)) qData = parsed;
+          } catch(e) {}
+        }
+      }
+
+      if (qData) {
+        let askQuestions = [];
+        if (qData.questions && Array.isArray(qData.questions)) {
+          askQuestions = qData.questions.map((q, i) => ({
+            id: 'clarify_q_' + i,
+            label: q.question || q.header || '请确认',
+            type: q.multiSelect ? 'multi' : 'single',
+            options: (q.options || []).map(c => ({
+              label: c.label || c,
+              value: c.value || c.label || c,
+              description: c.description || '',
+            }))
+          }));
+        } else if (qData.options && Array.isArray(qData.options)) {
+          askQuestions = [{
+            id: 'clarify_q',
+            label: qData.question || '请确认',
+            type: qData.multiSelect ? 'multi' : 'single',
+            options: qData.options.map(c => ({
+              label: c.label || c,
+              value: c.value || c.label || c,
+              description: c.description || '',
+            }))
+          }];
+        } else {
+          // Fallback if no options
+          askQuestions = [{
+            id: 'clarify_q',
+            label: qData.question || '请确认',
+            type: 'single',
+            options: [{ label: '确认', value: '继续' }]
+          }];
+        }
+
+        askUser(askQuestions).then(answers => {
+          if (answers && answers.length) {
+            let answerText = '';
+            answers.forEach((ans, idx) => {
+              const qLabel = askQuestions[idx].label;
+              const selected = ans.selected.filter(v => v !== '__OTHER__').join(', ');
+              const custom = ans.selected.includes('__OTHER__') ? ans.custom : '';
+              let finalAns = [selected, custom].filter(Boolean).join(' - ');
+              if (!finalAns && ans.selected.includes('__OTHER__')) finalAns = '其他';
+              if (!finalAns) finalAns = '无';
+              answerText += `[${qLabel}] 用户的选择是: ${finalAns}\n`;
+            });
+            const ta = $('#chatInput');
+            if (ta) {
+              ta.value = answerText.trim();
+              sendMessage();
+            }
+          }
+        });
+      }
+
       if (typeof HermesArtifact !== 'undefined') {
         const p = HermesArtifact.parseHermesStream(assistantMsg.content || '');
         HermesArtifact.finalizeStream(p);
@@ -1128,10 +1449,17 @@ async function sendMessage(){
     },
     onError(msg) {
       assistantMsg._streaming = false;
+      setStreamingState(false,null,null);
       if (!fullContent) assistantMsg.content = '⚠️ ' + msg;
       renderMsgUpdate(msgId, assistantMsg);
     },
+    onAbort() {
+      assistantMsg._streaming = false;
+      setStreamingState(false,null,null);
+      renderMsgUpdate(msgId, assistantMsg);
+    },
   });
+  if(state.currentAssistantMsgId===msgId) setStreamingState(false,null,null);
 }
 
 let _renderThrottleTimer = null;
@@ -1191,7 +1519,7 @@ function flushMsgUpdates() {
           const thId = 'th_stream_' + msgId;
           const isStreaming=msg._streaming;
           const duration=msg.thinkingDuration?` · ${msg.thinkingDuration}ms`:'';
-          const thHtml = `<div class="msg-thinking"><div class="msg-thinking-header" onclick="toggleCollapse('${thId}')"><svg class="thinking-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg><span class="thinking-label">思考过程${isStreaming?'<span class="thinking-dots"><span></span><span></span><span></span></span>':''}</span><span class="thinking-duration">${duration}</span><span class="thinking-toggle collapsed" id="toggle_${thId}">▶</span></div><div class="msg-thinking-body collapsed" id="body_${thId}">${esc(combinedThink)}</div></div>`;
+          const thHtml = `<div class="msg-thinking"><div class="msg-thinking-header" onclick="toggleAllThinking('${thId}')"><svg class="thinking-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg><span class="thinking-label">思考过程${isStreaming?'<span class="thinking-dots"><span></span><span></span><span></span></span>':''}</span><span class="thinking-duration">${duration}</span><span class="thinking-toggle collapsed" id="toggle_${thId}">▶</span></div><div class="msg-thinking-body collapsed" id="body_${thId}">${esc(combinedThink)}</div></div>`;
           if (thEl) thEl.outerHTML = thHtml;
           else if (bubbleWrap) bubbleWrap.insertAdjacentHTML('beforebegin', thHtml);
         } else if (thEl) {
@@ -1312,19 +1640,26 @@ function renderHistory(){
       if (isSelected) totalSelected++;
       const date = new Date(c.createdAt || c.updatedAt || Date.now());
       const dateStr = date.toLocaleDateString('zh-CN', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
-      const preview = c.messages?.length ? c.messages[c.messages.length-1].content?.slice(0, 50) : '';
+      const preview = c.messages?.length ? stripArtifactTagsForPreview(c.messages[c.messages.length-1].content || '') : (c.preview || '');
+      const src=c.source||'WebUI';
+      const cls=sourceTagClass(src);
+      const label=sourceTagLabel(src);
+      const readonly=isCliChat(c);
       html += `<div class="hist-item${isSelected ? ' selected' : ''}" data-id="${c.id}">
         <label class="hist-check" onclick="event.stopPropagation();toggleHistSelect('${c.id}')">
           <input type="checkbox" ${isSelected ? 'checked' : ''} class="hist-cb">
         </label>
-        <div class="hist-body" onclick="state.currentChat='${c.id}';navigate('chat')">
+        <div class="hist-body" onclick="selectChat('${c.id}');navigate('chat')">
           <div class="hist-title">${esc(c.title || '未命名')}</div>
           <div class="hist-meta">
             <span class="hist-date">${dateStr}</span>
-            <span class="hist-msgs">${c.messages?.length || 0} 条消息</span>
+            <span class="hist-msgs">${c.messageCount || c.messages?.length || 0} 条消息</span>
+            <span class="source-tag ${cls}">${label}</span>
+            ${readonly?'<span class="readonly-tag mini">只读</span>':''}
           </div>
           ${preview ? `<div class="hist-preview">${esc(preview)}</div>` : ''}
         </div>
+        <button class="hist-row-delete" onclick="event.stopPropagation();deleteSingleHist('${c.id}')" title="${readonly?'隐藏':'删除'}">${readonly?'隐藏':'删除'}</button>
       </div>`;
     });
   }
@@ -1375,18 +1710,14 @@ function clearHistSelect() {
   renderPage();
 }
 
-function deleteSelectedChats() {
+async function deleteSelectedChats() {
   if (!state._historySelected || state._historySelected.size === 0) return;
   const count = state._historySelected.size;
-  if (!confirm(`确认删除 ${count} 个会话？`)) return;
-  state._historySelected.forEach(async id => {
-    await apiDel('/api/chats/' + id);
-    state.chats = state.chats.filter(c => c.id !== id);
-    delete state.chatFullData[id];
-    if (state.currentChat === id) state.currentChat = null;
-  });
+  const ok=await askConfirm(`确认处理 ${count} 个会话？终端会话会从 WebUI 隐藏，WebUI 会话会删除。`);
+  if (!ok) return;
+  for(const id of [...state._historySelected]) await removeChat(id,{silent:true});
   state._historySelected.clear();
-  toast(`已删除 ${count} 个会话`, 'info');
+  toast(`已处理 ${count} 个会话`, 'info');
   renderPage();
 }
 
@@ -1401,6 +1732,7 @@ function toggleSessionMenu(id) {
 async function renameSessionChat(id) {
   const c = state.chats.find(x => x.id === id);
   if (!c) return;
+  if (isCliChat(c)) { toast('终端会话只读，不支持改名', 'info'); return; }
   const currentTitle = c.title || '';
   openModal(`
     <div class="rename-modal">
@@ -1426,6 +1758,7 @@ async function confirmRename(id) {
   if (!newTitle) return;
   const c = state.chats.find(x => x.id === id);
   if (!c) return;
+  if (isCliChat(c)) { toast('终端会话只读，不支持改名', 'info'); closeModal(); return; }
   await apiPut('/api/chats/' + id, { title: newTitle });
   c.title = newTitle;
   closeModal();
@@ -1435,6 +1768,7 @@ async function confirmRename(id) {
 async function pinSessionChat(id) {
   const c = state.chats.find(x => x.id === id);
   if (!c) return;
+  if (isCliChat(c)) { toast('终端会话只读，不支持置顶', 'info'); return; }
   const pinned = !c.pinned;
   await apiPut('/api/chats/' + id, { pinned });
   c.pinned = pinned;
@@ -1443,12 +1777,10 @@ async function pinSessionChat(id) {
 }
 
 async function deleteSessionChat(id) {
-  if (!confirm('确认删除该会话？')) return;
-  await apiDel('/api/chats/' + id);
-  state.chats = state.chats.filter(c => c.id !== id);
-  delete state.chatFullData[id];
-  if (state.currentChat === id) state.currentChat = null;
-  toast('已删除', 'info');
+  const c = state.chats.find(x => x.id === id);
+  const ok=await askConfirm(isCliChat(c)?'确认从 WebUI 隐藏该终端会话？':'确认删除该会话？');
+  if (!ok) return;
+  await removeChat(id);
   renderPage();
 }
 
@@ -1475,6 +1807,7 @@ function toggleHistMenu(id) {
 async function renameHistChat(id) {
   const c = state.chats.find(x => x.id === id);
   if (!c) return;
+  if (isCliChat(c)) { toast('终端会话只读，不支持改名', 'info'); return; }
   const currentTitle = c.title || '';
   openModal(`
     <div class="rename-modal">
@@ -1496,6 +1829,7 @@ async function renameHistChat(id) {
 async function pinHistChat(id) {
   const c = state.chats.find(x => x.id === id);
   if (!c) return;
+  if (isCliChat(c)) { toast('终端会话只读，不支持置顶', 'info'); return; }
   const pinned = !c.pinned;
   await apiPut('/api/chats/' + id, { pinned });
   c.pinned = pinned;
@@ -1504,18 +1838,18 @@ async function pinHistChat(id) {
 }
 
 async function deleteHistChat(id) {
-  if (!confirm('确认删除该会话？')) return;
-  await apiDel('/api/chats/' + id);
-  state.chats = state.chats.filter(c => c.id !== id);
-  delete state.chatFullData[id];
-  if (state.currentChat === id) state.currentChat = null;
-  toast('已删除', 'info');
+  const c = state.chats.find(x => x.id === id);
+  const ok=await askConfirm(isCliChat(c)?'确认从 WebUI 隐藏该终端会话？':'确认删除该会话？');
+  if (!ok) return;
+  await removeChat(id);
   renderPage();
 }
 
 function clearAllHistory(){
-  if(!confirm('确认清空所有历史记录？')) return;
-  state.chats=[];state.currentChat=null;save();renderPage();
+  askConfirm('确认清空所有历史记录？').then(ok=>{
+    if(!ok) return;
+    state.chats=[];state.currentChat=null;save();renderPage();
+  });
 }
 
 function renderGroupChat(){
@@ -1589,7 +1923,7 @@ function renderGroupChat(){
         </button>
         <div class="gc-header-title">${esc(room.name)}</div>
         <div class="gc-avatars">${avatarsHtml}</div>
-        <button class="fig-icon-btn" onclick="gcShowAddAgent()" title="添加 Agent">${SVG.plus}</button>
+        <button class="fig-icon-btn" onclick="gcShowAddAgent()" title="添加分身">${SVG.plus}</button>
         <button class="fig-icon-btn" onclick="gcShowSettings()" title="房间设置">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg>
         </button>
@@ -1600,20 +1934,20 @@ function renderGroupChat(){
       <div class="gc-input-area">
         <div class="gc-mention-menu" id="gcMentionMenu"></div>
         <div class="gc-input-wrap">
-          <textarea id="gcInput" rows="1" placeholder="输入消息… (@ 提及 Agent)" onkeydown="gcOnKeyDown(event)" oninput="gcOnInput(this)"></textarea>
+          <textarea id="gcInput" rows="1" placeholder="输入消息… (@ 提及分身)" onkeydown="gcOnKeyDown(event)" oninput="gcOnInput(this)"></textarea>
           <button class="send-btn" onclick="gcSendMessage()">${SVG.send}</button>
         </div>
       </div>`;
   } else {
     mainHtml=`<div class="gc-empty">
       <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87"/><path d="M16 3.13a4 4 0 010 7.75"/></svg>
-      <span>选择或创建一个房间开始聊天</span>
+      <span>选择或创建一个分身房间开始聊天</span>
     </div>`;
   }
 
   return `<div class="gc-panel">
     <div class="gc-rooms" id="gcRoomsSidebar">
-      <div class="gc-rooms-header"><h3>群聊房间</h3>
+      <div class="gc-rooms-header"><h3>分身房间</h3>
         <button class="btn btn-sm btn-primary" onclick="gcShowCreateRoom()">创建</button>
       </div>
       <div class="gc-rooms-list">${roomsHtml}</div>
@@ -1650,31 +1984,47 @@ function gcToggleRoomMenu(id) {
 function gcRenameRoom(id) {
   const room = state.groupChat.rooms.find(r => r.id === id);
   if (!room) return;
-  const name = prompt('编辑房间名称:', room.name || '');
-  if (!name || name === room.name) return;
-  room.name = name;
+  openModal(`<div class="rename-modal">
+    <h3>编辑房间名称</h3>
+    <input id="gcRenameInput" class="input" value="${esc(room.name||'')}" placeholder="输入房间名称" onkeydown="if(event.key==='Enter'){event.preventDefault();gcConfirmRenameRoom('${id}')}">
+    <div class="rename-actions">
+      <button class="btn btn-ghost" onclick="closeModal()">取消</button>
+      <button class="btn btn-primary" onclick="gcConfirmRenameRoom('${id}')">保存</button>
+    </div>
+  </div>`);
+  setTimeout(()=>{const input=$('#gcRenameInput'); if(input){input.focus(); input.select();}},50);
+}
+
+function gcConfirmRenameRoom(id){
+  const room=state.groupChat.rooms.find(r=>r.id===id);
+  const name=$('#gcRenameInput')?.value?.trim();
+  if(!room||!name) return;
+  room.name=name;
   save();
+  closeModal();
   renderPage();
 }
 
 function gcDeleteRoom(id) {
-  if (!confirm('确认删除该房间？')) return;
-  state.groupChat.rooms = state.groupChat.rooms.filter(r => r.id !== id);
-  if (state.groupChat.activeRoom === id) state.groupChat.activeRoom = null;
-  delete state.groupChat.messages[id];
-  delete state.groupChat.members[id];
-  delete state.groupChat.agents[id];
-  delete state.groupChat.typing[id];
-  delete state.groupChat.contextStatus[id];
-  save();
-  renderPage();
+  askConfirm('确认删除该房间？该操作会删除本地保存的分身消息。').then(ok=>{
+    if(!ok) return;
+    state.groupChat.rooms = state.groupChat.rooms.filter(r => r.id !== id);
+    if (state.groupChat.activeRoom === id) state.groupChat.activeRoom = null;
+    delete state.groupChat.messages[id];
+    delete state.groupChat.members[id];
+    delete state.groupChat.agents[id];
+    delete state.groupChat.typing[id];
+    delete state.groupChat.contextStatus[id];
+    save();
+    renderPage();
+  });
 }
 
 function gcShowCreateRoom(){
   const code=Math.random().toString(36).substring(2,8).toUpperCase();
   openModal(`
     <div style="padding:24px;min-width:360px">
-      <h3 style="margin-bottom:16px;font-size:18px;font-weight:600">创建群聊房间</h3>
+      <h3 style="margin-bottom:16px;font-size:18px;font-weight:600">创建分身房间</h3>
       <div style="display:flex;flex-direction:column;gap:12px">
         <div>
           <label style="font-size:12px;color:var(--c-ink-muted);margin-bottom:4px;display:block">你的昵称 *</label>
@@ -1744,7 +2094,7 @@ function gcShowAddAgent(){
   const available=profiles.filter(p=>!existingProfiles.includes(p));
   openModal(`
     <div style="padding:24px;min-width:360px">
-      <h3 style="margin-bottom:16px;font-size:18px;font-weight:600">添加 Agent</h3>
+      <h3 style="margin-bottom:16px;font-size:18px;font-weight:600">添加分身</h3>
       <div style="display:flex;flex-direction:column;gap:12px">
         <div>
           <label style="font-size:12px;color:var(--c-ink-muted);margin-bottom:4px;display:block">选择 Profile *</label>
@@ -1754,8 +2104,8 @@ function gcShowAddAgent(){
           </select>
         </div>
         <div>
-          <label style="font-size:12px;color:var(--c-ink-muted);margin-bottom:4px;display:block">Agent 名称 *</label>
-          <input id="gcAgentName" style="width:100%;padding:8px 12px;border-radius:var(--r-md);border:1px solid var(--c-hairline);background:var(--c-canvas);color:var(--c-ink);font-size:14px" placeholder="给 Agent 起个名字">
+          <label style="font-size:12px;color:var(--c-ink-muted);margin-bottom:4px;display:block">分身名称 *</label>
+          <input id="gcAgentName" style="width:100%;padding:8px 12px;border-radius:var(--r-md);border:1px solid var(--c-hairline);background:var(--c-canvas);color:var(--c-ink);font-size:14px" placeholder="给分身起个名字">
         </div>
         <div>
           <label style="font-size:12px;color:var(--c-ink-muted);margin-bottom:4px;display:block">描述</label>
@@ -1793,6 +2143,74 @@ function gcAddAgent(){
   renderPage();
   toast(`Agent "${name}" 已加入`,'info');
 }
+
+function getProfiles(){
+  if(!_profilesCache){
+    _profilesCache=LS.get('hermes.profiles',[
+      {id:'default',name:'默认助手',modelId:'auto',model:scenarioModel('chat'),systemPrompt:'',color:'var(--c-block-lime)'},
+      {id:'coder',name:'代码专家',modelId:state.modelsConfig?.scenarios?.reasoning||'auto',model:scenarioModel('reasoning'),systemPrompt:'你是一位资深代码专家，擅长代码审查、重构和架构设计。',color:'var(--c-block-lilac)'},
+      {id:'pm',name:'产品经理',modelId:state.modelsConfig?.scenarios?.reasoning||'auto',model:scenarioModel('reasoning'),systemPrompt:'你是一位产品经理，擅长需求拆解、验收标准和产品方案。',color:'var(--c-block-cream)'},
+      {id:'designer',name:'设计顾问',modelId:state.modelsConfig?.scenarios?.chat||'auto',model:scenarioModel('chat'),systemPrompt:'你是一位设计顾问，关注视觉层级、交互细节和用户体验。',color:'var(--c-block-mint)'},
+      {id:'researcher',name:'研究员',modelId:state.modelsConfig?.scenarios?.reasoning||'auto',model:scenarioModel('reasoning'),systemPrompt:'你是一位研究员，擅长资料整理、分析和长文总结。',color:'var(--c-block-coral)'},
+    ]);
+  }
+  return _profilesCache;
+}
+
+function getActiveProfile(){
+  return getProfiles().find(p=>p.id===state.activeProfile) || getProfiles()[0] || null;
+}
+
+gcShowAddAgent=function(){
+  const room=state.groupChat.rooms.find(r=>r.id===state.groupChat.activeRoom);
+  if(!room) return;
+  const profiles=getProfiles();
+  const existing=(state.groupChat.agents[room.id]||[]).map(a=>a.profileId);
+  const available=profiles.filter(p=>!existing.includes(p.id));
+  openModal(`<div style="padding:24px;min-width:420px">
+    <h3 style="margin-bottom:16px;font-size:18px;font-weight:600">添加分身</h3>
+    <div style="display:grid;gap:12px">
+      <label style="font-size:12px;color:var(--c-ink-muted)">选择角色</label>
+      <select id="gcAgentProfile" onchange="toggleGcCustomAgent()">
+        ${available.map(p=>`<option value="${p.id}">${esc(p.name)} · ${esc(p.model||scenarioModel('chat'))}</option>`).join('')}
+        <option value="__custom__">自定义分身</option>
+      </select>
+      <input id="gcAgentName" placeholder="分身名称，留空使用角色名称">
+      <input id="gcAgentDesc" placeholder="一句话描述分身能力，可留空">
+      <select id="gcAgentModel" style="display:none">
+        <option value="auto">自动（按场景）</option>
+        ${getEnabledModels().map(m=>`<option value="${esc(m.id)}">${esc(m.name)} · ${esc(m.provider)}</option>`).join('')}
+      </select>
+      <textarea id="gcAgentPrompt" placeholder="自定义分身的系统提示词 / 行为规则" style="display:none;min-height:100px"></textarea>
+      <div style="display:flex;gap:8px;justify-content:flex-end"><button class="btn btn-secondary" onclick="closeModal()">取消</button><button class="btn btn-primary" onclick="gcAddAgent()">添加</button></div>
+    </div>
+  </div>`);
+};
+
+function toggleGcCustomAgent(){
+  const custom=$('#gcAgentProfile')?.value==='__custom__';
+  ['#gcAgentModel','#gcAgentPrompt'].forEach(sel=>{const el=$(sel);if(el) el.style.display=custom?'block':'none'});
+}
+
+gcAddAgent=function(){
+  const profileId=$('#gcAgentProfile')?.value;
+  const custom=profileId==='__custom__';
+  const role=custom?null:getProfiles().find(p=>p.id===profileId);
+  if(!custom&&!role){toast('请先选择角色','error');return}
+  const roomId=state.groupChat.activeRoom;
+  const name=$('#gcAgentName')?.value?.trim()||(custom?'自定义分身':role.name);
+  const prompt=$('#gcAgentPrompt')?.value?.trim()||'';
+  const desc=$('#gcAgentDesc')?.value?.trim()||prompt||role?.systemPrompt||role?.name||name;
+  const modelId=custom?($('#gcAgentModel')?.value||'auto'):(role.modelId||'auto');
+  const colors=['#e53935','#8e24aa','#1e88e5','#43a047','#fb8c00','#00acc1','#6d4c41','#546e7a'];
+  state.groupChat.agents[roomId].push({
+    id:'a_'+Date.now(),roomId,agentId:'agent_'+Date.now(),profileId:custom?'custom_'+Date.now():profileId,
+    profile:custom?(getModelById(modelId)?.name||scenarioModel('reasoning')):(role.model||scenarioModel('reasoning')),modelId,
+    systemPrompt:prompt||role?.systemPrompt||'',
+    name,description:desc,color:role?.color||colors[state.groupChat.agents[roomId].length%colors.length],invited:true,
+  });
+  save();closeModal();renderPage();toast('分身已添加','success');
+};
 
 function gcRemoveAgent(agentId){
   const roomId=state.groupChat.activeRoom;
@@ -1870,17 +2288,20 @@ function gcSaveSettings(){
 
 function gcDeleteRoom(){
   const id=state.groupChat.activeRoom;
-  state.groupChat.rooms=state.groupChat.rooms.filter(r=>r.id!==id);
-  delete state.groupChat.messages[id];
-  delete state.groupChat.agents[id];
-  delete state.groupChat.members[id];
-  delete state.groupChat.typing[id];
-  delete state.groupChat.contextStatus[id];
-  if(state.groupChat.activeRoom===id) state.groupChat.activeRoom=null;
-  save();
-  closeModal();
-  renderPage();
-  toast('房间已删除','info');
+  askConfirm('确认删除该房间？该操作会删除本地保存的分身消息。').then(ok=>{
+    if(!ok) return;
+    state.groupChat.rooms=state.groupChat.rooms.filter(r=>r.id!==id);
+    delete state.groupChat.messages[id];
+    delete state.groupChat.agents[id];
+    delete state.groupChat.members[id];
+    delete state.groupChat.typing[id];
+    delete state.groupChat.contextStatus[id];
+    if(state.groupChat.activeRoom===id) state.groupChat.activeRoom=null;
+    save();
+    closeModal();
+    renderPage();
+    toast('房间已删除','info');
+  });
 }
 
 function gcSendMessage(){
@@ -1928,12 +2349,12 @@ function gcProcessMentions(content,roomId){
           role:m.senderType==='user'?'user':'assistant',
           content:(m.senderType!=='user'?'['+m.senderName+'] ':'')+m.content,
         }));
-        const systemPrompt=`你是群聊中的 Agent "${agent.name}"，使用模型 ${agent.profile}。${agent.description?'你的能力：'+agent.description:''}。请简洁回复，用中文。`;
+        const systemPrompt=`你是分身房间中的分身 "${agent.name}"，使用模型 ${agent.profile}。${agent.description?'你的能力：'+agent.description:''}${agent.systemPrompt?'\n角色规则：'+agent.systemPrompt:''}。请简洁回复，用中文。`;
         const messages=[{role:'system',content:systemPrompt},...history,{role:'user',content:'['+state.groupChat.userName+'] '+content}];
         const r=await fetch(apiBase()+'/api/chats/gc-stream',{
           method:'POST',
           headers:{'Content-Type':'application/json'},
-          body:JSON.stringify({messages,model:agent.profile}),
+          body:JSON.stringify({messages,model:agent.modelId||agent.profile,scene:'reasoning'}),
         });
         if(!r.ok||!r.body){
           throw new Error('API返回错误: '+r.status);
@@ -2067,12 +2488,32 @@ function gcInsertMention(name){
 }
 
 function gcRenderContent(content,agents){
-  let html=esc(content);
+  let html=renderMessageMarkdown(content);
   agents.forEach(a=>{
     const escapedName=esc(a.name);
     html=html.replace(new RegExp('@'+escapedName.replace(/[.*+?^${}()|[\]\\]/g,'\\$&'),'g'),`<span class="mention">@${escapedName}</span>`);
   });
+  const raw=String(content||'');
+  if(raw.length>240 && /(^|\n)#{1,6}\s|```|\|.+\||^\s*[-*]\s/m.test(raw)){
+    const id='gc_md_'+Math.random().toString(36).slice(2);
+    window.__gcMarkdownPreview=window.__gcMarkdownPreview||{};
+    window.__gcMarkdownPreview[id]=raw;
+    html+=`<div class="gc-md-actions"><button class="btn btn-xs btn-secondary" onclick="openGcMarkdownPreview('${id}')">预览 Markdown</button></div>`;
+  }
   return html;
+}
+
+function openGcMarkdownPreview(id){
+  const content=window.__gcMarkdownPreview?.[id]||'';
+  if(!content) return;
+  openModal(`<div style="padding:0;min-width:min(920px,92vw);max-width:92vw;max-height:86vh;display:flex;flex-direction:column">
+    <div style="display:flex;align-items:center;justify-content:space-between;padding:14px 18px;border-bottom:1px solid var(--c-hairline)">
+      <h3 style="font-size:16px;font-weight:700">分身 Markdown 预览</h3>
+      <button class="history-popup-close" onclick="closeModal()">${SVG.x}</button>
+    </div>
+    <div class="artifact-preview markdown-body" style="padding:22px;overflow:auto">${renderMessageMarkdown(content)}</div>
+  </div>`);
+  enhanceMessageMarkdown(document.querySelector('.modal'));
 }
 
 function gcFormatTime(ts){
@@ -2220,7 +2661,7 @@ function renderSkills(){
   let detailHtml='';
   if(sel){
     const sourceLabel={builtin:'内置',hub:'Hub',local:'本地'}[sel.source]||sel.source;
-    let filesHtml=(sel.files||[]).map(f=>`<div class="skill-file-item" onclick="skViewFile('${sel.id}','${esc(f)}')">${SVG.file} ${esc(f)}</div>`).join('');
+    let filesHtml=(sel.files||[]).map(f=>`<div class="skill-file-item" onclick="skViewFile('${sel.id}','${esc(f)}')">${SVG.file} <span>${esc(typeof f==='string'?f:f.name)}</span></div>`).join('');
     detailHtml=`
       <div class="skill-detail-breadcrumb"><span onclick="skSelect(null)">技能中心</span> / <span onclick="skFilterCat('${esc(sel.category)}')">${esc(sel.category)}</span> / ${esc(sel.name)}</div>
       <div class="skill-detail-header">
@@ -2246,7 +2687,7 @@ function renderSkills(){
         ${sel.source!=='builtin'?`<button class="btn btn-secondary btn-sm" style="color:var(--c-error)" onclick="skDelete('${sel.id}')">删除</button>`:''}
       </div>
       <div class="skill-files">
-        <h4>附件文件</h4>
+        <h4>技能文件 <button class="btn btn-xs btn-secondary" style="margin-left:8px" onclick="refreshSkillFiles('${sel.id}')">刷新</button></h4>
         ${filesHtml||'<div style="font-size:13px;color:var(--c-ink-muted)">无附件</div>'}
       </div>
       <div id="skFileContent"></div>
@@ -2288,8 +2729,23 @@ function skSelect(id){
   if(id){
     const s=state.skills.find(x=>x.id===id);
     if(s) s.viewCount=(s.viewCount||0)+1;
+    refreshSkillFiles(id, true);
   }
   save();renderPage();
+}
+
+async function refreshSkillFiles(id,silent){
+  const s=state.skills.find(x=>x.id===id);
+  if(!s) return;
+  const data=await apiGet('/api/skills/'+encodeURIComponent(id)+'/files');
+  if(data){
+    s.root=data.root;
+    s.files=(data.files||[]).map(f=>f.name||f);
+    if(!silent) toast('技能文件已刷新','success');
+    if(state.selectedSkill===id) renderPage();
+  }else if(!silent){
+    toast('技能文件读取失败，请确认后端已重启','error');
+  }
 }
 
 function skToggle(id){
@@ -2467,6 +2923,33 @@ function skDelete(id){
   `);
 }
 
+async function skViewFileReal(skillId,fileName){
+  const el=$('#skFileContent');
+  if(!el) return;
+  el.innerHTML='<div class="skill-content">正在读取文件...</div>';
+  const data=await apiGet('/api/skills/'+encodeURIComponent(skillId)+'/file?path='+encodeURIComponent(fileName));
+  if(!data){el.innerHTML='<div class="skill-content">文件读取失败</div>';return}
+  const content=data.content||'';
+  const isMd=/\.md$/i.test(fileName);
+  el.innerHTML=`<div style="margin-top:16px">
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+      <button class="btn btn-secondary btn-sm" onclick="document.getElementById('skFileContent').innerHTML=''">← 返回</button>
+      <span style="font-size:13px;color:var(--c-ink-muted);font-family:var(--font-mono);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(data.path||fileName)}</span>
+      <button class="btn btn-primary btn-sm" style="margin-left:auto" onclick="skSaveFile('${esc(skillId)}','${esc(fileName)}')">保存</button>
+    </div>
+    <textarea id="skFileEditor" class="skill-file-editor">${esc(content)}</textarea>
+    ${isMd?`<div class="skill-md-preview artifact-preview markdown-body"><div style="font-size:12px;color:var(--c-ink-muted);margin-bottom:8px">Markdown 预览</div>${renderMessageMarkdown(content)}</div>`:''}
+  </div>`;
+  enhanceMessageMarkdown(el);
+}
+skViewFile=skViewFileReal;
+async function skSaveFile(skillId,fileName){
+  const content=$('#skFileEditor')?.value||'';
+  const data=await apiPut('/api/skills/'+encodeURIComponent(skillId)+'/file?path='+encodeURIComponent(fileName),{content});
+  if(data){toast('技能文件已保存','success');skViewFile(skillId,fileName)}
+  else toast('保存失败','error');
+}
+
 async function skOpenFolder(id){
   const s=state.skills.find(x=>x.id===id);
   if(!s) return;
@@ -2544,6 +3027,207 @@ function doAddMemoryEpisode(){
 function deleteMemoryEpisode(idx){
   if(state.memories.episodes) state.memories.episodes.splice(idx,1);
   save();renderPage();toast('记忆已删除','info');
+}
+
+function renderMemoryLibrary(){
+  const data=state.memory.data;
+  const current=state.memory.current;
+  const core=data?.core||[];
+  const groups=data?.conversations||[];
+  const allConversations=data?.conversationsFlat||groups.flatMap(g=>g.files||[]).sort((a,b)=>(b.mtime||0)-(a.mtime||0));
+  const typeGroups=data?.conversationTypes||[];
+  const stats=data?.stats||{};
+  const selectedId=state.memory.selectedId;
+  const mode=state.memory.mode||'preview';
+  const conversationView=state.memory.conversationView||'all';
+  const workspacePath=data?.workspaceDir||'C:\\Users\\Administrator\\Desktop\\Hermes Agent';
+  const currentPath=current?.path||'选择左侧文件查看内容';
+  const headerMeta=current?[
+    current.type==='core'?'核心文件':'对话记忆',
+    current.mtime?new Date(current.mtime).toLocaleString():'',
+    current.size?formatBytes(current.size):'',
+  ].filter(Boolean).join(' · '):'选择左侧文件查看内容';
+
+  const coreHtml=core.map(item=>`
+    <button class="memory-file${selectedId===item.id?' active':''}" onclick="selectMemoryFile('core','${esc(item.id)}')">
+      <span class="memory-file-icon">${SVG.file}</span>
+      <span class="memory-file-main">
+        <span class="memory-file-title">${esc(item.title)}</span>
+        <span class="memory-file-desc">${esc(item.description||item.preview||'')}</span>
+      </span>
+    </button>`).join('');
+
+  const conversationCard=item=>`
+    <button class="memory-file compact${selectedId===item.id?' active':''}" onclick="selectMemoryFile('conversation','${esc(item.id)}')">
+      <span class="memory-file-icon">${SVG.history}</span>
+      <span class="memory-file-main">
+        <span class="memory-file-title">${esc(item.title)}</span>
+        <span class="memory-file-desc">${esc(item.summary||item.preview||'暂无预览')}</span>
+        <span class="memory-file-meta">${item.mtime?new Date(item.mtime).toLocaleDateString('zh-CN'):''}${item.mdType?' · '+esc(item.mdType):''}</span>
+      </span>
+    </button>`;
+  const allConversationHtml=allConversations.length?`
+    <div class="memory-month">
+      <div class="memory-month-title">全部 · 按时间 <span>${allConversations.length}</span></div>
+      ${allConversations.map(conversationCard).join('')}
+    </div>`:'<div class="memory-empty-small">还没有对话 Markdown。发送一次对话后会自动生成。</div>';
+  const typeConversationHtml=typeGroups.length?typeGroups.map(group=>`
+    <div class="memory-month">
+      <div class="memory-month-title">${esc(group.type)} <span>${group.files.length}</span></div>
+      ${(group.files||[]).map(conversationCard).join('')}
+    </div>`).join(''):'<div class="memory-empty-small">类型分类等待 Agent 归纳。当前还没有可分类的 Markdown。</div>';
+  const conversationHtml=conversationView==='type'?typeConversationHtml:allConversationHtml;
+
+  const shownContent=current?.type==='conversation'&&mode==='compact'?(current.compactContent||current.content||''):(current?.content||'');
+  const previewHtml=current?renderMessageMarkdown(shownContent):`<div class="memory-empty">
+    ${SVG.memory}
+    <h3>选择一份记忆</h3>
+    <p>核心记忆会注入 Hermes Agent，对话记忆来自聊天 Markdown 归档。</p>
+  </div>`;
+  const canEdit=current?.type==='core';
+
+  return `<div class="memory-view">
+    <div class="memory-topbar">
+      <div class="memory-crumb"><span>小脑瓜</span><span>/</span><strong>记忆储存</strong></div>
+      <div class="memory-workspace-path">工作区路径：<code>${esc(workspacePath)}</code></div>
+      <button class="btn btn-sm btn-secondary" onclick="loadMemoryStore(true)">刷新</button>
+    </div>
+    <div class="memory-subbar">
+      <span>核心记忆 ${stats.coreCount||core.length} 份</span>
+      <span>历史对话文件 ${stats.conversationCount||0} 份</span>
+      <span>AI摘要会把长对话压缩成可复用上下文，原文可随时切换</span>
+    </div>
+    <div class="memory-library">
+      <aside class="memory-sidebar">
+        <div class="memory-side-section">
+          <div class="memory-side-heading"><div><strong>核心文件</strong><small>引导角色、身份和工具指南。</small></div></div>
+          ${coreHtml||'<div class="memory-empty-small">核心记忆初始化中...</div>'}
+        </div>
+        <div class="memory-side-section fill">
+          <div class="memory-side-heading"><div><strong>历史对话文件</strong><small>默认按时间排序，也可按 Agent 推断的类型查看。</small></div></div>
+          <div class="memory-list-tabs">
+            <button class="${conversationView==='all'?'active':''}" onclick="setMemoryConversationView('all')">全部</button>
+            <button class="${conversationView==='type'?'active':''}" onclick="setMemoryConversationView('type')">按类型</button>
+          </div>
+          <div class="memory-conversation-list">${conversationHtml}</div>
+        </div>
+      </aside>
+      <section class="memory-reader">
+        <div class="memory-reader-head">
+          <div>
+            <div class="memory-reader-title">${esc(current?.file||current?.title||'记忆预览')}</div>
+            <div class="memory-reader-path">${esc(currentPath)}</div>
+            <div class="memory-reader-meta">${esc(headerMeta)}</div>
+          </div>
+          ${current?`<div class="memory-reader-actions">
+            ${current.type==='conversation'?`<button class="btn btn-xs ${mode==='compact'?'btn-primary':'btn-secondary'}" onclick="setMemoryMode('compact')">AI摘要</button>`:''}
+            <button class="btn btn-xs ${mode==='preview'?'btn-primary':'btn-secondary'}" onclick="setMemoryMode('preview')">预览</button>
+            <button class="btn btn-xs ${mode==='source'?'btn-primary':'btn-secondary'}" onclick="setMemoryMode('source')">${canEdit?'编辑':'原文'}</button>
+            ${canEdit&&mode==='source'?`<button class="btn btn-xs btn-secondary" onclick="cancelMemoryEdit()">取消</button><button class="btn btn-xs btn-primary" onclick="saveCoreMemory('${esc(current.id)}')">保存</button>`:''}
+          </div>`:''}
+        </div>
+        <div class="memory-content-label">
+          <span>内容</span>
+          ${current?`<span>${mode==='compact'?'AI可用的压缩上下文':mode==='source'?(canEdit?'编辑源码':'原始 Markdown'):'Markdown 预览'}</span>`:''}
+        </div>
+        <div class="memory-reader-body">
+          ${state.memory.loading?'<div class="memory-empty-small">正在读取记忆...</div>':mode==='source'&&current?`<textarea id="memoryEditor" class="memory-editor" ${canEdit?'':'readonly'}>${esc(state.memory.editDraft ?? current.content ?? '')}</textarea>`:`<div class="artifact-preview memory-preview markdown-body">${previewHtml}</div>`}
+        </div>
+      </section>
+    </div>
+  </div>`;
+}
+
+renderMemory=renderMemoryLibrary;
+
+function rememberMemorySidebarScroll(){
+  const el=document.querySelector('.memory-sidebar');
+  if(el) state.memory.sidebarScroll=el.scrollTop||0;
+}
+
+function restoreMemorySidebarScroll(){
+  const top=state.memory.sidebarScroll||0;
+  requestAnimationFrame(()=>{
+    const el=document.querySelector('.memory-sidebar');
+    if(el) el.scrollTop=top;
+  });
+}
+
+function setMemoryConversationView(view){
+  rememberMemorySidebarScroll();
+  state.memory.conversationView=view;
+  renderPage();
+  restoreMemorySidebarScroll();
+}
+
+async function loadMemoryStore(force){
+  if(force) state.memory.failed=false;
+  if(state.memory.data&&!force) return state.memory.data;
+  state.memory.loading=true;
+  const data=await apiGet('/api/memory');
+  state.memory.loading=false;
+  if(!data){state.memory.failed=true;toast('记忆读取失败，请重启后端服务','error');renderPage();return null}
+  state.memory.failed=false;
+  state.memory.data=data;
+  if(!state.memory.selectedId&&data.core?.length){
+    state.memory.selectedType='core';
+    state.memory.selectedId=data.core[0].id;
+  }
+  if(force) toast('记忆已刷新','success');
+  renderPage();
+  restoreMemorySidebarScroll();
+  if(state.memory.selectedId&&!state.memory.current){
+    selectMemoryFile(state.memory.selectedType,state.memory.selectedId);
+  }
+  return data;
+}
+async function selectMemoryFile(type,id){
+  rememberMemorySidebarScroll();
+  state.memory.selectedType=type;
+  state.memory.selectedId=id;
+  state.memory.mode=type==='conversation'?'compact':'preview';
+  state.memory.editDraft=null;
+  state.memory.loading=true;
+  renderPage();
+  restoreMemorySidebarScroll();
+  const path=type==='core'?'/api/memory/core/':'/api/memory/conversation/';
+  const item=await apiGet(path+encodeURIComponent(id));
+  state.memory.loading=false;
+  if(!item){toast('读取记忆失败','error');renderPage();return}
+  state.memory.current=item;
+  renderPage();
+  restoreMemorySidebarScroll();
+  requestAnimationFrame(()=>{
+    const body=document.querySelector('.memory-reader-body');
+    if(body) body.scrollTop=0;
+  });
+}
+function setMemoryMode(mode){
+  if(mode==='source'&&state.memory.current?.type==='core'){
+    state.memory.editDraft=state.memory.current.content||'';
+  }
+  state.memory.mode=mode;
+  renderPage();
+}
+function cancelMemoryEdit(){
+  state.memory.editDraft=null;
+  state.memory.mode='preview';
+  renderPage();
+}
+async function saveCoreMemory(id){
+  const content=$('#memoryEditor')?.value||'';
+  const item=await apiPut('/api/memory/core/'+encodeURIComponent(id),{content});
+  if(!item){toast('保存失败','error');return}
+  state.memory.current=item;
+  state.memory.data=null;
+  state.memory.selectedType='core';
+  state.memory.selectedId=id;
+  state.memory.editDraft=null;
+  state.memory.mode='preview';
+  await loadMemoryStore(true);
+  state.memory.current=item;
+  renderPage();
+  toast('核心记忆已保存','success');
 }
 
 function renderModels(){
@@ -2706,10 +3390,229 @@ function enableSelectedModels(){
 
 let _usageCache=null;
 let _usageFetchStarted=false;
+let usageRange=LS.get('hermes.usageRange','30d');
+let usageCustomStart=LS.get('hermes.usageCustomStart','');
+let usageCustomEnd=LS.get('hermes.usageCustomEnd','');
+function renderModelsV2(){
+  const cfg=state.modelsConfig||{};
+  const lib=Array.isArray(cfg.library)?cfg.library:[];
+  const enabled=lib.filter(m=>m.enabled!==false);
+  const scenarios=cfg.scenarios||{};
+  const scenarioFallback={chat:'普通对话',reasoning:'深度推理',image:'图像生成'};
+  const optionHtml=(selected)=>`<option value="">未设置</option>`+enabled.map(m=>`<option value="${esc(m.id)}"${selected===m.id?' selected':''}>${esc(m.name)} · ${esc(m.provider)}</option>`).join('');
+  const groups=lib.reduce((acc,m)=>{const k=m.provider||'custom';(acc[k]=acc[k]||[]).push(m);return acc},{});
+  const row=m=>`<div class="model-lib-row">
+    <label class="model-check"><input type="checkbox" ${m.enabled!==false?'checked':''} onchange="toggleLibraryModel('${esc(m.id)}',this.checked)"><span></span></label>
+    <div class="model-lib-main">
+      <div class="model-lib-name">${esc(m.name)}</div>
+      <div class="model-lib-meta">${esc(m.apiFormat||'openai-chat')} · ${esc(m.authType||'bearer')} · ${esc(m.base||'未填写 Base URL')}</div>
+    </div>
+    <div class="model-lib-tags">${(m.tags||[]).map(t=>`<span>${esc(t)}</span>`).join('')}</div>
+    <button class="btn btn-xs btn-secondary" onclick="editLibraryModel('${esc(m.id)}')">编辑</button>
+    <button class="btn btn-xs btn-secondary" onclick="testLibraryModel('${esc(m.id)}')">测试</button>
+    <button class="btn btn-xs btn-ghost" style="color:var(--c-error)" onclick="deleteLibraryModel('${esc(m.id)}')">删除</button>
+  </div>`;
+  const groupHtml=Object.entries(groups).sort(([a],[b])=>a.localeCompare(b)).map(([provider,items])=>`
+    <div class="model-provider-group">
+      <div class="model-provider-head"><strong>${esc(provider)}</strong><span>${items.filter(m=>m.enabled!==false).length}/${items.length} 已启用</span></div>
+      ${items.map(row).join('')}
+    </div>`).join('');
+  return `<div class="models-view">
+    <div class="page-header"><h2>模型配置</h2><button class="btn btn-sm btn-primary" onclick="addModelModal()">添加模型</button></div>
+    <div class="models-content">
+      <div class="model-layout">
+        <section class="model-panel">
+          <h3>应用场景</h3>
+          <p>对话页面默认使用“自动”，也就是这里配置的普通对话模型；角色和分身也会共用同一个模型库。</p>
+          ${[
+            ['chat','普通对话','日常问答、轻量任务，对模型要求不高。'],
+            ['reasoning','深度推理','复杂操作、代码、规划、长链路任务。'],
+            ['image','图像生成','有图像模型时，Agent 可调用它生成图片。'],
+          ].map(([id,title,desc])=>`<div class="scenario-row">
+            <div><strong>${title}</strong><span>${desc}</span></div>
+            <select onchange="setScenarioModel('${id}',this.value)">${optionHtml(scenarios[id])}</select>
+          </div>`).join('')}
+        </section>
+        <section class="model-panel">
+          <h3>获取模型</h3>
+          <p>右侧负责连接 Provider，通过 URL 和 Key 拉取模型列表；勾选后按 Provider 分组加入模型库。</p>
+          <div class="model-connector-grid">
+            <input id="mProvider" placeholder="Provider 名称，如 deepseek" value="${esc(state.model.provider||'deepseek')}">
+            <select id="mApiFormat" onchange="applyApiFormatPreset()">
+              <option value="openai-chat">OpenAI 兼容 / Chat Completions</option>
+              <option value="ollama">Ollama / 本地</option>
+              <option value="anthropic">Anthropic / Messages（预留）</option>
+              <option value="gemini">Gemini（预留）</option>
+            </select>
+            <input id="mBase" placeholder="Base URL" value="${esc(state.model.base||'https://api.deepseek.com')}">
+            <select id="mAuthType" onchange="toggleCustomAuthHeader()">
+              <option value="bearer">Bearer Token</option>
+              <option value="x-api-key">x-api-key</option>
+              <option value="api-key">api-key</option>
+              <option value="custom">自定义 Header</option>
+              <option value="none">无需认证</option>
+            </select>
+            <input id="mAuthHeader" placeholder="自定义认证 Header" style="display:none">
+            <input id="mKey" type="password" placeholder="API Key / Token" value="${esc(state.model.key||'')}">
+            <button class="btn btn-secondary" onclick="fetchModelsForLibrary()">获取模型</button>
+          </div>
+          <div id="modelMsg" class="model-msg"></div>
+          <div id="fetchModelsList" class="model-fetch-list" style="display:none">
+            <div class="model-fetch-actions"><button class="btn btn-xs btn-secondary" onclick="selectAllFetchModels()">全选</button><button class="btn btn-xs btn-secondary" onclick="deselectAllFetchModels()">取消全选</button><button class="btn btn-xs btn-primary" onclick="addSelectedFetchedModels()">加入模型库</button></div>
+            <div id="fetchModelsItems"></div>
+          </div>
+        </section>
+      </div>
+      <section class="model-panel">
+        <h3>模型库</h3>
+        <p>模型库共用给对话、角色配置和分身。一个模型可以同时用于多个场景或多个角色。</p>
+        <div class="model-lib-list">${lib.length?groupHtml:'<div class="empty-text">暂无模型，请先添加或获取模型。</div>'}</div>
+      </section>
+    </div>
+  </div>`;
+}
+
+renderModels=renderModelsV2;
+
+async function persistModelsConfig(cfg){
+  const data=await apiPut('/api/models',cfg);
+  if(data) state.modelsConfig=data;
+  return data;
+}
+async function setScenarioModel(scene,id){
+  const cfg=state.modelsConfig||{};
+  cfg.scenarios={...(cfg.scenarios||{}),[scene]:id};
+  await persistModelsConfig(cfg);
+  toast('场景模型已更新','success');
+  renderPage();
+}
+function toggleLibraryModel(id,on){
+  const cfg=state.modelsConfig||{};
+  const item=(cfg.library||[]).find(m=>m.id===id);
+  if(item){item.enabled=on;persistModelsConfig(cfg).then(()=>renderPage())}
+}
+function applyApiFormatPreset(){
+  const fmt=$('#mApiFormat')?.value||'openai-chat';
+  const base=$('#mBase');
+  const auth=$('#mAuthType');
+  if(fmt==='ollama'){
+    if(base&&!base.value) base.value='http://127.0.0.1:11434';
+    if(auth) auth.value='none';
+  }else if(fmt==='openai-chat'){
+    if(auth&&auth.value==='none') auth.value='bearer';
+  }else if(fmt==='anthropic'){
+    if(base&&!base.value) base.value='https://api.anthropic.com';
+    if(auth) auth.value='x-api-key';
+  }else if(fmt==='gemini'){
+    if(base&&!base.value) base.value='https://generativelanguage.googleapis.com';
+    if(auth) auth.value='x-api-key';
+  }
+  toggleCustomAuthHeader();
+}
+function toggleCustomAuthHeader(){
+  const input=$('#mAuthHeader');
+  if(input) input.style.display=$('#mAuthType')?.value==='custom'?'block':'none';
+}
+async function fetchModelsForLibrary(){
+  const provider=$('#mProvider')?.value?.trim()||'custom';
+  const base=$('#mBase')?.value?.trim();
+  const key=$('#mKey')?.value||'';
+  const apiFormat=$('#mApiFormat')?.value||'openai-chat';
+  const authType=$('#mAuthType')?.value||'bearer';
+  const authHeader=$('#mAuthHeader')?.value?.trim()||'';
+  const msg=$('#modelMsg');
+  if(!base){toast('请填写 Base URL','error');return}
+  if(msg) msg.textContent='正在获取模型...';
+  const data=await apiPost('/api/models/fetch-remote',{base,key,apiFormat,authType,authHeader});
+  if(!data||!data.models?.length){if(msg) msg.textContent='未找到模型或获取失败';return}
+  state._fetchedModels={provider,base,key,apiFormat,authType,authHeader,models:data.models.map(m=>typeof m==='string'?m:(m.id||m.name||''))};
+  const box=$('#fetchModelsList'), items=$('#fetchModelsItems');
+  if(box) box.style.display='block';
+  if(items) items.innerHTML=state._fetchedModels.models.filter(Boolean).map(name=>`<label class="model-fetch-item"><input type="checkbox" class="fetch-model-cb" value="${esc(name)}" checked><span>${esc(name)}</span></label>`).join('');
+  if(msg) msg.textContent='找到 '+data.models.length+' 个模型';
+  state.model={...state.model,provider,base,key};
+  save();
+}
+function selectAllFetchModels(){document.querySelectorAll('.fetch-model-cb').forEach(c=>c.checked=true)}
+function deselectAllFetchModels(){document.querySelectorAll('.fetch-model-cb').forEach(c=>c.checked=false)}
+async function addSelectedFetchedModels(){
+  const selected=[...document.querySelectorAll('.fetch-model-cb:checked')].map(c=>c.value);
+  const f=state._fetchedModels;
+  if(!f||!selected.length){toast('请先选择模型','info');return}
+  const cfg=state.modelsConfig||{library:[],scenarios:{}};
+  const existing=new Map((cfg.library||[]).map(m=>[m.id,m]));
+  selected.forEach(name=>{
+    existing.set(`${f.provider}:${name}`,{id:`${f.provider}:${name}`,provider:f.provider,name,base:f.base,key:f.key,enabled:true,tags:[],apiFormat:f.apiFormat,authType:f.authType,authHeader:f.authHeader});
+  });
+  cfg.library=[...existing.values()];
+  await persistModelsConfig(cfg);
+  toast('已加入 '+selected.length+' 个模型','success');
+  renderPage();
+}
+function addModelModal(){
+  openModelEditor();
+}
+
+function openModelEditor(model){
+  const isEdit=!!model;
+  openModal(`<div style="padding:24px;min-width:460px">
+    <h3 style="margin-bottom:16px;font-size:18px;font-weight:600">${isEdit?'编辑模型':'添加模型'}</h3>
+    <div style="display:grid;gap:12px">
+      <input id="addModelProvider" placeholder="Provider，例如 openai / deepseek / siliconflow" value="${esc(model?.provider||'')}">
+      <input id="addModelName" placeholder="模型名称，例如 gpt-4o" value="${esc(model?.name||'')}">
+      <select id="addModelApiFormat">
+        ${['openai-chat','ollama','anthropic','gemini'].map(v=>`<option value="${v}"${(model?.apiFormat||'openai-chat')===v?' selected':''}>${v==='openai-chat'?'OpenAI 兼容 / Chat Completions':v==='ollama'?'Ollama / 本地':v==='anthropic'?'Anthropic / Messages（预留）':'Gemini（预留）'}</option>`).join('')}
+      </select>
+      <input id="addModelBase" placeholder="Base URL" value="${esc(model?.base||'')}">
+      <select id="addModelAuthType" onchange="document.getElementById('addModelAuthHeader').style.display=this.value==='custom'?'block':'none'">
+        ${['bearer','x-api-key','api-key','custom','none'].map(v=>`<option value="${v}"${(model?.authType||'bearer')===v?' selected':''}>${v==='bearer'?'Bearer Token':v==='custom'?'自定义 Header':v==='none'?'无需认证':v}</option>`).join('')}
+      </select>
+      <input id="addModelAuthHeader" placeholder="自定义认证 Header" style="${(model?.authType||'bearer')==='custom'?'':'display:none'}" value="${esc(model?.authHeader||'')}">
+      <input id="addModelKey" type="password" placeholder="API Key" value="${esc(model?.key||'')}">
+      <div style="display:flex;gap:8px;justify-content:flex-end"><button class="btn btn-secondary" onclick="closeModal()">取消</button><button class="btn btn-primary" onclick="doSaveModel('${esc(model?.id||'')}')">${isEdit?'保存':'添加'}</button></div>
+    </div>
+  </div>`);
+}
+
+function editLibraryModel(id){
+  const model=getModelById(id);
+  if(!model){toast('模型不存在','error');return}
+  openModelEditor(model);
+}
+
+async function doSaveModel(existingId){
+  const provider=$('#addModelProvider')?.value?.trim()||'custom';
+  const name=$('#addModelName')?.value?.trim();
+  if(!name){toast('请填写模型名称','error');return}
+  const item={id:existingId||`${provider}:${name}`,provider,name,base:$('#addModelBase')?.value?.trim()||'',key:$('#addModelKey')?.value||'',enabled:true,tags:getModelById(existingId)?.tags||[],apiFormat:$('#addModelApiFormat')?.value||'openai-chat',authType:$('#addModelAuthType')?.value||'bearer',authHeader:$('#addModelAuthHeader')?.value?.trim()||''};
+  const data=await apiPost('/api/models/library',item);
+  if(data){state.modelsConfig=data;closeModal();renderPage();toast(existingId?'模型已保存':'模型已添加','success')}
+}
+async function deleteLibraryModel(id){
+  const okConfirm=await askConfirm('确认删除这个模型？如果它正在某个应用场景中使用，会自动清空该场景选择。');
+  if(!okConfirm) return;
+  const data=await fetch(apiBase()+'/api/models/library/'+encodeURIComponent(id),{method:'DELETE',cache:'no-store',headers:{'Cache-Control':'no-cache'}}).then(r=>r.json()).catch(()=>null);
+  if(data&&data.code===0){state.modelsConfig=data.data;renderPage();toast('模型已删除','info')}
+  else toast('删除失败','error');
+}
+async function testLibraryModel(id){
+  const m=getModelById(id);
+  if(!m){toast('模型不存在','error');return}
+  const r=await fetch(apiBase()+'/api/models/test',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({provider:{base:m.base,model:m.name,key:m.key,apiFormat:m.apiFormat,authType:m.authType,authHeader:m.authHeader}})});
+  const j=await r.json().catch(()=>({}));
+  if(j.ok) toast('连接成功: '+m.name,'success');
+  else toast('连接失败: '+(j.error||j.msg||'未知错误'),'error');
+}
+
 function renderUsage(){
   if(!_usageFetchStarted){
     _usageFetchStarted=true;
-    apiGet('/api/usage').then(data=>{
+    const qs=new URLSearchParams({range:usageRange});
+    if(usageRange==='custom'){
+      if(usageCustomStart) qs.set('start',usageCustomStart);
+      if(usageCustomEnd) qs.set('end',usageCustomEnd);
+    }
+    apiGet('/api/usage?'+qs.toString()).then(data=>{
       _usageCache=data||{};
       const el=$('#usageContent');
       if(el) el.innerHTML=buildUsageHtml(_usageCache);
@@ -2720,6 +3623,54 @@ function renderUsage(){
     <div class="usage-content" id="usageContent">${buildUsageHtml(_usageCache)}</div>
   </div>`;
 }
+function fmtTokens(n){
+  n=Number(n)||0;
+  if(n>=1000000) return (n/1000000).toFixed(1)+'M';
+  if(n>=1000) return (n/1000).toFixed(1)+'K';
+  return String(n);
+}
+function localDateInput(date){
+  const d=date instanceof Date?date:new Date(date);
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+}
+function setUsageRange(range){
+  usageRange=range||'30d';
+  if(usageRange==='custom' && (!usageCustomStart || !usageCustomEnd)){
+    const end=new Date();
+    const start=new Date(Date.now()-6*86400000);
+    usageCustomEnd=localDateInput(end);
+    usageCustomStart=localDateInput(start);
+    LS.set('hermes.usageCustomStart',usageCustomStart);
+    LS.set('hermes.usageCustomEnd',usageCustomEnd);
+  }
+  LS.set('hermes.usageRange',usageRange);
+  _usageFetchStarted=false;
+  _usageCache=null;
+  renderPage();
+}
+function applyUsageCustom(){
+  usageCustomStart=$('#usageStart')?.value||'';
+  usageCustomEnd=$('#usageEnd')?.value||'';
+  LS.set('hermes.usageCustomStart',usageCustomStart);
+  LS.set('hermes.usageCustomEnd',usageCustomEnd);
+  usageRange='custom';
+  LS.set('hermes.usageRange',usageRange);
+  _usageFetchStarted=false;
+  _usageCache=null;
+  renderPage();
+}
+function collectGroupUsage(){
+  const rooms=state.groupChat?.rooms||[];
+  let totalMessages=0,totalTokens=0;
+  const roomRows=rooms.map(room=>{
+    const messages=state.groupChat.messages?.[room.id]||[];
+    const tokens=messages.reduce((sum,m)=>sum+Math.ceil(String(m.content||'').length/3),0);
+    totalMessages+=messages.length;
+    totalTokens+=tokens;
+    return {name:room.name||'未命名房间',messages:messages.length,tokens,agents:(state.groupChat.agents?.[room.id]||[]).length};
+  }).sort((a,b)=>b.tokens-a.tokens);
+  return {totalMessages,totalTokens,rooms:roomRows};
+}
 function buildUsageHtml(data){
   data=data||{};
   const totalTokens=data.totalTokens||0;
@@ -2728,10 +3679,22 @@ function buildUsageHtml(data){
   const todayMessages=data.todayMessages||0;
   const totalSessions=data.totalSessions||0;
   const models=data.models||{};
-  const modelEntries=Object.entries(models);
-  const totalTokensStr=totalTokens>1000000?(totalTokens/1000000).toFixed(1)+'M':totalTokens>1000?(totalTokens/1000).toFixed(1)+'K':''+totalTokens;
+  const sources=data.sources||{};
+  const daily=data.daily||[];
+  const groupUsage=collectGroupUsage();
+  const modelEntries=Object.entries(models).sort((a,b)=>(b[1].tokens||0)-(a[1].tokens||0));
+  const sourceEntries=Object.entries(sources).sort((a,b)=>(b[1].tokens||0)-(a[1].tokens||0));
+  const totalTokensStr=fmtTokens(totalTokens);
   const estCost=(totalTokens*0.000003).toFixed(2);
   const activeSkills=state.skills.filter(s=>s.on||s.enabled).length;
+  const rangeTabs=[['today','1天'],['7d','7天'],['30d','30天'],['custom','自定义']];
+  const maxDaily=Math.max(...daily.map(d=>d.tokens||0),1);
+  const dailyHtml=daily.length?`<div class="chart-container">
+    <div class="chart-title">Token 趋势 · ${esc(data.range||usageRange)}</div>
+    <div class="bar-chart usage-bars">
+      ${daily.map(d=>`<div class="bar" style="height:${Math.max(4,Math.round((d.tokens||0)/maxDaily*100))}%" title="${esc(d.date)} · ${fmtTokens(d.tokens)} tokens · ${d.messages||0} 条"><span class="bar-label">${esc(d.label||'')}</span><span class="bar-tip">${fmtTokens(d.tokens)}</span></div>`).join('')}
+    </div>
+  </div>`:'';
   let modelBreakdownHtml='';
   if(modelEntries.length>0){
     const maxTokens=Math.max(...modelEntries.map(([,m])=>m.tokens||0),1);
@@ -2739,25 +3702,51 @@ function buildUsageHtml(data){
     modelBreakdownHtml=`<div class="chart-container"><div class="chart-title">模型用量分布</div><div class="breakdown-list">
       ${modelEntries.map(([name,m],i)=>{
         const pct=maxTokens>0?Math.round((m.tokens/maxTokens)*100):0;
-        return `<div class="breakdown-item"><span class="breakdown-name">${esc(name)}</span><div class="breakdown-bar-wrap"><div class="breakdown-bar-fill" style="width:${pct}%;background:${colors[i%colors.length]}"></div></div><span class="breakdown-value">${(m.tokens||0).toLocaleString()} tokens</span></div>`;
+        return `<div class="breakdown-item"><span class="breakdown-name">${esc(name)}</span><div class="breakdown-bar-wrap"><div class="breakdown-bar-fill" style="width:${pct}%;background:${colors[i%colors.length]}"></div></div><span class="breakdown-value">${fmtTokens(m.tokens)} / ${m.messages||0}条</span></div>`;
       }).join('')}
     </div></div>`;
   }
-  return `<div class="stat-cards">
-    <div class="stat-card color-block color-block-lime"><div class="stat-value">${totalMessages}</div><div class="stat-label">总消息数</div></div>
-    <div class="stat-card color-block color-block-lilac"><div class="stat-value">${totalTokensStr}</div><div class="stat-label">Token 用量</div></div>
-    <div class="stat-card color-block color-block-cream"><div class="stat-value">$${estCost}</div><div class="stat-label">预估费用</div></div>
+  const sourceHtml=sourceEntries.length?`<div class="chart-container"><div class="chart-title">来源用量</div><div class="usage-mini-grid">
+    ${sourceEntries.map(([name,s])=>`<div class="usage-mini-card"><strong>${esc(name)}</strong><span>${fmtTokens(s.tokens)} tokens</span><small>${s.messages||0} 条消息 · ${s.sessions||0} 个会话</small></div>`).join('')}
+  </div></div>`:'';
+  const groupHtml=`<div class="chart-container">
+    <div class="chart-title">分身用量（本地估算）</div>
+    ${groupUsage.rooms.length?`<div class="breakdown-list">${groupUsage.rooms.map(r=>{
+      const pct=Math.round((r.tokens||0)/Math.max(groupUsage.totalTokens,1)*100);
+      return `<div class="breakdown-item"><span class="breakdown-name">${esc(r.name)}</span><div class="breakdown-bar-wrap"><div class="breakdown-bar-fill" style="width:${Math.max(4,pct)}%;background:var(--c-accent)"></div></div><span class="breakdown-value">${fmtTokens(r.tokens)} / ${r.messages}条</span></div>`;
+    }).join('')}</div>`:'<div class="empty-state" style="height:120px"><span>暂无分身房间用量</span></div>'}
+  </div>`;
+  return `<div class="usage-toolbar">
+    <div class="usage-range-tabs">${rangeTabs.map(([id,label])=>`<button class="${usageRange===id?'active':''}" onclick="setUsageRange('${id}')">${label}</button>`).join('')}</div>
+    <button class="btn btn-xs btn-secondary" onclick="_usageFetchStarted=false;_usageCache=null;renderPage()">刷新</button>
+  </div>
+  <div class="usage-custom-row">
+    <span>自定义范围</span>
+    <input id="usageStart" type="date" value="${esc(usageCustomStart)}">
+    <span>至</span>
+    <input id="usageEnd" type="date" value="${esc(usageCustomEnd)}">
+    <button class="btn btn-xs btn-primary" onclick="applyUsageCustom()">应用</button>
+  </div>
+  <div class="stat-cards">
+    <div class="stat-card color-block color-block-lime"><div class="stat-value">${data.rangeMessages??todayMessages}</div><div class="stat-label">当前范围消息</div></div>
+    <div class="stat-card color-block color-block-lilac"><div class="stat-value">${fmtTokens(data.rangeTokens??todayTokens)}</div><div class="stat-label">当前范围 Token</div></div>
+    <div class="stat-card color-block color-block-cream"><div class="stat-value">$${estCost}</div><div class="stat-label">总预估费用</div></div>
     <div class="stat-card color-block color-block-mint"><div class="stat-value">${activeSkills}</div><div class="stat-label">活跃技能</div></div>
   </div>
   <div class="chart-container">
-    <div class="chart-title">今日统计</div>
+    <div class="chart-title">总览</div>
     <div style="display:flex;gap:24px;padding:16px 0">
       <div><span style="font-size:24px;font-weight:600">${todayMessages}</span><div style="font-size:12px;color:var(--c-ink-muted)">今日消息</div></div>
-      <div><span style="font-size:24px;font-weight:600">${todayTokens>1000?(todayTokens/1000).toFixed(1)+'K':todayTokens}</span><div style="font-size:12px;color:var(--c-ink-muted)">今日 Token</div></div>
+      <div><span style="font-size:24px;font-weight:600">${fmtTokens(todayTokens)}</span><div style="font-size:12px;color:var(--c-ink-muted)">今日 Token</div></div>
       <div><span style="font-size:24px;font-weight:600">${totalSessions}</span><div style="font-size:12px;color:var(--c-ink-muted)">总会话数</div></div>
+      <div><span style="font-size:24px;font-weight:600">${totalMessages}</span><div style="font-size:12px;color:var(--c-ink-muted)">总消息数</div></div>
     </div>
   </div>
-  ${modelBreakdownHtml}`;
+  ${dailyHtml}
+  ${modelBreakdownHtml}
+  ${sourceHtml}
+  ${groupHtml}
+  <div class="usage-note">说明：当前 Token 和费用为本地估算，后续如果模型 API 返回真实 usage，可在后端写入 usage 日志后替换为精确统计。</div>`;
 }
 
 let _channelsCache=null;
@@ -2780,11 +3769,19 @@ function buildChannelsHtml(data){
   if(!platforms.length) return '<div class="empty-state"><span>暂无频道配置</span></div>';
   const icons={telegram:'✈️',discord:'🎮',slack:'💬',dingtalk:'🔔',feishu:'🐦',wechat:'💬'};
   return `<div class="platform-grid">
-    ${platforms.map(p=>`<div class="platform-card" style="cursor:pointer" onclick="editGateway('${esc(p.id)}');navigate('settingsPage');settingsTab='gateways'">
+    ${platforms.map(p=>`<div class="platform-card" style="cursor:pointer" onclick="editChannel('${esc(p.id)}')">
       <div class="platform-header"><span class="platform-icon">${icons[p.id]||'📡'}</span><div><div class="platform-name">${esc(p.name)}</div><span class="platform-status ${p.configured&&p.enabled?'connected':'disconnected'}">${p.configured&&p.enabled?'已连接':'未连接'}</span></div></div>
       <div style="font-size:13px;color:var(--c-ink-muted)">${esc(p.desc||'')}</div>
     </div>`).join('')}
   </div>`;
+}
+
+async function editChannel(id){
+  if(!_channelsCache || !_channelsCache.platforms?.length){
+    _channelsCache=await apiGet('/api/gateway')||{enabled:true,platforms:[]};
+  }
+  _gatewaysCache=_channelsCache;
+  editGateway(id);
 }
 
 function renderSettings(){
@@ -2802,6 +3799,9 @@ function renderSettings(){
         <div class="settings-item"><div><div class="settings-label">快速模式</div><div class="settings-desc">跳过 Hermes Agent，直接调用大模型 API（更快但不支持工具调用）</div></div>
           <label class="toggle"><input type="checkbox" id="sQuick" ${state.settings.quickMode?'checked':''}><span class="toggle-slider"></span></label>
         </div>
+        <div class="settings-item"><div><div class="settings-label">回复速度优化</div><div class="settings-desc">普通 Agent 模式会保留工具链；想要更快首 token，可开启快速模式并把历史记录保留控制在 12-20 轮。</div></div>
+          <span style="font-size:12px;color:var(--c-ink-muted)">当前历史：${esc(state.settings.history||20)} 轮</span>
+        </div>
         <div class="settings-item"><div><div class="settings-label">历史记录保留</div><div class="settings-desc">保留的对话轮数</div></div>
           <input id="sHistory" type="number" value="${state.settings.history}" style="width:80px">
         </div>
@@ -2810,6 +3810,9 @@ function renderSettings(){
         <div class="settings-section-title">API 配置</div>
         <div class="settings-item"><div><div class="settings-label">Hermes API 地址</div><div class="settings-desc">后端服务地址</div></div>
           <input id="sApi" value="${esc(state.settings.api)}" style="width:280px">
+        </div>
+        <div class="settings-item"><div><div class="settings-label">MD 输出库目录</div><div class="settings-desc">右侧“历史文件”读取 Agent 输出文章/报告等 Markdown 的独立文件夹；留空使用 backend/data/output-md。</div></div>
+          <input id="sMdLibraryDir" value="${esc(state.settings.mdLibraryDir||'')}" placeholder="例如 C:\\Users\\Administrator\\Documents\\HermesMD" style="width:360px">
         </div>
       </div>
       <div class="settings-section">
@@ -2833,7 +3836,7 @@ function renderSettings(){
 }
 
 function saveSettings(){
-  state.settings={lang:$('#sLang').value,stream:$('#sStream').checked,quickMode:$('#sQuick').checked,history:parseInt($('#sHistory').value)||20,systemPrompt:$('#sSys').value,api:$('#sApi').value.trim(),style:$('#sStyle')?.value||'minimal'};
+  state.settings={lang:$('#sLang').value,stream:$('#sStream').checked,quickMode:$('#sQuick').checked,history:parseInt($('#sHistory').value)||20,systemPrompt:$('#sSys').value,api:$('#sApi').value.trim(),style:$('#sStyle')?.value||'minimal',mdLibraryDir:$('#sMdLibraryDir')?.value?.trim()||''};
   save();
   apiPut('/api/settings', {
     lang: state.settings.lang,
@@ -2843,6 +3846,7 @@ function saveSettings(){
     systemPrompt: state.settings.systemPrompt,
     style: state.settings.style,
     api: state.settings.api || '',
+    mdLibraryDir: state.settings.mdLibraryDir || '',
   });
   toast('设置已保存','success');pingApi();
 }
@@ -2869,9 +3873,11 @@ async function pingApi(){
 }
 
 function resetAll(){
-  if(!confirm('确认重置所有本地数据？')) return;
-  ['hermes.settings','hermes.model','hermes.skills','hermes.chats','hermes.memories','hermes.gateways','hermes.theme'].forEach(k=>localStorage.removeItem(k));
-  location.reload();
+  askConfirm('确认重置所有本地数据？这会清空当前浏览器里的 UI 设置、分身、角色等本地状态。').then(ok=>{
+    if(!ok) return;
+    ['hermes.settings','hermes.model','hermes.skills','hermes.chats','hermes.memories','hermes.gateways','hermes.theme'].forEach(k=>localStorage.removeItem(k));
+    location.reload();
+  });
 }
 
 let _profilesCache=null;
@@ -2953,11 +3959,13 @@ function doEditProfile(id){
   closeModal();renderPage();toast('角色已更新','success');
 }
 function useProfile(id){
-  const p=_profilesCache.find(x=>x.id===id);
+  const p=getProfiles().find(x=>x.id===id);
   if(!p) return;
-  state.model.model=p.model;
+  state.activeProfile=p.id;
+  state.model.model=p.model||scenarioModel('chat');
   if(p.systemPrompt) state.settings.systemPrompt=p.systemPrompt;
   save();toast('已切换到角色: '+p.name,'success');
+  if(state.page==='chat') renderPage();
 }
 function deleteProfile(id){
   _profilesCache=_profilesCache.filter(x=>x.id!==id);
@@ -3058,60 +4066,158 @@ function buildLogsHtml(logs){
 let _filesCache=null;
 let _filesPath='';
 let _fileContentView=null;
+let _filesMeta=null;
+let _filesSelected='';
+function renderProfilesV2(){
+  const profiles=getProfiles();
+  const models=getEnabledModels();
+  const modelOptions=(selected)=>`<option value="auto"${selected==='auto'?' selected':''}>自动（按场景）</option>`+models.map(m=>`<option value="${esc(m.id)}"${selected===m.id||selected===m.name?' selected':''}>${esc(m.name)} · ${esc(m.provider)}</option>`).join('');
+  return `<div class="profiles-view">
+    <div class="page-header"><h2>角色配置</h2><button class="btn btn-sm btn-primary" onclick="addProfileV2()">${SVG.plus} 新建角色</button></div>
+    <div class="profiles-content">
+      <div class="profile-grid">${profiles.map(p=>`<div class="profile-card" onclick="editProfileV2('${p.id}')">
+        <div class="profile-avatar" style="background:${p.color}">${esc(p.name.charAt(0))}</div>
+        <div class="profile-name">${esc(p.name)}</div>
+        <div class="profile-model">${esc(p.modelId==='auto'?'自动 · '+scenarioModel('chat'):(getModelById(p.modelId)?.name||p.model||'未设置'))}</div>
+        <p style="font-size:12px;color:var(--c-ink-muted);line-height:1.5;margin-top:8px">${esc((p.systemPrompt||'通用角色').slice(0,90))}</p>
+        <div style="display:flex;gap:4px;margin-top:12px"><button class="btn btn-xs btn-primary" onclick="event.stopPropagation();useProfile('${p.id}')">用于对话</button>${p.id!=='default'?`<button class="btn btn-xs btn-ghost" style="color:var(--c-error)" onclick="event.stopPropagation();deleteProfile('${p.id}')">删除</button>`:''}</div>
+      </div>`).join('')}</div>
+    </div>
+  </div>`;
+}
+renderProfiles=renderProfilesV2;
+function profileModal(profile){
+  const p=profile||{id:'',name:'',modelId:'auto',systemPrompt:''};
+  const models=getEnabledModels();
+  const opts=`<option value="auto"${p.modelId==='auto'?' selected':''}>自动（按场景）</option>`+models.map(m=>`<option value="${esc(m.id)}"${p.modelId===m.id||p.model===m.name?' selected':''}>${esc(m.name)} · ${esc(m.provider)}</option>`).join('');
+  openModal(`<div style="padding:24px;min-width:460px">
+    <h3 style="margin-bottom:16px;font-size:18px;font-weight:600">${profile?'编辑角色':'新建角色'}</h3>
+    <div style="display:grid;gap:12px">
+      <input id="pfName" placeholder="角色名称" value="${esc(p.name)}">
+      <select id="pfModel">${opts}</select>
+      <textarea id="pfPrompt" placeholder="系统提示词 / 角色能力" style="min-height:110px">${esc(p.systemPrompt||'')}</textarea>
+      <div style="font-size:12px;color:var(--c-ink-muted)">同一个模型可以被多个角色共用；如果选择自动，会跟随模型配置里的应用场景。</div>
+      <div style="display:flex;gap:8px;justify-content:flex-end"><button class="btn btn-secondary" onclick="closeModal()">取消</button><button class="btn btn-primary" onclick="${profile?`doEditProfileV2('${p.id}')`:'doAddProfileV2()'}">保存</button></div>
+    </div>
+  </div>`);
+}
+function addProfileV2(){profileModal(null)}
+function editProfileV2(id){profileModal(getProfiles().find(p=>p.id===id))}
+function doAddProfileV2(){
+  const name=$('#pfName')?.value?.trim();
+  if(!name){toast('请填写角色名称','error');return}
+  const modelId=$('#pfModel')?.value||'auto';
+  const model=getModelById(modelId)?.name||scenarioModel('chat');
+  const colors=['var(--c-block-lime)','var(--c-block-lilac)','var(--c-block-cream)','var(--c-block-mint)','var(--c-block-coral)'];
+  _profilesCache=getProfiles();
+  _profilesCache.push({id:'pf_'+Date.now(),name,modelId,model,systemPrompt:$('#pfPrompt')?.value?.trim()||'',color:colors[_profilesCache.length%colors.length]});
+  LS.set('hermes.profiles',_profilesCache);closeModal();renderPage();toast('角色已保存','success');
+}
+function doEditProfileV2(id){
+  const p=getProfiles().find(x=>x.id===id); if(!p) return;
+  p.name=$('#pfName')?.value?.trim()||p.name;
+  p.modelId=$('#pfModel')?.value||'auto';
+  p.model=getModelById(p.modelId)?.name||scenarioModel('chat');
+  p.systemPrompt=$('#pfPrompt')?.value?.trim()||'';
+  LS.set('hermes.profiles',_profilesCache);closeModal();renderPage();toast('角色已更新','success');
+}
+
 function renderFiles(){
   if(!_filesCache){
-    _filesPath='';
-    apiGet('/api/system/files').then(data=>{
-      if(data){_filesCache=data.items||[];_filesPath=data.path||''}
+    const initialDir=state.settings.mdLibraryDir||'';
+    apiGet('/api/system/files'+(initialDir?'?dir='+encodeURIComponent(initialDir):'')).then(data=>{
+      if(data){_filesCache=data.items||[];_filesPath=data.path||'';_filesMeta=data}
       else _filesCache=[];
-      const el=$('#filesTree');
-      if(el) el.innerHTML=buildFilesHtml(_filesCache);
+      const root=$('#filesContent');
+      if(root) root.innerHTML=buildFilesViewHtml();
     });
     _filesCache=[];
   }
   return `<div class="files-view">
     <div class="page-header"><h2>文件</h2>
-      <button class="btn btn-sm btn-secondary" onclick="_filesCache=null;renderPage()">${SVG.upload} 刷新</button>
+      <div class="header-actions">
+        <button class="btn btn-sm btn-secondary" onclick="openCurrentFilesFolder()">打开当前目录</button>
+        <button class="btn btn-sm btn-secondary" onclick="_filesCache=null;_fileContentView=null;renderPage()">${SVG.upload} 刷新</button>
+      </div>
     </div>
-    <div class="files-content"><div class="files-layout">
-      <div class="files-tree" id="filesTree">
-        <div style="font-size:12px;color:var(--c-ink-muted);padding:4px 12px;margin-bottom:4px">${esc(_filesPath||'加载中…')}</div>
-        ${buildFilesHtml(_filesCache)}
+    <div class="files-content" id="filesContent">${buildFilesViewHtml()}</div>
+  </div>`;
+}
+function buildFilesViewHtml(){
+  const roots=_filesMeta?.roots||[];
+  const current=_filesPath||'加载中…';
+  const crumbs=current.split(/[\\/]/).filter(Boolean);
+  return `<div class="files-layout">
+    <aside class="files-tree" id="filesTree">
+      <div class="files-root-list">
+        ${roots.map(r=>`<button class="${current===r.path?'active':''}" onclick="browseFilesAbs('${encodeURIComponent(r.path)}')">${esc(r.label)}</button>`).join('')}
       </div>
-      <div class="files-main" id="filesMain">
-        ${_fileContentView||'<div class="empty-state"><svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/></svg><span>选择文件查看内容</span></div>'}
-      </div>
-    </div></div>
+      <div class="files-current-path" title="${esc(current)}">${esc(current)}</div>
+      <div class="files-crumbs">${crumbs.slice(-4).map(c=>`<span>${esc(c)}</span>`).join('<b>/</b>')}</div>
+      ${_filesMeta?.parent?`<button class="file-item folder up" onclick="browseFilesAbs('${encodeURIComponent(_filesMeta.parent)}')">← 上一级</button>`:''}
+      ${buildFilesHtml(_filesCache)}
+    </aside>
+    <section class="files-main" id="filesMain">
+      ${_fileContentView||'<div class="files-empty"><div>'+SVG.files+'</div><h3>选择一个文件预览</h3><p>这里用于查看工作区、数据目录和 MD 输出库。点击文件夹进入，点击文件读取内容。</p></div>'}
+    </section>
   </div>`;
 }
 function buildFilesHtml(items){
   if(!items||!items.length) return '<div style="font-size:13px;color:var(--c-ink-muted);padding:8px 12px">空目录</div>';
   return items.map(f=>`
-    <div class="file-item${f.type==='folder'?' folder':''}" style="padding-left:12px" onclick="${f.type==='folder'?`browseFiles('${esc(f.name)}')`:`viewFile('${esc(f.name)}')`}">
+    <div class="file-item${f.type==='folder'?' folder':''}${_filesSelected===f.path?' active':''}" style="padding-left:12px" onclick="${f.type==='folder'?`browseFilesAbs('${encodeURIComponent(f.path)}')`:`viewFileAbs('${encodeURIComponent(f.path)}')`}">
       ${f.type==='folder'?SVG.folder:SVG.file}
       <span>${esc(f.name)}</span>
-      ${f.size?`<span style="font-size:11px;color:var(--c-ink-muted);margin-left:auto">${(f.size/1024).toFixed(1)}KB</span>`:''}
+      ${f.size?`<span style="font-size:11px;color:var(--c-ink-muted);margin-left:auto">${formatBytes(f.size)}</span>`:''}
     </div>
   `).join('');
 }
 async function browseFiles(name){
-  const dir=name||_filesPath;
+  const dir=_filesPath?_filesPath+'/'+name:name;
+  return browseFilesAbs(encodeURIComponent(dir));
+}
+async function browseFilesAbs(encodedPath){
+  const dir=decodeURIComponent(encodedPath||'');
   const data=await apiGet('/api/system/files?dir='+encodeURIComponent(dir));
-  if(data){_filesCache=data.items||[];_filesPath=data.path||dir}
-  const el=$('#filesTree');
-  if(el) el.innerHTML=`<div style="font-size:12px;color:var(--c-ink-muted);padding:4px 12px;margin-bottom:4px">${esc(_filesPath)}</div>`+buildFilesHtml(_filesCache);
+  if(data){_filesCache=data.items||[];_filesPath=data.path||dir;_filesMeta=data;_filesSelected=''}
+  const root=$('#filesContent');
+  if(root) root.innerHTML=buildFilesViewHtml();
 }
 async function viewFile(name){
   const p=_filesPath?_filesPath+'/'+name:name;
+  return viewFileAbs(encodeURIComponent(p));
+}
+async function viewFileAbs(encodedPath){
+  const p=decodeURIComponent(encodedPath||'');
+  _filesSelected=p;
   const data=await apiGet('/api/system/file-content?path='+encodeURIComponent(p));
   const el=$('#filesMain');
   if(!el) return;
   if(data){
-    _fileContentView=`<div style="padding:16px"><div style="display:flex;align-items:center;gap:8px;margin-bottom:12px"><button class="btn btn-secondary btn-sm" onclick="_fileContentView=null;document.getElementById('filesMain').innerHTML='<div class=empty-state><span>选择文件查看内容</span></div>'">← 返回</button><span style="font-size:13px;color:var(--c-ink-muted)">${esc(data.path)}</span><span style="font-size:11px;color:var(--c-ink-muted)">${(data.size/1024).toFixed(1)}KB</span></div><pre style="white-space:pre-wrap;font-family:var(--font-mono);font-size:13px;background:var(--c-surface1);padding:16px;border-radius:var(--r-lg);overflow:auto;max-height:calc(100vh - 200px)">${esc(data.content)}</pre></div>`;
-    el.innerHTML=_fileContentView;
+    const isMd=(data.ext||data.path||'').toLowerCase().endsWith('.md');
+    const preview=isMd?`<div class="file-preview-render artifact-preview markdown-body">${renderMessageMarkdown(data.content)}</div>`:`<pre class="file-preview-source">${esc(data.content)}</pre>`;
+    _fileContentView=`<div class="file-preview-panel"><div class="file-preview-head"><button class="btn btn-secondary btn-sm" onclick="clearFilePreview()">← 返回</button><div><strong>${esc(data.path.split(/[\\/]/).pop())}</strong><span>${esc(data.path)}</span></div><em>${formatBytes(data.size)}</em></div>${preview}</div>`;
+    const root=$('#filesContent');
+    if(root){
+      root.innerHTML=buildFilesViewHtml();
+      enhanceMessageMarkdown(root);
+    } else {
+      el.innerHTML=_fileContentView;
+      enhanceMessageMarkdown(el);
+    }
   } else {
     el.innerHTML='<div class="empty-state"><span>无法读取文件内容</span></div>';
   }
+}
+function clearFilePreview(){
+  _fileContentView=null;
+  _filesSelected='';
+  const root=$('#filesContent');
+  if(root) root.innerHTML=buildFilesViewHtml();
+}
+async function openCurrentFilesFolder(){
+  if(!_filesPath) return;
+  await apiPost('/api/system/open-path',{path:_filesPath});
 }
 
 function renderTerminal(){
@@ -3184,6 +4290,30 @@ function closeModal(){
   if(overlay) overlay.classList.remove('show');
 }
 
+function askConfirm(message){
+  return new Promise(resolve=>{
+    const safe=esc(message||'确认继续？');
+    openModal(`
+      <div class="confirm-modal">
+        <h3>请确认</h3>
+        <p>${safe}</p>
+        <div class="rename-actions">
+          <button class="btn btn-ghost" id="confirmCancelBtn">取消</button>
+          <button class="btn btn-primary" id="confirmOkBtn">确认</button>
+        </div>
+      </div>
+    `);
+    const done=(value)=>{ closeModal(); resolve(value); };
+    setTimeout(()=>{
+      const cancel=document.getElementById('confirmCancelBtn');
+      const ok=document.getElementById('confirmOkBtn');
+      if(cancel) cancel.onclick=()=>done(false);
+      if(ok) ok.onclick=()=>done(true);
+      if(ok) ok.focus();
+    },0);
+  });
+}
+
 function initNotificationSSE(){
   const base = (apiBase() || window.location.origin).replace(/\/$/, '');
   const es = new EventSource(base + '/api/sse/notify');
@@ -3219,7 +4349,7 @@ const AgentAsk={
   _activeTab:0,
   _answers:{},
   _resolve:null,
-  _overlayEl:null,
+  _needsScroll:false,
 
   ask(questions,opts){
     opts=opts||{};
@@ -3229,13 +4359,16 @@ const AgentAsk={
       title:opts.title||'Agent 提问',
       questions:questions.map((q,i)=>({
         id:q.id||('q_'+i),
-        label:q.label||('问题 '+(i+1)),
-        type:q.type||'single',
-        options:q.options||[],
+        label:q.label||q.question||q.header||('问题 '+(i+1)),
+        type:q.type||(q.multiSelect?'multi':'single'),
+        options:(q.options||[]).map(opt=>{
+          if(typeof opt==='string') return {label:opt,value:opt};
+          return {...opt,label:opt.label??opt.value??'',value:opt.value??opt.label??''};
+        }),
         hint:q.hint||'',
         required:q.required!==false,
-        maxLength:q.maxLength||500,
-        placeholder:q.placeholder||'补充说明（可选）…',
+        maxLength:q.maxLength||0,
+        placeholder:q.placeholder||q.inputPlaceholder||'请输入补充说明…',
       })),
       createdAt:Date.now(),
     };
@@ -3244,25 +4377,11 @@ const AgentAsk={
     this._session.questions.forEach(q=>{
       this._answers[q.id]={selected:[],custom:''};
     });
+    this._needsScroll=true;
     this._render();
-    this._showOverlay();
     return new Promise(resolve=>{
       this._resolve=resolve;
     });
-  },
-
-  _showOverlay(){
-    if(!this._overlayEl){
-      this._overlayEl=document.createElement('div');
-      this._overlayEl.className='agent-overlay';
-      this._overlayEl.onclick=()=>{};
-      document.body.appendChild(this._overlayEl);
-    }
-    requestAnimationFrame(()=>this._overlayEl.classList.add('show'));
-  },
-
-  _hideOverlay(){
-    if(this._overlayEl) this._overlayEl.classList.remove('show');
   },
 
   _render(){
@@ -3273,32 +4392,50 @@ const AgentAsk={
     const ans=this._answers[q.id];
     const answeredCount=s.questions.filter(qq=>this._isAnswered(qq.id)).length;
     const allAnswered=answeredCount===s.questions.length;
+    const isCurrentAnswered=this._isAnswered(q.id);
+    const hasNextQuestion=this._activeTab < s.questions.length - 1;
+    const isSingle = q.type==='single';
+    const indicatorCls = isSingle ? 'agent-option-radio' : 'agent-option-check';
+    const clickFn = isSingle ? '_selectSingle' : '_toggleMulti';
+    const otherTitle = '其他';
 
-    let tabsHtml=s.questions.map((qq,i)=>{
-      const isAnswered=this._isAnswered(qq.id);
-      const cls=i===this._activeTab?'active':'';
-      const dot=isAnswered?'<span class="tab-answered"></span>':'<span class="tab-pending"></span>';
-      return `<button class="agent-tab ${cls}" onclick="AgentAsk._switchTab(${i})">${esc(qq.label)}${dot}</button>`;
+    let tabsHtml='';
+    if (s.questions.length > 1) {
+      tabsHtml = `<div class="agent-tabs">` + s.questions.map((qq,i)=>{
+        const isAnswered=this._isAnswered(qq.id);
+        const cls=i===this._activeTab?'active':'';
+        const dot=isAnswered?'<span class="tab-answered"></span>':'<span class="tab-pending"></span>';
+        return `<button class="agent-tab ${cls}" onclick="AgentAsk._switchTab(${i})">${esc(qq.label)}${dot}</button>`;
+      }).join('') + `</div>`;
+    } else {
+      tabsHtml = `<div class="agent-panel-title-compact">${esc(s.title)}</div>`;
+    }
+
+    let optionsHtml = q.options.map(opt=>{
+      const value = String(opt.value ?? opt.label ?? '');
+      const sel=ans.selected.includes(value)?'selected':'';
+      const descHtml = opt.description ? `<div class="agent-option-desc">${esc(opt.description)}</div>` : '';
+      const encodedValue = encodeURIComponent(value).replace(/'/g,'%27');
+      return `<div class="agent-option ${sel}" role="button" tabindex="0" onclick="AgentAsk.${clickFn}(this, '${q.id}', '${encodedValue}')">
+        <div class="${indicatorCls}"></div>
+        <div class="agent-option-text">
+          <div class="agent-option-label">${esc(opt.label)}</div>
+          ${descHtml}
+        </div>
+      </div>`;
     }).join('');
 
-    let optionsHtml='';
-    if(q.type==='single'){
-      optionsHtml=q.options.map((opt,oi)=>{
-        const sel=ans.selected.includes(opt.value)?'selected':'';
-        return `<div class="agent-option ${sel}" onclick="AgentAsk._selectSingle('${q.id}','${esc(opt.value)}')">
-          <div class="agent-option-radio"></div>
-          <span>${esc(opt.label)}</span>
-        </div>`;
-      }).join('');
-    } else {
-      optionsHtml=q.options.map((opt,oi)=>{
-        const sel=ans.selected.includes(opt.value)?'selected':'';
-        return `<div class="agent-option ${sel}" onclick="AgentAsk._toggleMulti('${q.id}','${esc(opt.value)}')">
-          <div class="agent-option-check"></div>
-          <span>${esc(opt.label)}</span>
-        </div>`;
-      }).join('');
-    }
+    const isOtherSelected = ans.selected.includes('__OTHER__');
+    const inlineTextarea = `<textarea class="agent-inline-textarea" id="agentCustomInput_${q.id}" rows="2" placeholder="${esc(q.placeholder)}" onclick="event.stopPropagation()" onfocus="AgentAsk._selectOtherInput(this, '${q.id}', '${q.type}')" oninput="AgentAsk._updateCustom('${q.id}',this.value)">${esc(ans.custom)}</textarea>`;
+    optionsHtml += `
+      <div class="agent-option agent-option-other ${isOtherSelected ? 'selected' : ''}" role="button" tabindex="0" onclick="AgentAsk._selectOther(this, '${q.id}', '${q.type}')">
+        <div class="${indicatorCls}"></div>
+        <div class="agent-option-text">
+          <div class="agent-option-label">${otherTitle}</div>
+        </div>
+        ${inlineTextarea}
+      </div>
+    `;
 
     let progressHtml=s.questions.map((qq,i)=>{
       const isAnswered=this._isAnswered(qq.id);
@@ -3307,26 +4444,23 @@ const AgentAsk={
     }).join('');
 
     slot.innerHTML=`
-      <div class="agent-panel">
-        <div class="agent-panel-header">
-          <div class="agent-panel-title">
-            <span>${esc(s.title)}</span>
-            <span class="agent-badge">AGENT</span>
-          </div>
-          <button class="agent-panel-close" onclick="AgentAsk.dismiss()">
+      <div class="agent-panel agent-panel-floating" role="dialog" aria-modal="true" aria-label="${esc(s.title)}">
+        <div class="agent-panel-top">
+          ${tabsHtml}
+          <button class="agent-panel-close" onclick="AgentAsk.dismiss()" title="取消提问" aria-label="取消提问">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
           </button>
         </div>
-        <div class="agent-tabs">${tabsHtml}</div>
         <div class="agent-body">
           <div class="agent-question">
-            <div class="agent-question-label">${esc(q.label)}</div>
+            <div class="agent-question-header">
+              <div>
+                <div class="agent-panel-kicker">${esc(s.title)}</div>
+                <div class="agent-question-label">${esc(q.label)}</div>
+              </div>
+            </div>
             ${q.hint?`<div class="agent-question-hint">${esc(q.hint)}</div>`:''}
             <div class="agent-options">${optionsHtml}</div>
-            <div class="agent-custom-input">
-              <label>补充说明</label>
-              <textarea id="agentCustomInput_${q.id}" placeholder="${esc(q.placeholder)}" maxlength="${q.maxLength}" oninput="AgentAsk._updateCustom('${q.id}',this.value)">${esc(ans.custom)}</textarea>
-            </div>
           </div>
         </div>
         <div class="agent-footer">
@@ -3335,14 +4469,22 @@ const AgentAsk={
             <span>${answeredCount}/${s.questions.length} 已回答</span>
           </div>
           <div class="agent-footer-right">
-            <button class="btn btn-secondary btn-sm" onclick="AgentAsk._submitCurrent()">提交当前</button>
-            <button class="btn btn-primary btn-sm" onclick="AgentAsk._submitAll()" ${allAnswered?'':'disabled style="opacity:0.5"'}>全部提交</button>
+            <button class="btn btn-secondary btn-sm agent-next-btn" onclick="AgentAsk._submitCurrent()" ${isCurrentAnswered?'':'disabled style="opacity:0.5"'}>${hasNextQuestion?'下一步':'提交当前'}</button>
+            <button class="btn btn-primary btn-sm agent-submit-all" onclick="AgentAsk._submitAll()" ${allAnswered?'':'disabled style="opacity:0.5"'}>全部提交</button>
           </div>
         </div>
       </div>`;
 
     const inputArea=$('#chatInputArea');
     if(inputArea) inputArea.classList.add('has-agent-panel');
+
+    if (this._needsScroll) {
+      this._needsScroll = false;
+      setTimeout(() => {
+        const area = $('#messagesArea');
+        if (area) area.scrollTop = area.scrollHeight;
+      }, 50);
+    }
   },
 
   _isAnswered(qId){
@@ -3350,7 +4492,9 @@ const AgentAsk={
     if(!a) return false;
     const q=this._session.questions.find(qq=>qq.id===qId);
     if(!q) return false;
-    if(q.required) return a.selected.length>0||a.custom.trim().length>0;
+    if(q.required) {
+      return a.selected.length > 0;
+    }
     return true;
   },
 
@@ -3359,27 +4503,139 @@ const AgentAsk={
     this._render();
   },
 
-  _selectSingle(qId,value){
-    this._answers[qId].selected=[value];
-    this._render();
+  _selectSingle(target,qId,value){
+    if(target?.closest('textarea')) return;
+    const decodedValue=decodeURIComponent(value);
+    this._answers[qId].selected=[decodedValue];
+    target?.closest('.agent-options')?.querySelectorAll('.agent-option.selected').forEach(el=>el.classList.remove('selected'));
+    target?.classList.add('selected');
+    this._refreshStatus();
+    const q=this._session?.questions[this._activeTab];
+    const currentIdx=this._activeTab;
+    if(q?.type==='single' && currentIdx < this._session.questions.length - 1){
+      setTimeout(()=>{
+        if(this._session && this._activeTab===currentIdx) {
+          this._activeTab=currentIdx+1;
+          this._render();
+        }
+      }, 180);
+    }
   },
 
-  _toggleMulti(qId,value){
+  _toggleMulti(target,qId,value){
+    if(target?.closest('textarea')) return;
+    const decodedValue = decodeURIComponent(value);
     const arr=this._answers[qId].selected;
-    const idx=arr.indexOf(value);
-    if(idx>=0) arr.splice(idx,1);
-    else arr.push(value);
-    this._render();
+    const idx=arr.indexOf(decodedValue);
+    if(idx>=0) {
+      arr.splice(idx,1);
+      target?.classList.remove('selected');
+    } else {
+      arr.push(decodedValue);
+      target?.classList.add('selected');
+    }
+    this._refreshStatus();
+  },
+
+  _selectOther(target,qId, type){
+    if(target?.closest('textarea')) return;
+    const ans = this._answers[qId];
+    if (type === 'single') {
+      ans.selected = ['__OTHER__'];
+      target?.closest('.agent-options')?.querySelectorAll('.agent-option.selected').forEach(el=>el.classList.remove('selected'));
+      target?.classList.add('selected');
+    } else {
+      const idx = ans.selected.indexOf('__OTHER__');
+      if (idx >= 0) {
+        ans.selected.splice(idx, 1);
+        target?.classList.remove('selected');
+      } else {
+        ans.selected.push('__OTHER__');
+        target?.classList.add('selected');
+      }
+    }
+    this._refreshStatus();
+    setTimeout(() => {
+      const ta = document.getElementById(`agentCustomInput_${qId}`);
+      if (ta) ta.focus();
+    }, 50);
+  },
+
+  _selectOtherInput(target,qId,type){
+    const ans=this._answers[qId];
+    if(!ans) return;
+    const option=target?.closest('.agent-option');
+    if(type==='single') {
+      ans.selected=['__OTHER__'];
+      option?.closest('.agent-options')?.querySelectorAll('.agent-option.selected').forEach(el=>el.classList.remove('selected'));
+    } else if(!ans.selected.includes('__OTHER__')) {
+      ans.selected.push('__OTHER__');
+    }
+    option?.classList.add('selected');
+    this._refreshStatus();
   },
 
   _updateCustom(qId,val){
-    this._answers[qId].custom=val;
+    const q=this._session?.questions.find(qq=>qq.id===qId);
+    const max=q?.maxLength||0;
+    const nextVal=String(val||'');
+    this._answers[qId].custom=max>0?nextVal.slice(0,max):nextVal;
+    const ans=this._answers[qId];
+    if(ans && this._answers[qId].custom.trim() && !ans.selected.includes('__OTHER__')){
+      if(q?.type==='single') ans.selected=['__OTHER__'];
+      else ans.selected.push('__OTHER__');
+    }
+    const ta=document.getElementById(`agentCustomInput_${qId}`);
+    const meta=ta?.nextElementSibling;
+    ta?.closest('.agent-option')?.classList.toggle('selected', !!ans?.selected.includes('__OTHER__'));
+    if(ta && ta.value!==this._answers[qId].custom) ta.value=this._answers[qId].custom;
+    if(meta && meta.classList.contains('agent-inline-meta')) meta.textContent=`${this._answers[qId].custom.length}${max?`/${max}`:''}`;
+    this._refreshStatus();
+  },
+
+  _refreshStatus(){
+    if(!this._session) return;
+    const s=this._session;
+    const answeredCount=s.questions.filter(qq=>this._isAnswered(qq.id)).length;
+    const allAnswered=answeredCount===s.questions.length;
+    const footerText=document.querySelector('.agent-footer-left span');
+    if(footerText) footerText.textContent=`${answeredCount}/${s.questions.length} 已回答`;
+    document.querySelectorAll('.agent-progress-dot').forEach((dot,i)=>{
+      const q=s.questions[i];
+      dot.classList.toggle('answered', !!q && this._isAnswered(q.id));
+      dot.classList.toggle('current', i===this._activeTab && (!q || !this._isAnswered(q.id)));
+    });
+    document.querySelectorAll('.agent-tab').forEach((tab,i)=>{
+      const q=s.questions[i];
+      const marker=tab.querySelector('.tab-answered,.tab-pending');
+      if(marker && q) marker.className=this._isAnswered(q.id)?'tab-answered':'tab-pending';
+    });
+    const submit=document.querySelector('.agent-submit-all');
+    if(submit){
+      submit.disabled=!allAnswered;
+      submit.style.opacity=allAnswered?'':'0.5';
+    }
+    const current=s.questions[this._activeTab];
+    const nextBtn=document.querySelector('.agent-next-btn');
+    if(nextBtn && current){
+      const currentAnswered=this._isAnswered(current.id);
+      const hasNextQuestion=this._activeTab < s.questions.length - 1;
+      nextBtn.disabled=!currentAnswered;
+      nextBtn.style.opacity=currentAnswered?'':'0.5';
+      nextBtn.textContent=hasNextQuestion?'下一步':'提交当前';
+    }
   },
 
   _submitCurrent(){
     const q=this._session.questions[this._activeTab];
     if(q.required&&!this._isAnswered(q.id)){
       toast('请至少选择一个选项或填写补充说明','error');
+      return;
+    }
+    const nextIdx=this._activeTab+1;
+    if(nextIdx<this._session.questions.length){
+      this._activeTab=nextIdx;
+      this._render();
       return;
     }
     const nextUnanswered=this._session.questions.findIndex(qq=>!this._isAnswered(qq.id));
@@ -3403,7 +4659,7 @@ const AgentAsk={
     const result=this._session.questions.map(q=>({
       id:q.id,
       label:q.label,
-      selected:this._answers[q.id].selected,
+      selected:[...this._answers[q.id].selected],
       custom:this._answers[q.id].custom,
     }));
     this._cleanup();
@@ -3425,7 +4681,6 @@ const AgentAsk={
     this._session=null;
     this._activeTab=0;
     this._answers={};
-    this._hideOverlay();
     const slot=$('#agentPanelSlot');
     if(slot) slot.innerHTML='';
     const inputArea=$('#chatInputArea');
@@ -3455,6 +4710,8 @@ async function initApp() {
     const localStyle = state.settings.style;
     const localApi = state.settings.api;
     state.settings = { ...state.settings, ...settings };
+    if (settings.quickMode !== undefined) state.settings.quickMode = !!settings.quickMode;
+    if (settings.mdLibraryDir !== undefined) state.settings.mdLibraryDir = settings.mdLibraryDir || '';
     if (settings.api != null && String(settings.api).trim() !== '') {
       state.settings.api = String(settings.api).trim().replace(/\/$/, '');
     } else if (localApi != null && String(localApi).trim() !== '') {
@@ -3468,6 +4725,7 @@ async function initApp() {
   // Load model config
   const modelData = await apiGet('/api/models');
   if (modelData) {
+    state.modelsConfig = modelData;
     const currentM = modelData.current || 'deepseek-v4-flash';
     for (const [prov, cfg] of Object.entries(modelData)) {
       if (cfg && cfg.model) {
@@ -3485,30 +4743,37 @@ async function initApp() {
     }
   }
 
-  // Load CLI sessions (real Hermes conversation history)
-  const sessions = await apiGet('/api/cli/sessions');
-  if (sessions && sessions.length) {
-    state.chats = sessions.map(s => ({
-      id: s.id,
-      title: s.title || s.preview || '未命名对话',
-      source: 'cli',
-      messages: [],
-      updatedAt: Date.now(),
-      createdAt: Date.now(),
-    }));
-  } else {
-    // Fallback: load from WebUI's own chat store
-    const chats = await apiGet('/api/chats');
-    if (chats && chats.length) {
-      state.chats = chats.map(c => ({
-        id: c.id,
-        title: c.title || '新建对话',
-        source: c.source || 'WebUI',
-        messages: [],
-        updatedAt: c.updatedAt,
-      }));
-    }
-  }
+  // Load WebUI chats and real Hermes CLI sessions together.
+  const [sessions, chats] = await Promise.all([
+    apiGet('/api/cli/sessions?limit=200'),
+    apiGet('/api/chats'),
+  ]);
+  const webChats = (Array.isArray(chats)?chats:[]).map(c => ({
+    id: c.id,
+    title: c.title || '新建对话',
+    source: c.source || 'WebUI',
+    messages: [],
+    preview: c.preview || '',
+    messageCount: c.messageCount || 0,
+    updatedAt: c.updatedAt || c.createdAt || Date.now(),
+    createdAt: c.createdAt || c.updatedAt || Date.now(),
+    readOnly: false,
+    pinned: !!c.pinned,
+  }));
+  const cliChats = (Array.isArray(sessions)?sessions:[]).map(s => ({
+    id: s.id,
+    title: s.title || s.preview || '未命名对话',
+    source: s.source || 'cli',
+    messages: [],
+    preview: s.preview || '',
+    messageCount: s.messageCount || 0,
+    updatedAt: s.updatedAt || s.createdAt || Date.now(),
+    createdAt: s.createdAt || s.updatedAt || Date.now(),
+    readOnly: true,
+  }));
+  const byId=new Map();
+  [...webChats, ...cliChats].forEach(item=>{ if(item&&item.id&&!byId.has(item.id)) byId.set(item.id,item); });
+  state.chats=[...byId.values()].sort((a,b)=>(b.updatedAt||0)-(a.updatedAt||0));
   if (state.chats.length) await selectChat(state.chats[0].id);
 
   // Load skills

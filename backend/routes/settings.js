@@ -5,14 +5,18 @@ const router = express.Router();
 const KEY = 'settings';
 
 const DEFAULTS = {
-  theme: 'light',
+  theme: 'dark',
   lang: 'zh',
   stream: true,
   autoTitle: true,
-  history: 20,
+  history: 16,
   systemPrompt: '',
-  useHermesCli: true,
-  hermesModel: 'deepseek-chat',
+  /** API 根地址（可选）。空则前端使用当前页面 origin。 */
+  api: '',
+  hermesModel: 'deepseek-v4-flash',
+  hermesPath: '',
+  quickMode: false,
+  mdLibraryDir: '',
 };
 
 router.get('/', (req, res) => res.ok(store.read(KEY, DEFAULTS)));

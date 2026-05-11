@@ -26,4 +26,4 @@ function write(name, data) {
   fs.writeFileSync(file(name), JSON.stringify(data, null, 2), 'utf8');
 }
 
-module.exports = { read, write };
+module.exports = { read, write, DATA_DIR };

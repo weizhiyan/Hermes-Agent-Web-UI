@@ -116,11 +116,13 @@
   let splitPct = 52;
   let dragActive = false;
   let _mdTimer = null;
-  let _panelBound = false;
   let _dragMode = 'split';
   let currentTitle = '';
   let currentTab = 'preview';
   let viewVersionIndex = -1;
+  let historyMode = 'all';
+  let historyData = null;
+  let historyPreview = null;
 
   function renderToolbarIcon(kind) {
     if (kind === 'chat') {
@@ -164,18 +166,46 @@
     return String(s).replace(/[&<>"']/g, (m) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[m]));
   }
 
+  function apiBase() {
+    try {
+      const settings = global.state && global.state.settings;
+      const api = settings && settings.api ? String(settings.api).trim().replace(/\/$/, '') : '';
+      if (api) return api;
+    } catch (_) {}
+    if (global.location && /^https?:$/.test(global.location.protocol)) return '';
+    return 'http://127.0.0.1:8787';
+  }
+
+  function fmtBytes(bytes) {
+    const n = Number(bytes) || 0;
+    if (n < 1024) return n + ' B';
+    if (n < 1024 * 1024) return (n / 1024).toFixed(n < 10 * 1024 ? 1 : 0) + ' KB';
+    return (n / 1024 / 1024).toFixed(1) + ' MB';
+  }
+
+  function fileNameFromPath(filePath) {
+    return String(filePath || '').split(/[\\/]/).pop() || 'Markdown';
+  }
+
   function applyLayout() {
     const wb = $('#chatWorkbench');
     const shell = $('#artifactShell');
     const main = $('#chatMainPane');
     const rs = $('#artifactResizer');
+    const toggleButton = document.querySelector('.header-toggle-panel-btn');
     if (!wb || !shell || !main) return;
     if (!document.body.contains(shell)) return;
     wb.dataset.layout = layout;
-    const toggleText = document.querySelector('.header-toggle-panel-btn .toggle-text');
+    const isOpen = layout !== 'CHAT_ONLY';
+    if (toggleButton) {
+      const nextLabel = isOpen ? '收起右侧预览' : '打开右侧预览';
+      toggleButton.classList.toggle('is-open', isOpen);
+      toggleButton.setAttribute('title', nextLabel);
+      toggleButton.setAttribute('aria-label', nextLabel);
+    }
     if (layout === 'CHAT_ONLY') {
-      if (toggleText) toggleText.textContent = '展开';
       shell.classList.remove('open', 'full');
+      shell.classList.remove('artifact-focused');
       main.style.flex = '1 1 auto';
       main.style.width = '';
       main.style.minWidth = '';
@@ -184,7 +214,6 @@
       return;
     }
     if (rs) rs.style.display = '';
-    if (toggleText) toggleText.textContent = '收起';
     if (layout === 'PREVIEW_ONLY') {
       shell.classList.add('open', 'full');
       main.style.flex = '0 0 0px';
@@ -194,6 +223,7 @@
       return;
     }
     shell.classList.add('open');
+    shell.classList.add('artifact-focused');
     shell.classList.remove('full');
     main.style.removeProperty('overflow');
     main.style.flex = `0 0 ${splitPct}%`;
@@ -420,13 +450,42 @@
     flashPanel();
   }
 
+  function openEmpty(title, message) {
+    currentTitle = '';
+    viewVersionIndex = -1;
+    layout = 'SPLIT_VIEW';
+    loadSplit();
+    applyLayout();
+    setTab('preview');
+    const titleEl = $('#artifactTitleText');
+    const typeEl = $('#artifactTypeBadge');
+    const verEl = $('#artifactVersionText');
+    const gen = $('#artifactGenerating');
+    const prev = $('#artifactPreview');
+    const src = $('#artifactSource');
+    if (titleEl) titleEl.textContent = title || '暂无可预览文件';
+    if (typeEl) typeEl.textContent = '空状态';
+    if (verEl) verEl.textContent = '';
+    if (gen) gen.style.display = 'none';
+    if (src) src.style.display = 'none';
+    if (prev) {
+      prev.style.display = 'block';
+      prev.innerHTML = `<div class="memory-empty" style="min-height:300px">
+        <h3>${esc(title || '暂无可预览文件')}</h3>
+        <p>${esc(message || '当前没有检测到可预览的输出文件。你可以在“历史文件”里打开本地 Markdown。')}</p>
+      </div>`;
+    }
+    flashPanel();
+  }
+
   function bindResize() {
-    if (_panelBound) return;
     const rs = $('#artifactResizer');
     const wb = $('#chatWorkbench');
     const shell = $('#artifactShell');
     if (!rs || !wb || !shell) return;
-    _panelBound = true;
+    if (rs.dataset.resizeBound === '1' && shell.dataset.resizeBound === '1') return;
+    rs.dataset.resizeBound = '1';
+    shell.dataset.resizeBound = '1';
 
     function clampSplit(next) {
       splitPct = Math.round(next);
@@ -448,9 +507,7 @@
       const w = rect.width;
       if (w <= 0) return;
       const x = clientX - rect.left;
-      const nextSplit = _dragMode === 'edge'
-        ? 100 - Math.round(((rect.right - clientX) / w) * 100)
-        : Math.round((x / w) * 100);
+      const nextSplit = Math.round((x / w) * 100);
       clampSplit(nextSplit);
     }
 
@@ -515,6 +572,10 @@
     shell.innerHTML = `
 <div class="artifact-inner">
   <div class="artifact-toolbar">
+    <div class="artifact-toolbar-label">
+      <span>Markdown 预览</span>
+      <small>拖拽右侧边缘可调整宽度</small>
+    </div>
     <div class="artifact-toolbar-actions">
       <button type="button" class="artifact-icon-btn" id="artifactCopyBtn" title="复制" onclick="HermesArtifact.copyContent()">${renderToolbarIcon('copy')}</button>
       <button type="button" class="artifact-icon-btn" title="下载" onclick="HermesArtifact.download()">${renderToolbarIcon('download')}</button>
@@ -534,7 +595,7 @@
   <div class="artifact-tabs">
     <button type="button" class="artifact-tab active" data-tab="preview" onclick="HermesArtifact.setTab('preview')">预览</button>
     <button type="button" class="artifact-tab" data-tab="source" onclick="HermesArtifact.setTab('source')">源码</button>
-    <button type="button" class="artifact-tab" style="margin-left:auto" onclick="HermesArtifact.showHistory()">历史文件</button>
+    <button type="button" class="artifact-tab" data-tab="history" style="margin-left:auto" onclick="HermesArtifact.showHistory()">历史文件</button>
   </div>
   <div class="artifact-body">
     <div id="artifactGenerating" class="artifact-generating" style="display:none"><span class="dot-pulse"></span> 生成中…</div>
@@ -570,6 +631,7 @@
 
   function setTab(tab) {
     currentTab = tab;
+    if (tab !== 'history') historyPreview = null;
     document.querySelectorAll('.artifact-tab').forEach((t) => {
       t.classList.toggle('active', t.dataset.tab === tab);
     });
@@ -610,63 +672,160 @@
     }
   }
 
+  function renderHistoryCard(f) {
+    const name = f.file || f.name || '';
+    const title = f.title || name.replace(/\.md$/, '');
+    const summary = f.summary || f.preview || '暂无内容概括';
+    const date = f.mtime ? new Date(f.mtime).toLocaleString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit' }) : '';
+    const safePath = encodeURIComponent(f.path || '');
+    const safeName = encodeURIComponent(name || title);
+    return `
+      <div class="history-card">
+        <div class="history-card-kicker">
+          <span>${esc(f.mdType || f.type || f.folder || 'Markdown')}</span>
+          <span>${esc(fmtBytes(f.size))}</span>
+        </div>
+        <button type="button" class="history-card-title" onclick="HermesArtifact.previewHistoryFile('${safePath}', '${safeName}')">${esc(title)}</button>
+        <div class="history-card-summary">${esc(summary)}</div>
+        <div class="history-card-meta">
+          <span>${esc(date)}${f.folder ? ' · ' + esc(f.folder) : ''}</span>
+        </div>
+        <div class="history-card-actions">
+          <button class="history-card-btn primary" onclick="HermesArtifact.previewHistoryFile('${safePath}', '${safeName}')">预览</button>
+          <button class="history-card-btn secondary" onclick="HermesArtifact.openFileLocation('${safePath}')">打开文件</button>
+        </div>
+      </div>`;
+  }
+
+  function renderHistoryList() {
+    const hist = $('#artifactHistory');
+    if (!hist || !historyData) return;
+    if (historyPreview) {
+      hist.innerHTML = `
+        <div class="artifact-history-preview-head">
+          <button class="history-back-btn" onclick="HermesArtifact.backToHistoryList()">← 返回</button>
+          <div>
+            <div class="artifact-history-preview-title">${esc(historyPreview.title || 'Markdown 预览')}</div>
+            <div class="artifact-history-preview-path">${esc(historyPreview.path || '')}</div>
+          </div>
+          <button class="history-card-btn secondary" onclick="HermesArtifact.openFileLocation('${encodeURIComponent(historyPreview.path || '')}')">打开文件</button>
+        </div>
+        <div class="artifact-history-preview markdown-body artifact-preview" id="artifactHistoryPreview"></div>`;
+      flushPreviewNow('markdown', '', historyPreview.content || '', $('#artifactHistoryPreview'));
+      return;
+    }
+    const all = historyData.filesFlat || [];
+    const types = historyData.types || [];
+    const folders = historyData.folders || [];
+    const tags = historyData.tags || [];
+    const groupList = historyMode === 'folder' ? folders : historyMode === 'tag' ? tags : types;
+    const root = historyData.root || '';
+    const tabs = `<div class="artifact-history-tabs">
+      <button class="${historyMode === 'all' ? 'active' : ''}" onclick="HermesArtifact.setHistoryMode('all')">全部</button>
+      <button class="${historyMode === 'type' ? 'active' : ''}" onclick="HermesArtifact.setHistoryMode('type')">按类型</button>
+      <button class="${historyMode === 'folder' ? 'active' : ''}" onclick="HermesArtifact.setHistoryMode('folder')">按文件夹</button>
+      <button class="${historyMode === 'tag' ? 'active' : ''}" onclick="HermesArtifact.setHistoryMode('tag')">按标签</button>
+    </div>`;
+    if (!all.length) {
+      hist.innerHTML = tabs + `<div class="history-empty-docs">
+        <h3>暂无本地 MD 输出文件</h3>
+        <p>这里读取的是 Agent 输出文章/报告等 Markdown 的独立文件夹，不是聊天历史记录。</p>
+        <code>${esc(root)}</code>
+      </div>`;
+      return;
+    }
+    const intro = `<div class="artifact-history-root">MD 输出库：<code>${esc(root)}</code></div>`;
+    if (historyMode !== 'all') {
+      hist.innerHTML = tabs + intro + (groupList.length ? groupList.map(group => `
+        <div class="history-month-group">
+          <div class="history-month-title">${esc(group.name || group.type || group.folder || group.tag || '其他')} (${group.files.length})</div>
+          <div class="history-cards">${(group.files || []).map(renderHistoryCard).join('')}</div>
+        </div>`).join('') : '<div style="text-align:center;padding:28px;color:var(--c-ink-muted)">当前分类暂无文件</div>');
+      return;
+    }
+    hist.innerHTML = tabs + intro + `<div class="history-month-group">
+      <div class="history-month-title">全部 · 按时间 (${all.length})</div>
+      <div class="history-cards">${all.map(renderHistoryCard).join('')}</div>
+    </div>`;
+  }
+
+  function setHistoryMode(mode) {
+    historyMode = mode;
+    historyPreview = null;
+    renderHistoryList();
+  }
+
   async function loadHistory() {
     const hist = $('#artifactHistory');
     if (!hist) return;
     hist.innerHTML = '<div style="text-align:center;padding:20px;color:var(--c-ink-muted)">加载中...</div>';
     try {
-      const res = await fetch('/api/chats/exports/history');
+      const res = await fetch(apiBase() + '/api/system/md-library', { cache: 'no-store' });
       const data = await res.json();
-      if (!data || !data.data || !data.data.length) {
+      if (!data || data.code !== 0 || !data.data) {
         hist.innerHTML = '<div style="text-align:center;padding:20px;color:var(--c-ink-muted)">暂无历史文件</div>';
         return;
       }
-      let html = '';
-      data.data.forEach((monthGroup, i) => {
-        const isCollapsed = i > 0 ? 'collapsed' : '';
-        html += `
-          <div class="history-month-group ${isCollapsed}">
-            <div class="history-month-title" onclick="this.parentElement.classList.toggle('collapsed')">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
-              ${monthGroup.month} (${monthGroup.files.length})
-            </div>
-            <div class="history-cards">
-              ${monthGroup.files.map(f => `
-                <div class="history-card" onclick="HermesArtifact.openHistoryFile('${encodeURIComponent(f.path)}', '${encodeURIComponent(f.name)}')">
-                  <div class="history-card-title">${esc(f.name.replace(/\.md$/, ''))}</div>
-                  <div class="history-card-meta">
-                    <span>${new Date(f.mtime).toLocaleDateString()}</span>
-                    <button class="history-card-btn" onclick="event.stopPropagation(); HermesArtifact.openHistoryFile('${encodeURIComponent(f.path)}', '${encodeURIComponent(f.name)}')">打开文件</button>
-                  </div>
-                </div>
-              `).join('')}
-            </div>
-          </div>
-        `;
-      });
-      hist.innerHTML = html;
+      historyData = data.data;
+      renderHistoryList();
     } catch (e) {
       hist.innerHTML = '<div style="text-align:center;padding:20px;color:var(--c-error)">加载失败</div>';
     }
   }
 
   async function openHistoryFile(encodedPath, encodedName) {
+    return previewHistoryFile(encodedPath, encodedName);
+  }
+
+  async function previewHistoryFile(encodedPath, encodedName) {
     const path = decodeURIComponent(encodedPath);
-    const name = decodeURIComponent(encodedName).replace(/\\.md$/, '');
+    const name = (decodeURIComponent(encodedName || '') || fileNameFromPath(path)).replace(/\.md$/i, '');
     try {
-      const res = await fetch('/api/system/file-content?path=' + encodeURIComponent(path));
+      const res = await fetch(apiBase() + '/api/system/file-content?path=' + encodeURIComponent(path));
       const data = await res.json();
       if (data && data.data && data.data.content) {
         resetSession();
         recordCompletedArtifacts([{ attrs: { title: name, type: 'markdown' }, content: data.data.content }]);
-        openRef(name);
+        const historyVisible = currentTab === 'history' && $('#artifactHistory') && $('#artifactHistory').style.display !== 'none';
+        if (historyVisible) {
+          historyPreview = { title: name, path, content: data.data.content };
+          renderHistoryList();
+          currentTitle = name;
+          window.__hermesLastArtifactBody = data.data.content;
+          const titleEl = $('#artifactTitleText');
+          const typeEl = $('#artifactTypeBadge');
+          const verEl = $('#artifactVersionText');
+          if (titleEl) titleEl.textContent = name;
+          if (typeEl) typeEl.textContent = 'Markdown';
+          if (verEl) verEl.textContent = '本地文件';
+        } else {
+          openRef(name);
+        }
       }
     } catch (e) {
-      alert('无法读取文件');
+      openEmpty('无法读取文件', e && e.message ? e.message : '读取本地 Markdown 失败。');
     }
   }
 
+  async function openFileLocation(encodedPath) {
+    const path = decodeURIComponent(encodedPath || '');
+    if (!path) return;
+    try {
+      await fetch(apiBase() + '/api/system/open-path', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path }),
+      });
+    } catch (_) {}
+  }
+
+  function backToHistoryList() {
+    historyPreview = null;
+    renderHistoryList();
+  }
+
   function showHistory() {
+    historyPreview = null;
     setTab('history');
   }
 
@@ -744,6 +903,7 @@
     finalizeStream,
     flashPanel,
     openRef,
+    openEmpty,
     setLayout,
     bumpVersion,
     setTab,
@@ -754,7 +914,11 @@
     getVersionList,
     typeLabel,
     showHistory,
-    openHistoryFile
+    openHistoryFile,
+    previewHistoryFile,
+    openFileLocation,
+    backToHistoryList,
+    setHistoryMode
   };
 
   global.HermesArtifact = API;
