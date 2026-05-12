@@ -5,9 +5,7 @@ backend/data/
 .claude/
 .hermes-server.pid
 awesome-design-md/
-AI导入/
 一键启动.bat
-项目总结
 *.log
 .DS_Store
 Thumbs.db

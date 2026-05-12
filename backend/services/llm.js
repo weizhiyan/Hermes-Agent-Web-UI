@@ -1,36 +1,86 @@
 const { hermesStream } = require('./hermes');
 const store = require('./store');
 
+const RELAY_PROVIDER_RE = /new\s*api|one\s*api|openai|openrouter|siliconflow|together|moonshot|kimi|zhipu|智谱|中转|gateway|relay/i;
+
+function authHeaders({ key = '', authType = 'bearer', authHeader = '' } = {}) {
+  const headers = { 'Content-Type': 'application/json' };
+  if (!key || authType === 'none') return headers;
+  if (authType === 'x-api-key') headers['x-api-key'] = key;
+  else if (authType === 'api-key') headers['api-key'] = key;
+  else if (authType === 'custom' && authHeader) headers[authHeader] = key;
+  else headers.Authorization = `Bearer ${key}`;
+  return headers;
+}
+
+function chatUrl(base = '') {
+  const clean = String(base || '').replace(/\/+$/, '');
+  if (!clean) return '';
+  if (clean.includes('/chat/completions')) return clean;
+  return clean.endsWith('/v1') ? `${clean}/chat/completions` : `${clean}/v1/chat/completions`;
+}
+
+function findLibraryModel(cfg, id) {
+  const lib = Array.isArray(cfg.library) ? cfg.library : [];
+  if (!id) return null;
+  return lib.find(m => m.enabled !== false && (m.id === id || m.name === id)) || null;
+}
+
+function selectedLibraryModel(cfg, requested) {
+  return findLibraryModel(cfg, requested || cfg._requestedModel || cfg.current || '');
+}
+
+function isRelayModel(item = {}) {
+  if (!item || !item.base) return false;
+  if ((item.apiFormat || 'openai-chat') !== 'openai-chat') return false;
+  return RELAY_PROVIDER_RE.test(`${item.provider || ''} ${item.base || ''}`);
+}
+
+function detectProvider(cfg) {
+  const current = cfg._requestedModel || cfg.current || '';
+  const lib = findLibraryModel(cfg, current);
+  if (lib?.key) return lib.provider || 'custom';
+
+  const candidates = [];
+  for (const [name, prov] of Object.entries(cfg || {})) {
+    if (['params', 'scenarios', 'current', '_activeProvider', '_requestedModel', '_scene', 'custom', 'library'].includes(name)) continue;
+    if (prov && typeof prov === 'object' && prov.key && current === prov.model) candidates.push(name);
+  }
+  if (candidates.length) return candidates[0];
+
+  for (const [name, prov] of Object.entries(cfg || {})) {
+    if (['params', 'scenarios', 'current', '_activeProvider', '_requestedModel', '_scene', 'custom', 'library'].includes(name)) continue;
+    if (prov && typeof prov === 'object' && prov.key) return name;
+  }
+  return null;
+}
+
 async function* directApiStream(cfg, messages) {
   const requestedModel = cfg._requestedModel || cfg.current || '';
-  const libraryItem = Array.isArray(cfg.library) ? cfg.library.find(m => m.enabled !== false && (m.id === requestedModel || m.name === requestedModel)) : null;
-  const provider = libraryItem?.provider || cfg._activeProvider || 'deepseek';
-  const provCfg = libraryItem || cfg[provider] || {};
-  const baseRaw = (provCfg.base || 'https://api.deepseek.com').replace(/\/+$/, '');
-  const key = provCfg.key || '';
-  const model = libraryItem?.name || requestedModel || provCfg.model || 'deepseek-v4-flash';
-  const apiFormat = provCfg.apiFormat || 'openai-chat';
-  const authType = provCfg.authType || 'bearer';
-  const authHeader = provCfg.authHeader || '';
+  const libraryItem = selectedLibraryModel(cfg, requestedModel);
+  const provider = libraryItem?.provider || cfg._activeProvider || '';
+  const providerCfg = libraryItem || cfg[provider] || {};
+  const base = String(providerCfg.base || '').replace(/\/+$/, '');
+  const key = providerCfg.key || '';
+  const model = libraryItem?.name || requestedModel || providerCfg.model || '';
+  const apiFormat = providerCfg.apiFormat || 'openai-chat';
+  const authType = providerCfg.authType || 'bearer';
+  const authHeader = providerCfg.authHeader || '';
   const params = cfg.params || {};
 
-  if (!key) {
-    yield { type: 'error', text: `未配置 ${provider} API Key，请在模型配置中填写` };
+  if (!base || !model) {
+    yield { type: 'error', text: '未配置可用模型。请先到设置 > 模型配置添加真实 Provider、Base URL、API Key 和模型。' };
     return;
   }
 
   if (apiFormat !== 'openai-chat') {
-    yield { type: 'error', text: `当前直连对话暂只支持 OpenAI 兼容格式，${apiFormat} 请走 Hermes CLI 或后续适配。` };
+    yield { type: 'error', text: `快速模式目前只支持 OpenAI 兼容格式，当前模型是 ${apiFormat}。请改成 OpenAI 兼容，或关闭快速模式走 Hermes CLI。` };
     return;
   }
 
-  let url;
-  if (baseRaw.includes('/chat/completions')) {
-    url = baseRaw;
-  } else if (baseRaw.endsWith('/v1')) {
-    url = `${baseRaw}/chat/completions`;
-  } else {
-    url = `${baseRaw}/v1/chat/completions`;
+  if (!key && authType !== 'none') {
+    yield { type: 'error', text: `未配置 ${provider || model} 的 API Key，请在模型配置中填写后再发送。` };
+    return;
   }
 
   let body;
@@ -44,21 +94,15 @@ async function* directApiStream(cfg, messages) {
       top_p: params.topP ?? 1,
     });
   } catch (e) {
-    yield { type: 'error', text: '消息序列化失败: ' + e.message };
+    yield { type: 'error', text: `消息序列化失败: ${e.message}` };
     return;
   }
 
   let resp;
   try {
-    resp = await fetch(url, {
+    resp = await fetch(chatUrl(base), {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        ...(authType === 'x-api-key' ? { 'x-api-key': key } :
-          authType === 'api-key' ? { 'api-key': key } :
-          authType === 'custom' && authHeader ? { [authHeader]: key } :
-          authType === 'none' ? {} : { 'Authorization': `Bearer ${key}` }),
-      },
+      headers: authHeaders({ key, authType, authHeader }),
       body,
       signal: AbortSignal.timeout(120000),
     });
@@ -70,12 +114,12 @@ async function* directApiStream(cfg, messages) {
   if (!resp.ok) {
     let errText = '';
     try { errText = await resp.text(); } catch {}
-    yield { type: 'error', text: `API 返回 ${resp.status}: ${errText.slice(0, 200)}` };
+    yield { type: 'error', text: `API 返回 ${resp.status}: ${errText.replace(/\s+/g, ' ').slice(0, 240)}` };
     return;
   }
 
   if (!resp.body) {
-    yield { type: 'error', text: 'API 未返回流式响应' };
+    yield { type: 'error', text: 'API 未返回流式响应。' };
     return;
   }
 
@@ -93,23 +137,17 @@ async function* directApiStream(cfg, messages) {
       while ((idx = buffer.indexOf('\n')) >= 0) {
         const line = buffer.slice(0, idx).trim();
         buffer = buffer.slice(idx + 1);
-
         if (!line || !line.startsWith('data:')) continue;
+
         const data = line.slice(5).trim();
         if (data === '[DONE]') return;
 
         let chunk;
         try { chunk = JSON.parse(data); } catch { continue; }
-
         const delta = chunk.choices?.[0]?.delta;
         if (!delta) continue;
-
-        if (delta.reasoning_content) {
-          yield { type: 'reasoning', text: delta.reasoning_content };
-        }
-        if (delta.content) {
-          yield { type: 'token', text: delta.content };
-        }
+        if (delta.reasoning_content) yield { type: 'reasoning', text: delta.reasoning_content };
+        if (delta.content) yield { type: 'token', text: delta.content };
       }
     }
   } catch (e) {
@@ -117,58 +155,34 @@ async function* directApiStream(cfg, messages) {
   }
 }
 
-function detectProvider(cfg) {
-  const current = cfg._requestedModel || cfg.current || '';
-  const lib = Array.isArray(cfg.library) ? cfg.library.find(m => m.enabled !== false && (m.id === current || m.name === current) && m.key) : null;
-  if (lib) return lib.provider || 'custom';
-  const candidates = [];
-  for (const [name, prov] of Object.entries(cfg)) {
-    if (name === 'params' || name === 'current' || name === '_activeProvider' || name === 'custom') continue;
-    if (prov && typeof prov === 'object' && prov.key) {
-      if (current === prov.model) candidates.push(name);
-    }
-  }
-  if (candidates.includes('deepseek')) return 'deepseek';
-  if (candidates.length > 0) return candidates[0];
-  if (cfg.deepseek?.key) return 'deepseek';
-  for (const [name, prov] of Object.entries(cfg)) {
-    if (name === 'params' || name === 'current' || name === '_activeProvider' || name === 'custom') continue;
-    if (prov && typeof prov === 'object' && prov.key) return name;
-  }
-  return null;
-}
-
 async function* chatStream(cfg, messages) {
   const settings = store.read('settings', {});
   const last = messages[messages.length - 1]?.content || '';
   if (!last) {
-    yield { type: 'error', text: '没有输入内容' };
+    yield { type: 'error', text: '没有输入内容。' };
     return;
   }
 
   const scene = cfg._scene || 'chat';
   const sceneModel = cfg._requestedModel || cfg.scenarios?.[scene] || cfg.scenarios?.chat || cfg.current || '';
-  cfg._requestedModel = sceneModel;
+  const libraryItem = selectedLibraryModel(cfg, sceneModel);
+  const modelName = libraryItem?.name || sceneModel || settings.hermesModel || '';
+  cfg._requestedModel = libraryItem?.id || sceneModel;
+  cfg._selectedLibraryModel = libraryItem || null;
 
-  const quickMode = settings.quickMode === true;
-  
-  if (quickMode) {
+  const shouldDirectApi = false;
+  if (shouldDirectApi) {
     const provider = detectProvider(cfg);
     const selected = cfg._requestedModel || cfg.current || '';
-    const libraryItem = Array.isArray(cfg.library) ? cfg.library.find(m => m.enabled !== false && (m.id === selected || m.name === selected) && m.key) : null;
-    if (provider && (cfg[provider]?.key || libraryItem?.key)) {
-      cfg._activeProvider = provider;
-      try {
-        yield* directApiStream(cfg, messages);
-        return;
-      } catch (e) {
-        yield { type: 'error', text: `API 调用失败: ${e.message}` };
-        return;
-      }
+    const directLibraryItem = selectedLibraryModel(cfg, selected);
+    if (provider || directLibraryItem) {
+      cfg._activeProvider = provider || directLibraryItem.provider || '';
+      yield* directApiStream(cfg, messages);
+      return;
     }
   }
 
-  const modelCfg = { model: settings.hermesModel || sceneModel || '' };
+  const modelCfg = { model: modelName };
   try {
     yield* hermesStream(last, messages, modelCfg, cfg);
   } catch (e) {
@@ -176,4 +190,4 @@ async function* chatStream(cfg, messages) {
   }
 }
 
-module.exports = { chatStream };
+module.exports = { chatStream, directApiStream, detectProvider };

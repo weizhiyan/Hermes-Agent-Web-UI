@@ -47,11 +47,14 @@ const SVG={
   folder:'<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/></svg>',
   file:'<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>',
   upload:'<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>',
+  image:'<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="8.5" cy="9.5" r="1.5"/><path d="M21 15l-4.5-4.5L10 17l-2.5-2.5L3 19"/></svg>',
   sidebar:'<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16"/><path d="M14 9h4"/><path d="M14 12h4"/><path d="M14 15h3"/></svg>',
   panelExpand:'<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16"/><path d="M13 9l4 3-4 3"/></svg>',
-  brain:'<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="4" y="4" width="16" height="16" rx="5"/><path d="M9 9.5h.01"/><path d="M15 9.5h.01"/><path d="M9 14.5h.01"/><path d="M15 14.5h.01"/><path d="M9.2 9.5h5.6"/><path d="M9.2 14.5h5.6"/><path d="M12 9.7v4.6"/><path d="M7 2v2"/><path d="M12 2v2"/><path d="M17 2v2"/><path d="M7 20v2"/><path d="M12 20v2"/><path d="M17 20v2"/></svg>',
+  brain:'<svg width="18" height="18" viewBox="0 0 18 18" fill="none" xmlns="http://www.w3.org/2000/svg"><g clip-path="url(#brainClip)"><path d="M7.1385 16.5C6.77104 15.3016 6.21668 14.4083 5.47541 13.8199C4.3635 12.9373 2.59681 13.4858 1.94422 12.5755C1.29162 11.6652 2.40143 9.99111 2.79088 9.00332C3.18032 8.01557 1.29817 7.6663 1.51791 7.38587C1.66441 7.19893 2.61552 6.65946 4.37126 5.76749C4.87013 2.9225 6.7128 1.5 9.89933 1.5C14.679 1.5 16.5 5.55223 16.5 8.12957C16.5 10.7069 14.295 13.4836 11.154 14.0822C10.8732 14.4913 11.2783 15.2972 12.3693 16.5" stroke="currentColor" stroke-width="1.13" stroke-linecap="round" stroke-linejoin="round"/><path fill-rule="evenodd" clip-rule="evenodd" d="M7.31153 5.43732C7.06654 6.38769 7.13944 7.055 7.53023 7.43926C7.92101 7.82356 8.58705 8.07485 9.52834 8.19316C9.31478 9.41892 9.57518 9.99399 10.3095 9.91831C11.0438 9.84264 11.485 9.53754 11.6331 9.00294C12.7807 9.32547 13.4027 9.05555 13.499 8.19316C13.6436 6.89956 12.946 5.86764 12.66 5.86764C12.374 5.86764 11.6331 5.83284 11.6331 5.43732C11.6331 5.04177 10.7676 4.81831 9.98648 4.81831C9.20535 4.81831 9.67545 4.29177 8.60284 4.49982C7.88775 4.6385 7.45733 4.95099 7.31153 5.43732Z" stroke="currentColor" stroke-width="1.13" stroke-linejoin="round"/><path d="M11.4372 9.5625C11.0559 9.79916 10.5326 10.1926 10.3122 10.5C9.76137 11.2686 9.31456 11.7365 9.2168 12.228" stroke="currentColor" stroke-width="1.13" stroke-linecap="round"/></g><defs><clipPath id="brainClip"><rect width="18" height="18" fill="white"/></clipPath></defs></svg>',
   attach:'<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48"/></svg>',
 };
+
+const IMAGE_PROMPT_PREFIX='生成图像：';
 
 // API base — resolved at call time (uses state.settings.api when set)
 function apiBase() {
@@ -63,6 +66,20 @@ function apiBase() {
   } catch (_) {}
   if (window.location.protocol === 'http:' || window.location.protocol === 'https:') return '';
   return 'http://127.0.0.1:8787';
+}
+
+function publicApiBase(){
+  const base=apiBase();
+  if(base) return base.replace(/\/$/,'');
+  if(window.location.protocol==='http:'||window.location.protocol==='https:') return window.location.origin;
+  return 'http://127.0.0.1:8787';
+}
+
+function mediaUrl(url){
+  const text=String(url||'');
+  if(!text) return '';
+  if(/^https?:\/\//i.test(text)||/^data:/i.test(text)) return text;
+  return publicApiBase()+('/'+text.replace(/^\/+/,''));
 }
 
 async function apiGet(path) {
@@ -149,9 +166,12 @@ const state={
   chatMode: 'single',
   sidebarCollapsed: false,
   _loading: true,
-  model: LS.get('hermes.model',{provider:'deepseek',model:'deepseek-v4-flash',base:'https://api.deepseek.com',key:'',temperature:0.7,topP:1,maxTokens:4096}),
+  model: LS.get('hermes.model',{provider:'',model:'',base:'',key:'',temperature:0.7,topP:1,maxTokens:4096}),
   modelsConfig: null,
   chatModelOverride: LS.get('hermes.chatModelOverride','auto'),
+  forceImageGeneration: LS.get('hermes.forceImageGeneration',false),
+  pendingImageAttachments: LS.get('hermes.pendingImageAttachments',[]),
+  cliSessionLimit: LS.get('hermes.cliSessionLimit',500),
   settings: LS.get('hermes.settings',{lang:'zh',stream:true,quickMode:false,history:16,systemPrompt:'',api:'',mdLibraryDir:''}),
   skills: [],
   skillFilter: {source:null,search:'',category:null},
@@ -167,6 +187,7 @@ const state={
   memory: { data:null, selectedType:'core', selectedId:null, current:null, mode:'preview', loading:false, failed:false, editDraft:null, conversationView:'all', sidebarScroll:0 },
   selectedChannel: null,
   activeProfile: LS.get('hermes.activeProfile','default'),
+  agentPopupOpen: false,
   gateways: LS.get('hermes.gateways',[]),
   groupChat: LS.get('hermes.groupChat',{
     userName:'',userDesc:'',connected:false,activeRoom:null,rooms:[],
@@ -178,7 +199,7 @@ if (typeof window !== 'undefined') window.state = state;
 const NAV=[
   {id:'chat',label:'对话',icon:'chat'},
   {id:'groupChat',label:'分身',icon:'group'},
-  {id:'brain',label:'小脑瓜',icon:'brain'},
+  {id:'skill',label:'小脑瓜',icon:'brain'},
   {id:'settingsPage',label:'设置',icon:'settings'},
 ];
 
@@ -186,6 +207,9 @@ function save(){
   LS.set('hermes.theme',state.theme);
   LS.set('hermes.model',state.model);
   LS.set('hermes.chatModelOverride',state.chatModelOverride);
+  LS.set('hermes.forceImageGeneration',state.forceImageGeneration);
+  LS.set('hermes.pendingImageAttachments',state.pendingImageAttachments||[]);
+  LS.set('hermes.cliSessionLimit',state.cliSessionLimit||500);
   LS.set('hermes.settings',state.settings);
   LS.set('hermes.memories',state.memories);
   LS.set('hermes.gateways',state.gateways);
@@ -221,7 +245,7 @@ function toggleMobileSidebar(open){
 function renderSidebar(){
   const nav=$('#sidebarNav');
   if(!nav) return;
-  const activePage = state.page === 'brain' || ['skills','channels','memory','jobs','profiles'].includes(state.page) ? 'brain'
+  const activePage = state.page === 'skill' || ['skills','channels','memory','jobs','profiles'].includes(state.page) ? 'skill'
     : state.page === 'settingsPage' || ['settings','models','logs','files','gateways','usage'].includes(state.page) ? 'settingsPage'
     : state.page === 'groupChat' ? 'groupChat'
     : 'chat';
@@ -256,8 +280,8 @@ function hideNavTooltip(){
 function renderPage(){
   const main=$('#mainContent');
   if(!main) return;
-  if(state.page==='brain'){
-    main.innerHTML=renderBrainPage();
+  if(state.page==='skill'){
+    main.innerHTML=renderSkillPage();
   } else if(state.page==='settingsPage'){
     main.innerHTML=renderSettingsPage();
   } else if(state.page==='groupChat'){
@@ -271,7 +295,7 @@ function renderPage(){
 function afterRender(){
   if(state.page==='chat') initChat();
   if(state.page==='terminal') initTerminal();
-  if(state.page==='brain' && brainTab==='memory' && !state.memory.data && !state.memory.loading && !state.memory.failed) loadMemoryStore();
+  if(state.page==='skill' && skillCenterTab==='memory' && !state.memory.data && !state.memory.loading && !state.memory.failed) loadMemoryStore();
   if(AgentAsk.isOpen()) AgentAsk._render();
 
   enhanceMessageMarkdown(document.getElementById('mainContent'));
@@ -289,13 +313,19 @@ function afterRender(){
 function renderChat(){
   const c=currentChat();
   const msgs=c?c.messages:[];
-  const models=['claude-opus-4-7','gpt-4o','gemini-2.5-pro','deepseek-r1','llama-4-maverick'];
-  const activeProfile=getActiveProfile();
+  const activeProfile=profileForChat(c);
+  const pendingImages=state.pendingImageAttachments||[];
   return `
     <div class="chat-panel">
       <div class="session-sidebar" id="sessionSidebar">
         <div class="session-sidebar-header">
+          <button class="agent-switch-btn" id="chatAgentSwitchBtn" onclick="toggleChatAgentPopup(event)" title="切换当前 Agent">
+            ${profileAvatarHtml(activeProfile,'chat-agent-avatar')}
+            <span class="agent-switch-copy"><strong>${esc(activeProfile?.name||'默认助手')}</strong><small>${esc(activeProfile?.modelId&&activeProfile.modelId!=='auto' ? (getModelById(activeProfile.modelId)?.name||activeProfile.model||effectiveChatModelName()) : '自动')}</small></span>
+            ${SVG.chevronDown}
+          </button>
           <button class="new-chat-btn" onclick="newChat()">${SVG.plus} 新建会话</button>
+          <div class="chat-agent-popup" id="chatAgentPopup" style="display:none">${renderChatAgentPopup()}</div>
           <div style="position:relative">
             <button class="history-btn" onclick="openHistoryPopup()" title="历史记录">${SVG.history}</button>
           </div>
@@ -330,12 +360,31 @@ function renderChat(){
         <div class="chat-input-area" id="chatInputArea">
           <div id="agentPanelSlot"></div>
           <div class="chat-input-box" style="position:relative">
+            ${pendingImages.length?`<div class="image-attachment-strip">
+              ${pendingImages.map(img=>`<div class="image-attachment-chip">
+                <img src="${esc(mediaUrl(img.url||img.publicUrl||''))}" alt="${esc(img.name||'上传图片')}">
+                <span title="${esc(img.path||'')}">${esc(img.name||'上传图片')}</span>
+                <button type="button" onclick="removePendingImage('${esc(img.id)}')" title="移除">${SVG.x}</button>
+              </div>`).join('')}
+            </div>`:''}
             <textarea id="chatInput" rows="1" placeholder="输入消息…" onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendMessage()}" oninput="autoResizeInput(this)"></textarea>
             <div class="chat-input-toolbar">
               <div class="chat-input-left">
-                <button class="input-action-btn" onclick="document.getElementById('fileInput').click()" title="上传文件">${SVG.attach}</button>
-                <button class="input-action-btn" onclick="toggleSkillPopup()" title="技能" id="skillPopupBtn">${SVG.skills}</button>
-                <button class="input-action-btn" onclick="toggleProfilePopup()" title="选择角色" id="profilePopupBtn" style="font-size:11px;width:auto;padding:0 8px">${esc(activeProfile?.name||'默认助手')}</button>
+                <button class="input-action-btn toolbar-pill" onclick="document.getElementById('fileInput').click()" title="上传文件">${SVG.attach} 上传</button>
+                <div class="image-tool-wrap" onmouseenter="scheduleShowImageToolSwitch()" onmouseleave="scheduleHideImageToolSwitch()">
+                  <button class="input-action-btn image-gen-toggle${state.forceImageGeneration?' active':''}" onclick="insertImagePrompt()" title="${state.forceImageGeneration?'直连生图已开启：发送会跳过 Agent':'插入生成图像提示词，让 Agent 处理生图'}">${SVG.image} 图像</button>
+                  <div class="image-tool-pop" id="imageToolPop" onmouseenter="showImageToolSwitch()" onmouseleave="scheduleHideImageToolSwitch()">
+                    <div>
+                      <strong>跳过 Agent 直连生图</strong>
+                      <span>关闭时只插入“生成图像：”，由 Agent 理解和调用工具。</span>
+                    </div>
+                    <label class="mini-switch">
+                      <input type="checkbox" ${state.forceImageGeneration?'checked':''} onchange="setDirectImageMode(this.checked)">
+                      <span></span>
+                    </label>
+                  </div>
+                </div>
+                <button class="input-action-btn toolbar-pill" onclick="toggleSkillPopup()" title="技能" id="skillPopupBtn">${SVG.skills} 技能</button>
               </div>
               <div class="chat-input-right">
                 <button class="input-action-btn" onclick="toggleModelPopup()" title="选择模型" id="modelPopupBtn" style="font-size:11px;font-family:var(--font-mono);width:auto;padding:0 8px">${esc(state.chatModelOverride==='auto'?'自动':(getModelById(state.chatModelOverride)?.name||state.model.model))}</button>
@@ -350,12 +399,8 @@ function renderChat(){
               <div class="model-popup-header">选择模型</div>
               <div class="model-popup-body" id="modelPopupBody"></div>
             </div>
-            <div class="model-popup profile-popup" id="profilePopup" style="display:none">
-              <div class="model-popup-header">选择角色</div>
-              <div class="model-popup-body" id="profilePopupBody"></div>
-            </div>
           </div>
-          <input type="file" id="fileInput" style="display:none" onchange="handleFileUpload(this)">
+          <input type="file" id="fileInput" accept="image/*" multiple style="display:none" onchange="handleFileUpload(this)">
         </div>
       </div>
       <div class="artifact-resizer" id="artifactResizer" role="separator" aria-orientation="vertical"></div>
@@ -364,23 +409,23 @@ function renderChat(){
     </div>`;
 }
 
-let brainTab = 'skills';
+let skillCenterTab = 'skills';
 let settingsTab = 'settings';
 
-function renderBrainPage(){
+function renderSkillPage(){
   const tabs=[
     {id:'skills',label:'技能中心',icon:'skills'},
     {id:'channels',label:'频道',icon:'channels'},
     {id:'memory',label:'记忆存储',icon:'memory'},
     {id:'jobs',label:'任务管理',icon:'jobs'},
-    {id:'profiles',label:'角色配置',icon:'profiles'},
+    {id:'profiles',label:'Agent 管理',icon:'profiles'},
   ];
-  const active=brainTab;
+  const active=skillCenterTab;
   const renderers={skills:renderSkills,channels:renderChannels,memory:renderMemory,jobs:renderJobs,profiles:renderProfiles};
   return `
     <div style="display:flex;flex-direction:column;height:100%">
       <div class="tabs" style="padding:0 24px">
-        ${tabs.map(t=>`<div class="tab${active===t.id?' active':''}" onclick="brainTab='${t.id}';document.getElementById('mainContent').innerHTML=renderBrainPage();afterRender()">${SVG[t.icon]} ${t.label}</div>`).join('')}
+        ${tabs.map(t=>`<div class="tab${active===t.id?' active':''}" onclick="skillCenterTab='${t.id}';document.getElementById('mainContent').innerHTML=renderSkillPage();afterRender()">${SVG[t.icon]} ${t.label}</div>`).join('')}
       </div>
       <div style="flex:1;overflow-y:auto">
         ${(renderers[active]||renderSkills)()}
@@ -409,16 +454,203 @@ function renderSettingsPage(){
     </div>`;
 }
 
-function handleFileUpload(input){
-  if(input.files&&input.files[0]){
-    const file=input.files[0];
-    const c=currentChat();
-    if(c){
-      c.messages.push({role:'user',content:`[文件] ${file.name} (${(file.size/1024).toFixed(1)}KB)`,ts:Date.now()});
-      renderPage();
-    }
-    input.value='';
+function setDirectImageMode(on){
+  state.forceImageGeneration=!!on;
+  save();
+  toast(state.forceImageGeneration?'已开启直连生图：发送会跳过 Agent':'已关闭直连生图：由 Agent 处理生成图像提示','info');
+  const btn=document.querySelector('.image-gen-toggle');
+  if(btn) btn.classList.toggle('active',state.forceImageGeneration);
+}
+
+let imageToolShowTimer=null;
+let imageToolHideTimer=null;
+function scheduleShowImageToolSwitch(){
+  if(imageToolHideTimer){clearTimeout(imageToolHideTimer);imageToolHideTimer=null}
+  if(imageToolShowTimer) clearTimeout(imageToolShowTimer);
+  imageToolShowTimer=setTimeout(showImageToolSwitch,360);
+}
+function showImageToolSwitch(){
+  if(imageToolShowTimer){clearTimeout(imageToolShowTimer);imageToolShowTimer=null}
+  if(imageToolHideTimer){clearTimeout(imageToolHideTimer);imageToolHideTimer=null}
+  const pop=$('#imageToolPop');
+  if(pop) pop.classList.add('show');
+}
+
+function scheduleHideImageToolSwitch(){
+  if(imageToolShowTimer){clearTimeout(imageToolShowTimer);imageToolShowTimer=null}
+  if(imageToolHideTimer) clearTimeout(imageToolHideTimer);
+  imageToolHideTimer=setTimeout(hideImageToolSwitch,260);
+}
+
+function hideImageToolSwitch(){
+  const pop=$('#imageToolPop');
+  if(pop) pop.classList.remove('show');
+}
+
+function insertImagePrompt(){
+  const ta=$('#chatInput');
+  if(!ta) return;
+  const prefix=IMAGE_PROMPT_PREFIX;
+  const value=ta.value||'';
+  if(!value.trim()){
+    ta.value=prefix;
+  }else if(!value.includes(prefix)){
+    const start=ta.selectionStart ?? value.length;
+    const end=ta.selectionEnd ?? start;
+    ta.value=value.slice(0,start)+prefix+value.slice(end);
+    ta.selectionStart=ta.selectionEnd=start+prefix.length;
   }
+  ta.focus();
+  autoResizeInput(ta);
+}
+
+function fileToDataUrl(file){
+  return new Promise((resolve,reject)=>{
+    const reader=new FileReader();
+    reader.onload=()=>resolve(reader.result);
+    reader.onerror=()=>reject(reader.error||new Error('读取文件失败'));
+    reader.readAsDataURL(file);
+  });
+}
+
+function renderPendingImageStrip(){
+  const box=document.querySelector('.chat-input-box');
+  if(!box) return;
+  const old=box.querySelector('.image-attachment-strip');
+  if(old) old.remove();
+  const list=state.pendingImageAttachments||[];
+  if(!list.length) return;
+  box.insertAdjacentHTML('afterbegin',`<div class="image-attachment-strip">
+    ${list.map(img=>`<div class="image-attachment-chip">
+      <img src="${esc(mediaUrl(img.url||img.publicUrl||''))}" alt="${esc(img.name||'上传图片')}">
+      <span title="${esc(img.path||'')}">${esc(img.name||'上传图片')}</span>
+      <button type="button" onclick="removePendingImage('${esc(img.id)}')" title="移除">${SVG.x}</button>
+    </div>`).join('')}
+  </div>`);
+}
+
+function updatePendingImageStripOnly(){
+  const ta=$('#chatInput');
+  const value=ta?.value || '';
+  const start=ta?.selectionStart ?? value.length;
+  const end=ta?.selectionEnd ?? start;
+  renderPendingImageStrip();
+  if(ta){
+    ta.value=value;
+    ta.selectionStart=start;
+    ta.selectionEnd=end;
+    ta.focus();
+    autoResizeInput(ta);
+  }
+}
+
+function profileAvatarHtml(profile,cls='profile-avatar'){
+  const p=profile||{};
+  const name=p.name||'A';
+  const bg=p.color||'var(--c-surface2)';
+  if(p.avatar){
+    return `<span class="${cls}" style="background-image:url('${esc(p.avatar)}');background-size:cover;background-position:center" title="${esc(name)}"></span>`;
+  }
+  return `<span class="${cls}" style="background:${bg}">${esc(name.charAt(0))}</span>`;
+}
+
+function presetProfileColor(seed='A'){
+  const colors=['var(--c-block-lime)','var(--c-block-lilac)','var(--c-block-cream)','var(--c-block-mint)','var(--c-block-coral)'];
+  const text=String(seed||'A');
+  let hash=0;
+  for(let i=0;i<text.length;i++) hash=(hash*31+text.charCodeAt(i))>>>0;
+  return colors[hash%colors.length];
+}
+
+function sessionAvatarHtml(profile,isCli=false){
+  if(isCli){
+    return `<span class="session-avatar session-avatar-cli">${SVG.terminal}</span>`;
+  }
+  return profileAvatarHtml(profile,'session-avatar');
+}
+
+let _profileAvatarDraft='';
+let _profileAvatarCleared=false;
+
+function handleProfileAvatarInput(input){
+  const file=input?.files?.[0];
+  if(!file) return;
+  if(!file.type?.startsWith('image/')){
+    toast('请选择图片作为头像','error');
+    return;
+  }
+  const reader=new FileReader();
+  reader.onload=()=>{
+    _profileAvatarDraft=String(reader.result||'');
+    _profileAvatarCleared=false;
+    const preview=document.getElementById('pfAvatarPreview');
+    if(preview){
+      preview.style.backgroundImage=`url('${_profileAvatarDraft}')`;
+      preview.style.backgroundSize='cover';
+      preview.style.backgroundPosition='center';
+      preview.textContent='';
+    }
+  };
+  reader.readAsDataURL(file);
+}
+
+function resetProfileAvatar(){
+  _profileAvatarDraft='';
+  _profileAvatarCleared=true;
+  const name=$('#pfName')?.value?.trim()||'A';
+  const preview=document.getElementById('pfAvatarPreview');
+  if(preview){
+    preview.style.backgroundImage='';
+    preview.style.backgroundSize='';
+    preview.style.backgroundPosition='';
+    preview.style.background=presetProfileColor(name);
+    preview.textContent=name.charAt(0);
+  }
+  const input=document.getElementById('pfAvatarInput');
+  if(input) input.value='';
+}
+
+function removePendingImage(id){
+  state.pendingImageAttachments=(state.pendingImageAttachments||[]).filter(img=>img.id!==id);
+  save();
+  updatePendingImageStripOnly();
+}
+
+async function handleFileUpload(input){
+  const files=[...(input.files||[])];
+  input.value='';
+  await saveImageFiles(files,'chat-upload');
+}
+
+async function saveImageFiles(files,source='chat-upload'){
+  if(!files.length) return;
+  const images=files.filter(file=>file.type&&file.type.startsWith('image/'));
+  if(images.length!==files.length) toast('当前图像生成只接收图片文件，已忽略非图片文件','info');
+  if(!images.length) return;
+  state.pendingImageAttachments=state.pendingImageAttachments||[];
+  for(const file of images){
+    try{
+      const dataUrl=await fileToDataUrl(file);
+      const data=await apiPost('/api/images/upload',{dataUrl,fileName:file.name,mime:file.type,source,publicBase:publicApiBase()});
+      if(data){
+        const rawUrl=data.url||data.publicUrl;
+        state.pendingImageAttachments.push({
+          id:data.id,
+          name:data.originalName||data.filename||file.name,
+          url:rawUrl,
+          publicUrl:mediaUrl(data.publicUrl||rawUrl),
+          path:data.path,
+          size:data.size,
+          mime:data.mime,
+        });
+      }
+    }catch(e){
+      toast(`保存图片失败：${file.name}`,'error');
+    }
+  }
+  save();
+  updatePendingImageStripOnly();
+  if(source!=='clipboard'&&images.length) toast(`已保存 ${images.length} 张图片，可随消息一起发送`,'success');
 }
 
 function toggleSkillPopup(){
@@ -458,7 +690,9 @@ function toggleModelPopup(){
     if(body){
       const models=getEnabledModels();
       body.innerHTML=`<div class="model-popup-item${state.chatModelOverride==='auto'?' active':''}" onclick="selectModel('auto')">自动（按场景）</div>`+
-        models.map(m=>`<div class="model-popup-item${state.chatModelOverride===m.id?' active':''}" onclick="selectModel('${esc(m.id)}')">${esc(m.name)} <span style="margin-left:auto;color:var(--c-ink-muted);font-size:11px">${esc(m.provider)}</span></div>`).join('');
+        (models.length
+          ? models.map(m=>`<div class="model-popup-item${state.chatModelOverride===m.id?' active':''}" onclick="selectModel('${esc(m.id)}')">${esc(m.name)} <span style="margin-left:auto;color:var(--c-ink-muted);font-size:11px">${esc(m.provider)}</span></div>`).join('')
+          : '<div class="empty-text" style="padding:12px">还没有可用模型，请先到设置 > 模型配置添加真实 Provider。</div>');
     }
     placeInputPopup(popup,$('#modelPopupBtn'),'right');
     popup.style.display='flex';
@@ -466,23 +700,37 @@ function toggleModelPopup(){
   }
 }
 
-function toggleProfilePopup(){
-  const popup=$('#profilePopup');
+function renderChatAgentPopup(){
+  const profiles=getProfiles();
+  return profiles.map(p=>{
+    const disabled=p.enabled===false;
+    const active=state.activeProfile===p.id;
+    const model=p.modelId==='auto'?'自动':(getModelById(p.modelId)?.name||p.model||'未设置');
+    const skillCount=(p.skillIds||[]).length;
+    return `<button class="chat-agent-item${active?' active':''}${disabled?' disabled':''}" onclick="selectChatProfile('${esc(p.id)}')">
+      ${profileAvatarHtml(p,'chat-agent-avatar')}
+      <span class="chat-agent-main"><strong>${esc(p.name||'未命名 Agent')}</strong><small>${disabled?'已关闭':esc(model)}${skillCount?` · ${skillCount} 技能`:''}</small></span>
+    </button>`;
+  }).join('') || '<div class="empty-text" style="padding:12px">暂无 Agent</div>';
+}
+
+function toggleChatAgentPopup(event){
+  if(event) event.stopPropagation();
+  const popup=$('#chatAgentPopup');
   if(!popup) return;
-  const isVisible=popup.style.display!=='none';
-  closeAllInputPopups();
-  if(!isVisible){
-    const body=$('#profilePopupBody');
-    if(body){
-      const profiles=getProfiles();
-      body.innerHTML=profiles.map(p=>`<div class="model-popup-item${state.activeProfile===p.id?' active':''}" onclick="selectChatProfile('${esc(p.id)}')">
-        <span>${esc(p.name)}</span>
-        <span style="margin-left:auto;color:var(--c-ink-muted);font-size:11px">${esc(p.modelId==='auto'?'自动':(getModelById(p.modelId)?.name||p.model||''))}</span>
-      </div>`).join('');
-    }
-    placeInputPopup(popup,$('#profilePopupBtn'),'left');
-    popup.style.display='flex';
-    setTimeout(()=>document.addEventListener('click',closePopupsOnOutsideClick,{once:true}),10);
+  const show=popup.style.display==='none';
+  popup.innerHTML=renderChatAgentPopup();
+  popup.style.display=show?'flex':'none';
+  state.agentPopupOpen=show;
+  if(show) setTimeout(()=>document.addEventListener('click',closeAgentPopupOnOutsideClick,{once:true}),10);
+}
+
+function closeAgentPopupOnOutsideClick(e){
+  const popup=$('#chatAgentPopup');
+  const btn=$('#chatAgentSwitchBtn');
+  if(popup && popup.style.display!=='none' && !popup.contains(e.target) && !btn?.contains(e.target)){
+    popup.style.display='none';
+    state.agentPopupOpen=false;
   }
 }
 
@@ -505,70 +753,79 @@ function placeInputPopup(popup,anchor,align){
 function closePopupsOnOutsideClick(e){
   const sp=$('#skillPopup');
   const mp=$('#modelPopup');
-  const pp=$('#profilePopup');
   const skillBtn=$('#skillPopupBtn');
   const modelBtn=$('#modelPopupBtn');
-  const profileBtn=$('#profilePopupBtn');
   if(sp && sp.style.display!=='none' && !sp.contains(e.target) && !skillBtn?.contains(e.target)){
     sp.style.display='none';
   }
   if(mp && mp.style.display!=='none' && !mp.contains(e.target) && !modelBtn?.contains(e.target)){
     mp.style.display='none';
   }
-  if(pp && pp.style.display!=='none' && !pp.contains(e.target) && !profileBtn?.contains(e.target)){
-    pp.style.display='none';
-  }
 }
 
 function closeAllInputPopups(){
   const sp=$('#skillPopup');
   const mp=$('#modelPopup');
-  const pp=$('#profilePopup');
   if(sp) sp.style.display='none';
   if(mp) mp.style.display='none';
-  if(pp) pp.style.display='none';
 }
 
 function selectModel(m){
   state.chatModelOverride=m;
   if(m!=='auto'){
     const item=getModelById(m);
-    state.model.model=item?.name||m;
+    state.model={...state.model,provider:item?.provider||state.model.provider,model:item?.name||m,base:item?.base||state.model.base,key:item?.key||state.model.key};
   }
   save();
   closeAllInputPopups();
-  const btn=$('#modelPopupBtn');
-  if(btn) btn.textContent=m==='auto'?'自动':(getModelById(m)?.name||m);
+  renderPage();
 }
 
 function selectChatProfile(id){
+  const profiles=getProfiles();
+  const requested=profiles.find(p=>p.id===id);
+  if(requested?.enabled===false){
+    toast('这个 Agent 已关闭，不能在对话中启用','info');
+    return;
+  }
   state.activeProfile=id||'default';
   const p=getActiveProfile();
+  const c=currentChat();
+  if(c&&!isCliChat(c)){
+    c.agentId=p?.id||'';
+    c.agentName=p?.name||'';
+    apiPut('/api/chats/'+encodeURIComponent(c.id),{agentId:c.agentId,agentName:c.agentName});
+  }
   save();
   closeAllInputPopups();
-  const btn=$('#profilePopupBtn');
-  if(btn) btn.textContent=p?.name||'默认助手';
-  toast('已切换角色: '+(p?.name||'默认助手'),'success');
+  const popup=$('#chatAgentPopup');
+  if(popup) popup.style.display='none';
+  toast('已切换 Agent: '+(p?.name||'默认助手'),'success');
   renderPage();
+}
+
+function selectedProfileSkills(profile){
+  if(!profile) return [];
+  const ids=Array.isArray(profile.skillIds)?profile.skillIds:[];
+  return (state.skills||[]).filter(s=>ids.includes(s.id));
 }
 
 function getEnabledModels(){
   const cfg=state.modelsConfig||{};
   const lib=Array.isArray(cfg.library)?cfg.library:[];
-  if(lib.length) return lib.filter(m=>m.enabled!==false);
-  return [{id:state.model.model,name:state.model.model,provider:state.model.provider||'default'}];
+  return lib.filter(m=>m.enabled!==false);
 }
 function getModelById(id){
   return (state.modelsConfig?.library||[]).find(m=>m.id===id||m.name===id);
 }
 function scenarioModel(scene){
-  const id=state.modelsConfig?.scenarios?.[scene] || state.modelsConfig?.scenarios?.chat || state.model.model;
-  return getModelById(id)?.name || id || state.model.model;
+  const id=state.modelsConfig?.scenarios?.[scene] || state.modelsConfig?.scenarios?.chat || state.model.model || '';
+  return getModelById(id)?.name || id || '';
 }
 function effectiveChatModelName(){
   const p=getActiveProfile();
   if(p?.modelId && p.modelId!=='auto') return getModelById(p.modelId)?.name || p.model || scenarioModel('chat');
-  return scenarioModel('chat');
+  return scenarioModel('chat') || '未配置模型';
 }
 
 function insertSkill(name){
@@ -593,12 +850,48 @@ function sourceTagClass(src){
 }
 
 function sourceTagLabel(src){
-  if(!src) return 'WebUI';
+  if(!src) return 'webUI';
   const s=src.toLowerCase();
   if(s.includes('feishu')||s.includes('飞书')||s.includes('lark')) return '飞书';
-  if(s.includes('terminal')||s.includes('终端')||s.includes('cli')) return '终端';
-  if(s.includes('webui')||s.includes('web')) return 'WebUI';
+  if(s.includes('terminal')||s.includes('终端')||s.includes('cli')) return 'CLI';
+  if(s.includes('webui')||s.includes('web')) return 'webUI';
   return src;
+}
+
+async function refreshChatSources({limit=state.cliSessionLimit||500,keepCurrent=true}={}){
+  const [sessions, chats] = await Promise.all([
+    apiGet('/api/cli/sessions?limit='+encodeURIComponent(limit)),
+    apiGet('/api/chats'),
+  ]);
+  const webChats = (Array.isArray(chats)?chats:[]).map(c => ({
+    id: c.id,
+    title: c.title || '新建对话',
+    source: c.source || 'WebUI',
+    messages: state.chatFullData[c.id]?.messages || [],
+    preview: c.preview || '',
+    messageCount: c.messageCount || 0,
+    updatedAt: c.updatedAt || c.createdAt || Date.now(),
+    createdAt: c.createdAt || c.updatedAt || Date.now(),
+    readOnly: false,
+    pinned: !!c.pinned,
+    agentId: c.agentId || '',
+  }));
+  const cliChats = (Array.isArray(sessions)?sessions:[]).map(s => ({
+    id: s.id,
+    title: s.title || s.preview || '未命名对话',
+    source: s.source || 'cli',
+    messages: state.chatFullData[s.id]?.messages || [],
+    preview: s.preview || '',
+    messageCount: s.messageCount || 0,
+    updatedAt: s.updatedAt || s.createdAt || Date.now(),
+    createdAt: s.createdAt || s.updatedAt || Date.now(),
+    readOnly: true,
+  }));
+  const byId=new Map();
+  [...webChats, ...cliChats].forEach(item=>{ if(item&&item.id&&!byId.has(item.id)) byId.set(item.id,item); });
+  state.chats=[...byId.values()].sort(compareChatCreatedAsc);
+  if(!keepCurrent || !state.chats.some(c=>c.id===state.currentChat)) state.currentChat=state.chats[state.chats.length-1]?.id||null;
+  return {web:webChats.length,cli:cliChats.length,total:state.chats.length};
 }
 
 function openHistoryPopup(){
@@ -612,6 +905,8 @@ function openHistoryPopup(){
     <div class="history-popup-header">
       <h4>历史记录</h4>
       <div class="history-popup-actions">
+        <button class="btn btn-xs btn-secondary" onclick="refreshHistorySources()">刷新</button>
+        <button class="btn btn-xs btn-secondary" onclick="loadMoreCliHistory()">加载更多</button>
         <button class="btn btn-xs btn-secondary" onclick="histSelectAll()">全选</button>
         <button class="btn btn-xs btn-secondary" id="histDeleteBtn" style="display:none" onclick="deleteSelectedHist()">删除选中</button>
         <button class="history-popup-close" onclick="closeHistoryPopup()">${SVG.x}</button>
@@ -619,9 +914,9 @@ function openHistoryPopup(){
     </div>
     <div class="history-popup-filter" id="histFilterBar">
       <span class="filter-chip active" onclick="setHistFilter('all')">全部</span>
-      <span class="filter-chip" onclick="setHistFilter('webui')">WebUI</span>
+      <span class="filter-chip" onclick="setHistFilter('webui')">webUI</span>
       <span class="filter-chip" onclick="setHistFilter('feishu')">飞书</span>
-      <span class="filter-chip" onclick="setHistFilter('terminal')">终端</span>
+      <span class="filter-chip" onclick="setHistFilter('terminal')">CLI</span>
     </div>
     <div class="history-popup-body" id="histBody"></div>
   </div>`;
@@ -639,7 +934,7 @@ function setHistFilter(f){
   const bar=$('#histFilterBar');
   if(!bar) return;
   bar.querySelectorAll('.filter-chip').forEach(c=>{
-    c.classList.toggle('active',c.textContent.trim()===(f==='all'?'全部':f==='webui'?'WebUI':f==='feishu'?'飞书':'终端'));
+    c.classList.toggle('active',c.textContent.trim()===(f==='all'?'全部':f==='webui'?'webUI':f==='feishu'?'飞书':'CLI'));
   });
   refreshHistBody();
 }
@@ -678,7 +973,7 @@ async function deleteSingleHist(id){
 function refreshHistBody(){
   const body=$('#histBody');
   if(!body) return;
-  let chats=[...state.chats].sort((a,b)=>(b.updatedAt||0)-(a.updatedAt||0));
+  let chats=[...state.chats].sort(compareChatCreatedAsc);
   if(histFilter!=='all'){
     chats=chats.filter(c=>{
       const cls=sourceTagClass(c.source||'');
@@ -716,6 +1011,24 @@ function selectChatFromHist(id){
   selectChat(id);
 }
 
+async function refreshHistorySources(){
+  const stats=await refreshChatSources({limit:state.cliSessionLimit||500,keepCurrent:true});
+  refreshHistBody();
+  const sessionItems=$('#sessionItems');
+  if(sessionItems) sessionItems.innerHTML=renderSessionList();
+  toast(`已刷新历史：WebUI ${stats.web} 个，终端 ${stats.cli} 个`,'success');
+}
+
+async function loadMoreCliHistory(){
+  state.cliSessionLimit=Math.min((state.cliSessionLimit||500)+500,5000);
+  save();
+  const stats=await refreshChatSources({limit:state.cliSessionLimit,keepCurrent:true});
+  refreshHistBody();
+  const sessionItems=$('#sessionItems');
+  if(sessionItems) sessionItems.innerHTML=renderSessionList();
+  toast(`已加载到最多 ${state.cliSessionLimit} 个终端历史，当前终端 ${stats.cli} 个`,'success');
+}
+
 function histSelectAll(){
   const body=$('#histBody');
   if(!body) return;
@@ -740,35 +1053,27 @@ function histSelectAll(){
 }
 
 function renderSessionList(){
-  // Pinned chats first
-  const sorted = [...state.chats].sort((a, b) => {
-    if (a.pinned && !b.pinned) return -1;
-    if (!a.pinned && b.pinned) return 1;
-    return (b.updatedAt || 0) - (a.updatedAt || 0);
-  });
-  const groups={today:[],yesterday:[],older:[],pinned:[]};
-  const now=Date.now();
+  const sorted = [...state.chats].sort(compareChatCreatedAsc);
+  const groups={webui:[],terminal:[]};
   sorted.forEach(c=>{
-    if (c.pinned) { groups.pinned.push(c); return; }
-    const diff=now-(c.updatedAt||0);
-    if(diff<86400000) groups.today.push(c);
-    else if(diff<172800000) groups.yesterday.push(c);
-    else groups.older.push(c);
+    groups[isCliChat(c)?'terminal':'webui'].push(c);
   });
   let html='';
   const render=(label,list)=>{
     if(!list.length) return '';
-    return `<div class="session-group-header"><span class="session-group-label">${label}</span><span class="session-group-count">${list.length}</span></div>`+
+    const groupClass=label==='CLI'?' cli':' webui';
+    return `<div class="session-group-header${groupClass}"><span class="session-group-label">${label}</span><span class="session-group-count">${list.length}</span></div>`+
       list.map(c=>{
-        const src=c.source||'WebUI';
-        const cls=sourceTagClass(src);
-        const label=sourceTagLabel(src);
         const readonly=isCliChat(c);
         const preview=c.messages?.length?stripArtifactTagsForPreview(c.messages[c.messages.length-1].content||''):(c.preview||'暂无消息');
         return `<div class="session-item${state.currentChat===c.id?' active':''}">
         <div class="session-item-body" onclick="selectChat('${c.id}')">
-          <span class="s-title">${c.pinned?'📌 ':''}${esc(c.title)} <span class="source-tag ${cls}" style="font-size:9px;vertical-align:middle">${label}</span>${readonly?' <span class="readonly-tag mini">只读</span>':''}</span>
-          <span class="s-preview">${esc(preview)}</span>
+          <div class="session-card-main">
+            <div class="session-card-top">
+              <span class="s-title">${c.pinned?'📌 ':''}${esc(c.title)}</span>
+            </div>
+            <span class="s-preview">${esc(preview)}</span>
+          </div>
         </div>
         <div class="session-more-wrap">
           <button class="session-more-btn" onclick="event.stopPropagation();toggleSessionMenu('${c.id}')">
@@ -791,11 +1096,33 @@ function renderSessionList(){
         </div>
       </div>`}).join('');
   };
-  html+=render('📌 置顶',groups.pinned);
-  html+=render('今天',groups.today);
-  html+=render('昨天',groups.yesterday);
-  html+=render('更早',groups.older);
+  html+=render('webUI',groups.webui);
+  html+=render('CLI',groups.terminal);
   return html||'<div class="empty-state" style="padding:40px 0"><span>暂无会话</span></div>';
+}
+
+function chatCreatedTime(c){
+  const n=Number(c?.createdAt||0);
+  return Number.isFinite(n)&&n>0?n:Number(c?.updatedAt||0)||0;
+}
+
+function compareChatCreatedAsc(a,b){
+  const diff=chatCreatedTime(a)-chatCreatedTime(b);
+  if(diff) return diff;
+  return String(a?.id||'').localeCompare(String(b?.id||''));
+}
+
+function sessionAgentForChat(c){
+  const profiles=getProfiles();
+  const id=c?.agentId||state.chatFullData?.[c?.id]?.agentId||'';
+  return profiles.find(p=>p.id===id) || getActiveProfile();
+}
+
+function sessionModelForChat(c,agent){
+  if(isCliChat(c)) return c?._model||c?.model||'CLI';
+  if(c?._model||c?.model) return c._model||c.model;
+  if(agent?.modelId&&agent.modelId!=='auto') return getModelById(agent.modelId)?.name||agent.model||scenarioModel('chat');
+  return scenarioModel('chat')||state.model.model||'自动';
 }
 
 function stripArtifactTagsForPreview(raw){
@@ -866,10 +1193,11 @@ function openLatestPreviewPanel(){
 function renderMsg(m){
   let thinkingHtml='';
   const tagThink=m.role==='assistant'&&typeof HermesArtifact!=='undefined'?HermesArtifact.parseHermesStream(m.content||'').think:'';
-  const thinkBody=[m.thinking||m.reasoning||'',tagThink].filter(Boolean).join('\n---\n');
+  const rawThink=cleanThinkingContent([m.thinking||m.reasoning||'',tagThink].filter(Boolean).join('\n---\n'));
+  const thinkBody=rawThink || (m._streaming ? '正在理解你的请求，等待模型返回...' : '');
   // Skip thinking if it's essentially same as visible output
   const cleanContent=(m.content||'').replace(/<redacted_thinking>[\s\S]*?<\/redacted_thinking>/g,'').trim();
-  const skipThink=thinkBody && cleanContent && thinkBody.trim().length>20 && cleanContent.includes(thinkBody.trim().slice(0,40));
+  const skipThink=rawThink && cleanContent && rawThink.trim().length>20 && cleanContent.includes(rawThink.trim().slice(0,40));
   if(thinkBody && !skipThink){
     const id='th_'+(m._msgId||(m.ts||Date.now()))+'_'+(m.ts||0);
     const duration=m.thinkingDuration?` · ${m.thinkingDuration}ms`:'';
@@ -924,7 +1252,7 @@ function renderMsg(m){
   if(m.step) stepHtml=`<div class="msg-step-indicator">Step ${m.step}</div>`;
   const msgId = m._msgId || '';
   // Clean content: remove model normalization warnings
-  let content = redactSecrets(m.content || '');
+  let content = cleanMessageContent(m.content || '');
   content = content.replace(/⚠️\s*Normalized model.*?for deepseek\.?\n?/g, '');
   content = content.replace(/⚠\s*Normalized model.*?for deepseek\.?\n?/g, '');
 
@@ -953,8 +1281,12 @@ function renderMsg(m){
   const modelBadge = '';
   // Streaming dots at bottom of content
   const streamDots = m._streaming ? '<span class="msg-streaming"><span></span><span></span><span></span></span>' : '';
+  const chat=currentChat();
+  const msgAvatar=m.role==='user'
+    ? '<span class="msg-avatar">U</span>'
+    : profileAvatarHtml(profileForChat(chat),'msg-avatar');
   return `<div class="msg ${m.role} animate-in" id="msg_${msgId}">
-    <div class="msg-avatar">${m.role==='user'?'U':'H'}</div>
+    ${msgAvatar}
     <div class="msg-main">
       ${thinkingHtml}
       ${toolCallsHtml}
@@ -982,14 +1314,81 @@ function toggleAllThinking(id){
     toggle.classList.toggle('collapsed',!shouldOpen);
   });
 }
+function cleanMessageContent(raw){
+  let content = redactSecrets(raw || '');
+  content = content.replace(/⚠️\s*Normalized model.*?for deepseek\.?\n?/g, '');
+  content = content.replace(/⚠\s*Normalized model.*?for deepseek\.?\n?/g, '');
+  content = content.replace(/(?:^|\n)\s*(?:文件位置|本地路径)：[\s\S]*?(?=\n\s*\n|$)/g, '');
+  content = content.replace(/(?:^|\n)\s*[-*]\s*(?:文件位置|本地路径)：?.*?(?=\n|$)/g, '');
+  content = content.replace(/```(?:diff|patch)[\s\S]*?(?:api\/images\/generate|Generate image via Hermes WebUI)[\s\S]*?```/gi, '').trim();
+  content = content.replace(/```(?:python|py)[\s\S]*?(?:api\/images\/generate|Generate image via Hermes WebUI)[\s\S]*?```/gi, '').trim();
+  content = content.replace(/(?:^|\n)\s*[`|¦]\s*review diff[\s\S]*?(?:api\/images\/generate|Generate image via Hermes WebUI)[\s\S]*?(?=\n\s*\n|$)/gi, '').trim();
+  content = content.replace(/(?:^|\n)\s*\+\s*(?:import requests|URL\s*=|PAYLOAD\s*=|r\s*=|outputs\s*=|if outputs|for o in outputs)[\s\S]*?(?=\n\s*\n|$)/gi, '').trim();
+  return content.trim();
+}
+
+function cleanThinkingContent(raw){
+  let content=redactSecrets(raw||'');
+  content = content.replace(/```(?:diff|patch)[\s\S]*?(?:api\/images\/generate|Generate image via Hermes WebUI)[\s\S]*?```/gi, '').trim();
+  content = content.replace(/```(?:python|py)[\s\S]*?(?:api\/images\/generate|Generate image via Hermes WebUI)[\s\S]*?```/gi, '').trim();
+  content = content.replace(/(?:^|\n)\s*[`|¦]\s*review diff[\s\S]*?(?:api\/images\/generate|Generate image via Hermes WebUI)[\s\S]*/gi, '').trim();
+  content = content.replace(/(?:^|\n)\s*(?:a\/tmp\/|b\/tmp\/|@@|\+{1,3}|- {0,1}).*(?:gen_|api\/images\/generate|requests\.post|PAYLOAD|outputs)/gi, '').trim();
+  return content.trim();
+}
+
 function renderMessageMarkdown(text){
   const raw=String(text||'');
   if(typeof marked!=='undefined'&&marked&&typeof marked.parse==='function'){
     try{
-      return marked.parse(raw,{breaks:true});
+      return marked.parse(raw,{breaks:true}).replace(/(<img\b[^>]*\bsrc=["'])(\/api\/[^"']+)(["'][^>]*>)/gi,(m,p,u,s)=>p+esc(mediaUrl(u))+s);
     }catch(_){ }
   }
   return `<pre>${esc(raw)}</pre>`;
+}
+
+const COPY_ICON='<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>';
+const FILE_LOCATION_ICON='<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M8 15h8"/><path d="M8 18h5"/></svg>';
+
+function normalizeMediaRef(value){
+  const text=String(value||'').trim();
+  if(!text) return '';
+  try{
+    const u=new URL(mediaUrl(text),window.location.href);
+    return u.pathname.replace(/\/+$/,'').toLowerCase();
+  }catch(_){
+    return text.split('?')[0].replace(/\/+$/,'').toLowerCase();
+  }
+}
+
+function imagePathForSrc(src){
+  const key=normalizeMediaRef(src);
+  if(!key) return '';
+  const chats=state.chats||[];
+  for(const chat of chats){
+    for(const msg of (chat.messages||[])){
+      const groups=[
+        ...(msg.imageGeneration?.outputs||[]),
+        ...(msg.imageGeneration?.inputs||[]),
+        ...(msg.attachments||[]),
+      ];
+      for(const item of groups){
+        const urls=[item.url,item.publicUrl].filter(Boolean);
+        if(urls.some(u=>normalizeMediaRef(u)===key)) return item.path||'';
+      }
+    }
+  }
+  for(const msg of (currentChat()?.messages||[])){
+    const groups=[
+      ...(msg.imageGeneration?.outputs||[]),
+      ...(msg.imageGeneration?.inputs||[]),
+      ...(msg.attachments||[]),
+    ];
+    for(const item of groups){
+      const urls=[item.url,item.publicUrl].filter(Boolean);
+      if(urls.some(u=>normalizeMediaRef(u)===key)) return item.path||'';
+    }
+  }
+  return '';
 }
 
 function enhanceMessageMarkdown(root){
@@ -1005,6 +1404,30 @@ function enhanceMessageMarkdown(root){
     wrapper.className='md-table-scroll';
     table.parentNode.insertBefore(wrapper,table);
     wrapper.appendChild(table);
+  });
+  root.querySelectorAll('img').forEach(img=>{
+    if(img.closest('.image-preview-wrap')) return;
+    const src=img.getAttribute('src')||'';
+    const alt=img.getAttribute('alt')||'图片';
+    const wrapper=document.createElement('span');
+    wrapper.className='image-preview-wrap';
+    const declaredWidth=img.getAttribute('width')||img.style.width||'';
+    if(declaredWidth) wrapper.style.width=declaredWidth;
+    img.parentNode.insertBefore(wrapper,img);
+    wrapper.appendChild(img);
+    const parent=wrapper.parentElement;
+    if(parent?.tagName==='P' && parent.textContent.trim()==='') parent.classList.add('image-only-block');
+    img.style.cursor='zoom-in';
+    img.style.display='block';
+    img.onclick=()=>openImagePreview(src,alt);
+    const bar=document.createElement('span');
+    bar.className='image-preview-actions';
+    const localPath=imagePathForSrc(src);
+    bar.innerHTML=`<button type="button" title="复制图片" aria-label="复制图片">${COPY_ICON}</button><button type="button" title="打开所在文件夹" aria-label="打开所在文件夹" ${localPath?'':'disabled'}>${FILE_LOCATION_ICON}</button>`;
+    const buttons=bar.querySelectorAll('button');
+    buttons[0].onclick=(event)=>{event.stopPropagation();copyImageFromUrl(src)};
+    buttons[1].onclick=(event)=>{event.stopPropagation();localPath?openImageLocation(localPath):toast('没有找到本地文件位置','info')};
+    wrapper.appendChild(bar);
   });
   root.querySelectorAll('pre').forEach(pre => {
     if (pre.querySelector('.copy-code-btn') || pre.parentElement.classList.contains('code-block-wrapper')) return;
@@ -1035,6 +1458,73 @@ function formatMsg(text){
   return renderMessageMarkdown(text);
 }
 
+function copyText(text,msg='已复制'){
+  const value=String(text||'');
+  if(!value) return;
+  navigator.clipboard?.writeText(value).then(()=>toast(msg,'success')).catch(()=>{
+    const ta=document.createElement('textarea');
+    ta.value=value;
+    document.body.appendChild(ta);
+    ta.select();
+    try{document.execCommand('copy');toast(msg,'success')}catch(_){toast('复制失败','error')}
+    ta.remove();
+  });
+}
+
+async function openImageLocation(localPath){
+  try{
+    const data=await apiPost('/api/system/open-path',{path:localPath});
+    if(data) toast('已打开图片所在位置','success');
+    else toast('打开文件位置失败','error');
+  }catch(_){
+    toast('打开文件位置失败','error');
+  }
+}
+
+async function copyImageFromUrl(src){
+  const url=mediaUrl(src);
+  try{
+    const resp=await fetch(url,{cache:'no-store'});
+    const blob=await resp.blob();
+    if(navigator.clipboard&&window.ClipboardItem){
+      let copyBlob=blob;
+      let mime=blob.type||'image/png';
+      if(mime!=='image/png'){
+        try{
+          const bitmap=await createImageBitmap(blob);
+          const canvas=document.createElement('canvas');
+          canvas.width=bitmap.width;
+          canvas.height=bitmap.height;
+          const ctx=canvas.getContext('2d');
+          ctx.drawImage(bitmap,0,0);
+          copyBlob=await new Promise(resolve=>canvas.toBlob(resolve,'image/png'));
+          mime='image/png';
+        }catch(_){}
+      }
+      if(!copyBlob) throw new Error('copy failed');
+      await navigator.clipboard.write([new ClipboardItem({[mime]:copyBlob})]);
+      toast('图片已复制','success');
+      return;
+    }
+  }catch(_){}
+  copyText(url,'当前浏览器不支持直接复制图片，已复制图片地址');
+}
+
+function toggleImageZoom(el,event){
+  if(event) event.stopPropagation();
+  if(!el) return;
+  el.classList.toggle('zoomed');
+  el.style.cursor=el.classList.contains('zoomed')?'zoom-out':'zoom-in';
+}
+
+function openImagePreview(src,alt='图片'){
+  const safeSrc=esc(mediaUrl(src));
+  openModal(`<div class="image-lightbox" onclick="closeModal()">
+    <button class="image-lightbox-close" onclick="event.stopPropagation();closeModal()" aria-label="关闭">${SVG.x}</button>
+    <img src="${safeSrc}" alt="${esc(alt||'图片')}" onclick="toggleImageZoom(this,event)">
+  </div>`,{className:'image-lightbox-shell'});
+}
+
 function currentChat(){return state.chats.find(c=>c.id===state.currentChat)}
 function currentChatFull(){return state.chatFullData[state.currentChat]}
 function isCliChat(c){
@@ -1052,7 +1542,7 @@ async function removeChat(id,{silent=false}={}){
   }
   state.chats=state.chats.filter(x=>x.id!==id);
   delete state.chatFullData[id];
-  if(state.currentChat===id) state.currentChat=state.chats[0]?.id||null;
+  if(state.currentChat===id) state.currentChat=state.chats.sort(compareChatCreatedAsc)[state.chats.length-1]?.id||null;
   if(!silent) toast(cli?'已从 WebUI 隐藏该终端会话':'已删除', 'info');
   return true;
 }
@@ -1075,6 +1565,7 @@ async function syncCurrentChat(chatId){
         state.chats[idx].messageCount=(data.messages||[]).length;
       }
       state.chatFullData[chatId]=data;
+      state.chats.sort(compareChatCreatedAsc);
       const sessionItems=$('#sessionItems');
       if(sessionItems) sessionItems.innerHTML=renderSessionList();
     }
@@ -1082,21 +1573,23 @@ async function syncCurrentChat(chatId){
 }
 
 async function newChat(){
-  const data = await apiPost('/api/chats', { title: '新建对话' });
+  const profile=getActiveProfile();
+  const data = await apiPost('/api/chats', { title: '新建对话', agentId: profile?.id||'', agentName: profile?.name||'' });
   if (data) {
-    state.chats.unshift({ id: data.id, title: data.title, source:data.source||'WebUI', messages: [], updatedAt: data.updatedAt, createdAt:data.createdAt });
+    state.chats.push({ id: data.id, title: data.title, source:data.source||'WebUI', messages: [], updatedAt: data.updatedAt, createdAt:data.createdAt, agentId: profile?.id||'' });
     state.chatFullData[data.id] = data;
     state.currentChat = data.id;
   } else {
     // fallback: local-only
-    const c = { id: 'c'+Date.now(), title: '新建对话', messages: [], updatedAt: Date.now() };
-    state.chats.unshift(c);
+    const c = { id: 'c'+Date.now(), title: '新建对话', source:'WebUI', messages: [], updatedAt: Date.now(), createdAt:Date.now(), agentId: profile?.id||'' };
+    state.chats.push(c);
     state.currentChat = c.id;
   }
   renderPage();
 }
 
 async function selectChat(id){
+  const sessionScrollTop=$('#sessionItems')?.scrollTop || 0;
   state.currentChat = id;
   if (typeof HermesArtifact !== 'undefined') {
     try { HermesArtifact.resetSession(); HermesArtifact.setLayout('chat'); } catch (_) {}
@@ -1117,6 +1610,8 @@ async function selectChat(id){
         c.createdAt = data.createdAt || c.createdAt;
         c.updatedAt = data.updatedAt || c.updatedAt;
         c.readOnly = !!data.readOnly;
+        c.agentId = data.agentId || c.agentId || '';
+        c.agentName = data.agentName || c.agentName || '';
         c.messageCount = data.messageCount || (data.messages||[]).length;
         c.messages = data.messages || [];
         c._model = data.model || state.model.model;
@@ -1127,7 +1622,17 @@ async function selectChat(id){
       }
     }
   }
+  const selected=state.chats.find(x=>x.id===id);
+  const agentId=selected?.agentId||state.chatFullData[id]?.agentId||'';
+  if(agentId){
+    const p=getProfiles().find(x=>x.id===agentId&&x.enabled!==false);
+    if(p) state.activeProfile=p.id;
+  }
   renderPage();
+  requestAnimationFrame(()=>{
+    const list=$('#sessionItems');
+    if(list) list.scrollTop=sessionScrollTop;
+  });
 }
 
 function clearChat(){
@@ -1139,11 +1644,29 @@ function initChat(){
   const ta=$('#chatInput');
   if(!ta) return;
   ta.addEventListener('input',()=>{ta.style.height='auto';ta.style.height=Math.min(ta.scrollHeight,400)+'px'});
+  ta.addEventListener('paste',handleChatPaste);
   const area=$('#messagesArea');
   if(area){
     area.querySelectorAll('.msg-bubble').forEach(enhanceMessageMarkdown);
     area.scrollTop=area.scrollHeight;
   }
+}
+
+async function handleChatPaste(event){
+  const items=[...(event.clipboardData?.items||[])];
+  const imageFiles=items
+    .filter(item=>item.kind==='file'&&item.type&&item.type.startsWith('image/'))
+    .map((item,i)=>{
+      const file=item.getAsFile();
+      if(file && !file.name) {
+        try { return new File([file], `clipboard-${Date.now()}-${i}.png`, { type:file.type||'image/png' }); } catch { return file; }
+      }
+      return file;
+    })
+    .filter(Boolean);
+  if(!imageFiles.length) return;
+  event.preventDefault();
+  await saveImageFiles(imageFiles,'clipboard');
 }
 
 function autoResizeInput(ta){
@@ -1184,19 +1707,189 @@ function stopGeneration(){
   toast('已终止当前任务','info');
 }
 
+function imageAttachmentMarkdown(images=[]){
+  return images.map(img=>`![${img.name||'参考图片'}](${mediaUrl(img.url||img.publicUrl)})`).join('\n\n');
+}
+
+function generatedImageMarkdown(images=[]){
+  return images.map(img=>`![${img.name||'生成图片'}](${mediaUrl(img.url||img.publicUrl)})`).join('\n\n');
+}
+
+function imageAttachmentAgentText(images=[]){
+  if(!images.length) return '';
+  return '\n\n[用户上传的本地图片，已保存到本地。若用户要求生成/修改图片，请优先使用图像生成能力，并可把这些路径作为参考图。]\n'+images.map((img,i)=>{
+    const parts=[
+      `${i+1}. ${img.name||'参考图片'}`,
+      `本地路径：${img.path||'未返回'}`,
+      `预览地址：${mediaUrl(img.url||img.publicUrl)}`,
+    ];
+    return parts.join('\n');
+  }).join('\n\n');
+}
+
+function directImageContext(){
+  const c=currentChat();
+  const msgs=[...(c?.messages||[])].reverse();
+  const lastImageMsg=msgs.find(m=>m.role==='assistant'&&m.imageGeneration?.outputs?.length);
+  if(!lastImageMsg) return {prompt:'',attachments:[]};
+  const gen=lastImageMsg.imageGeneration||{};
+  const output=gen.outputs?.[0];
+  const previousPrompt=gen.prompt||gen.optimizedPrompt||output?.prompt||msgs.find(m=>m.role==='user'&&String(m.content||'').startsWith('图像生成：'))?.content || '';
+  const attachment=output ? {
+    id: output.id,
+    name: output.name||'上一张生成图',
+    url: output.url||output.publicUrl,
+    publicUrl: output.publicUrl||output.url,
+    path: output.path,
+    kind: 'output',
+  } : null;
+  return {
+    prompt: previousPrompt.replace(/^图像生成：/,'').trim(),
+    attachments: attachment ? [attachment] : [],
+  };
+}
+
+function imagePromptTextModel(profile){
+  if(state.chatModelOverride && state.chatModelOverride!=='auto' && !isImageModelId(state.chatModelOverride)) return state.chatModelOverride;
+  if(profile?.modelId && profile.modelId!=='auto' && !isImageModelId(profile.modelId)) return profile.modelId;
+  return 'auto';
+}
+
+async function optimizeImagePromptWithAgent(payload,signal){
+  const resp=await fetch(apiBase()+'/api/images/optimize-prompt',{
+    method:'POST',
+    cache:'no-store',
+    headers:{'Content-Type':'application/json','Cache-Control':'no-cache'},
+    body:JSON.stringify(payload),
+    signal,
+  });
+  const json=await resp.json().catch(()=>({}));
+  return json.code===0?json.data:null;
+}
+
+function isImageModelId(id){
+  if(!id||id==='auto') return false;
+  const model=getModelById(id);
+  if(!model) return false;
+  const tags=(model.tags||[]).map(t=>String(t).toLowerCase());
+  return model.apiFormat==='openai-image'||model.apiFormat==='openai_image'||model.kind==='image'||tags.includes('image')||tags.includes('vision');
+}
+
+function isImageGenerationIntent(pendingImages=[]){
+  if(state.forceImageGeneration) return true;
+  const ta=$('#chatInput');
+  if(String(ta?.value||'').trim().startsWith(IMAGE_PROMPT_PREFIX)) return true;
+  return false;
+}
+
+async function sendImageGenerationMessage(txt,pendingImages=[]){
+  const ta=$('#chatInput');
+  let c=currentChat();
+  if(!c) return;
+  const context=directImageContext();
+  const mergedImages=pendingImages.length?pendingImages:context.attachments;
+  const userPrompt=txt.replace(new RegExp('^'+IMAGE_PROMPT_PREFIX),'').trim()||'请基于上传图片生成一张新的图片。';
+  const basePrompt=context.prompt && txt && !pendingImages.length
+    ? `基于上一张生成图继续修改。上一轮提示：${context.prompt}\n本轮修改：${userPrompt}`
+    : userPrompt;
+  let prompt=basePrompt;
+  const imageInputIds=mergedImages.map(img=>img.id).filter(Boolean);
+  const userContent=`图像生成：${userPrompt}${mergedImages.length?'\n\n参考图片：\n'+imageAttachmentMarkdown(mergedImages):''}`;
+  const userMsg={role:'user',content:userContent,ts:Date.now(),attachments:mergedImages};
+  c.messages.push(userMsg);
+  if(c.title==='新建对话') c.title=userPrompt.slice(0,24);
+  c.updatedAt=Date.now();
+  if(ta){ta.value='';autoResizeInput(ta)}
+  state.pendingImageAttachments=[];
+  save();
+
+  const msgId='img_'+Date.now();
+  const assistantMsg={role:'assistant',content:state.forceImageGeneration?'正在生成图片...':'正在让 Agent 优化图像提示词...',_msgId:msgId,_streaming:true,ts:Date.now()};
+  c.messages.push(assistantMsg);
+  renderPage();
+  const streamController=new AbortController();
+  setStreamingState(true,streamController,msgId);
+  const area=$('#messagesArea');
+  if(area) area.scrollTop=area.scrollHeight;
+
+  try{
+    const profile=profileForChat(c);
+    if(!state.forceImageGeneration){
+      const optimized=await optimizeImagePromptWithAgent({
+        prompt:basePrompt,
+        userPrompt,
+        previousPrompt:context.prompt||'',
+        attachments:mergedImages.map(img=>({name:img.name||'',path:img.path||'',kind:img.kind||'input'})),
+        model:imagePromptTextModel(profile),
+        profileName:profile?.name||'默认助手',
+        profilePrompt:profile?.systemPrompt||'',
+      },streamController.signal);
+      if(optimized?.prompt) prompt=optimized.prompt;
+      assistantMsg.content='正在生成图片...';
+      assistantMsg.thinking=optimized?.usedAgent?`Agent 已在不改变原意的前提下优化提示词：\n${prompt}`:'';
+      renderMsgUpdate(msgId,assistantMsg);
+    }
+    const requestModel = isImageModelId(state.chatModelOverride) ? state.chatModelOverride : 'auto';
+    const resp=await fetch(apiBase()+'/api/images/generate',{
+      method:'POST',
+      cache:'no-store',
+      headers:{'Content-Type':'application/json','Cache-Control':'no-cache'},
+      body:JSON.stringify({
+        prompt,
+        sourcePrompt:userPrompt,
+        optimizedByAgent:!state.forceImageGeneration,
+        attachmentIds:imageInputIds,
+        model:requestModel,
+        chatId:c._id||c.id,
+        publicBase:publicApiBase(),
+      }),
+      signal:streamController.signal,
+    });
+    const json=await resp.json().catch(()=>({}));
+    const data=json.code===0?json.data:null;
+    if(!data){
+      assistantMsg.content='图像生成失败：'+(json.msg||'请检查图像模型场景是否已配置为 OpenAI 图片接口。');
+      toast('图像生成失败','error');
+    }else{
+      assistantMsg.imageGeneration={model:data.model,outputs:data.outputs||[],inputs:data.inputs||[],prompt:data.prompt||prompt,sourcePrompt:userPrompt,optimizedByAgent:!state.forceImageGeneration};
+      assistantMsg.content=generatedImageMarkdown(assistantMsg.imageGeneration.outputs)||data.content||'已生成图片。';
+      const idx=state.chats.findIndex(x=>x.id===c.id);
+      if(data.chat&&idx>=0){
+        state.chats[idx].title=data.chat.title||state.chats[idx].title;
+        state.chats[idx].updatedAt=data.chat.updatedAt||Date.now();
+        state.chats[idx].messages=[...c.messages];
+      }
+      toast('图片已生成并保存到本地','success');
+    }
+  }catch(e){
+    if(e.name==='AbortError'){
+      assistantMsg.content='已终止任务。';
+      toast('已终止当前任务','info');
+    }else{
+      assistantMsg.content='图像生成失败：'+(e.message||'未知错误');
+      toast('图像生成失败','error');
+    }
+  }finally{
+    assistantMsg._streaming=false;
+    renderMsgUpdate(msgId,assistantMsg);
+    setStreamingState(false,null,null);
+  }
+}
+
 async function sendMessage(){
   const ta=$('#chatInput');
   const txt=ta?ta.value.trim():'';
-  if(!txt) return;
+  const pendingImages=[...(state.pendingImageAttachments||[])];
+  if(!txt && !pendingImages.length) return;
   
   // If current chat is a CLI session (read-only), create a new WebUI chat
   if (state.currentChat) {
     const cur = currentChat();
     if (cur && isCliChat(cur)) {
       // Terminal/CLI sessions are read-only snapshots. New input starts a normal WebUI chat.
-      const data = await apiPost('/api/chats', { title: txt.slice(0, 24), source:'WebUI' });
+      const data = await apiPost('/api/chats', { title: (txt||'图片任务').slice(0, 24), source:'WebUI' });
       if (data) {
-        state.chats.unshift({ id: data.id, title: data.title, source: data.source || 'WebUI', messages: [], updatedAt: data.updatedAt, createdAt:data.createdAt });
+        state.chats.push({ id: data.id, title: data.title, source: data.source || 'WebUI', messages: [], updatedAt: data.updatedAt, createdAt:data.createdAt });
         state.chatFullData[data.id] = data;
         state.currentChat = data.id;
         toast('终端会话只读，已为这条消息新建 WebUI 对话', 'info');
@@ -1206,18 +1899,36 @@ async function sendMessage(){
   
   // Create chat if needed
   if(!state.currentChat) {
-    await newChat();
+    const profile=getActiveProfile();
+    const data = await apiPost('/api/chats', { title: '新建对话', agentId: profile?.id||'', agentName: profile?.name||'' });
+    if (data) {
+      state.chats.push({ id: data.id, title: data.title, source:data.source||'WebUI', messages: [], updatedAt: data.updatedAt, createdAt:data.createdAt, agentId: profile?.id||'' });
+      state.chatFullData[data.id] = data;
+      state.currentChat = data.id;
+    } else {
+      await newChat();
+    }
     await new Promise(r => setTimeout(r, 50));
   }
   const c=currentChat();
   if(!c) return;
 
+  if(isImageGenerationIntent(pendingImages)){
+    await sendImageGenerationMessage(txt,pendingImages);
+    return;
+  }
+
   // Add user message to local state immediately (backend will also add it)
-  const userMsg = {role:'user',content:txt,ts:Date.now()};
+  const contentWithAttachments=txt+imageAttachmentAgentText(pendingImages);
+  const userMsg = {role:'user',content:contentWithAttachments,ts:Date.now(),attachments:pendingImages};
   c.messages.push(userMsg);
-  if(c.title==='新建对话') c.title=txt.slice(0,24);
+  if(c.title==='新建对话') c.title=(txt||'图片任务').slice(0,24);
   c.updatedAt=Date.now();
   if(ta){ta.value='';autoResizeInput(ta)}
+  if(pendingImages.length){
+    state.pendingImageAttachments=[];
+    save();
+  }
 
   const msgId = '' + Date.now();
   const assistantMsg = { role: 'assistant', content: '', thinking: '', toolCalls: [], _msgId: msgId, _streaming: true, ts: Date.now() };
@@ -1236,9 +1947,17 @@ async function sendMessage(){
   let fullReasoning = '';
   const tools = [];
 
-  const profile=getActiveProfile();
+  const profile=profileForChat(c);
   const requestModel = state.chatModelOverride !== 'auto' ? state.chatModelOverride : (profile?.modelId && profile.modelId !== 'auto' ? profile.modelId : 'auto');
-  await apiStream('/api/chats/' + (c._id || c.id) + '/messages', { content: txt, scene:'chat', model:requestModel, profileId:profile?.id, profilePrompt:profile?.systemPrompt||'' }, {
+  await apiStream('/api/chats/' + (c._id || c.id) + '/messages', {
+    content: contentWithAttachments,
+    scene:'chat',
+    model:requestModel,
+    profileId:profile?.id,
+    profileName:profile?.name||'默认助手',
+    profilePrompt:profile?.systemPrompt||'',
+    profileSkillIds:profile?.skillIds||[],
+  }, {
     signal: streamController.signal,
     onToken(text) {
       fullContent += text;
@@ -1484,11 +2203,10 @@ function flushMsgUpdates() {
       // In-place update: only replace bubble content to avoid flickering
       const bubble = el.querySelector('.msg-bubble');
       if (bubble) {
-        let content = msg.content || '';
-        content = content.replace(/⚠️\s*Normalized model.*?for deepseek\.?\n?/g, '');
-        content = content.replace(/⚠\s*Normalized model.*?for deepseek\.?\n?/g, '');
+        let content = cleanMessageContent(msg.content || '');
         let refs = '';
         let previewAction = '';
+        const stepHtml = msg.step ? `<div class="msg-step-indicator">Step ${msg.step}</div>` : '';
         if (msg.role === 'assistant' && typeof HermesArtifact !== 'undefined') {
           const p = HermesArtifact.parseHermesStream(content);
           let vis = (p.visibleText || '').trim();
@@ -1501,7 +2219,7 @@ function flushMsgUpdates() {
         }
         const modelBadge = '';
         const streamDots = msg._streaming ? '<span class="msg-streaming"><span></span><span></span><span></span></span>' : '';
-        bubble.innerHTML = formatMsg(content) + refs + previewAction + modelBadge + streamDots;
+        bubble.innerHTML = stepHtml + formatMsg(content) + refs + previewAction + modelBadge + streamDots;
         enhanceMessageMarkdown(bubble);
       }
       // Update thinking block
@@ -1509,10 +2227,11 @@ function flushMsgUpdates() {
       const bubbleWrap = el.querySelector('.msg-bubble');
       const tagThink = msg.role === 'assistant' && typeof HermesArtifact !== 'undefined'
         ? HermesArtifact.parseHermesStream(msg.content || '').think : '';
-      const combinedThink = [msg.thinking || msg.reasoning || '', tagThink].filter(Boolean).join('\n---\n');
+      const rawCombinedThink = cleanThinkingContent([msg.thinking || msg.reasoning || '', tagThink].filter(Boolean).join('\n---\n'));
+      const combinedThink = rawCombinedThink || (msg._streaming ? '正在理解你的请求，等待模型返回...' : '');
       // Skip thinking if same as output
       const cleanContent=(msg.content||'').replace(/<redacted_thinking>[\s\S]*?<\/redacted_thinking>/g,'').trim();
-      const skipThink=combinedThink && cleanContent && combinedThink.trim().length>20 && cleanContent.includes(combinedThink.trim().slice(0,40));
+      const skipThink=rawCombinedThink && cleanContent && rawCombinedThink.trim().length>20 && cleanContent.includes(rawCombinedThink.trim().slice(0,40));
       if (main) {
         let thEl = main.querySelector('.msg-thinking');
         if (combinedThink && !skipThink) {
@@ -1560,7 +2279,7 @@ function flushMsgUpdates() {
     }
   }
   const area = $('#messagesArea');
-  if (area) area.scrollTop = area.scrollHeight;
+  if (area && area.scrollTop > area.scrollHeight - area.clientHeight - 220) area.scrollTop = area.scrollHeight;
 }
 
 function mockReply(q){
@@ -1604,30 +2323,15 @@ function mockReply(q){
 }
 
 function renderHistory(){
-  const chats = state.chats || [];
+  const chats = [...(state.chats || [])].sort(compareChatCreatedAsc);
   const selected = state._historySelected || new Set();
 
-  // Group by date
-  const groups = { today: [], yesterday: [], week: [], month: [], older: [] };
-  const now = new Date();
-  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
-  const yesterday = today - 86400000;
-  const weekAgo = today - 7 * 86400000;
-  const monthAgo = today - 30 * 86400000;
-
+  const groups = { webui: [], terminal: [] };
   chats.forEach(c => {
-    const t = c.createdAt || c.updatedAt || 0;
-    if (t >= today) groups.today.push(c);
-    else if (t >= yesterday) groups.yesterday.push(c);
-    else if (t >= weekAgo) groups.week.push(c);
-    else if (t >= monthAgo) groups.month.push(c);
-    else groups.older.push(c);
+    groups[isCliChat(c)?'terminal':'webui'].push(c);
   });
 
-  const groupLabels = {
-    today: '今天', yesterday: '昨天',
-    week: '最近7天', month: '最近30天', older: '更早'
-  };
+  const groupLabels = { webui: 'webUI', terminal: 'CLI' };
 
   let html = '';
   let totalSelected = 0;
@@ -2089,7 +2793,7 @@ function gcCreateRoom(){
 function gcShowAddAgent(){
   const room=state.groupChat.rooms.find(r=>r.id===state.groupChat.activeRoom);
   if(!room) return;
-  const profiles=['claude-opus-4-7','gpt-4o','gemini-2.5-pro','deepseek-r1','llama-3.3-70b'];
+  const profiles=getProfiles().map(p=>p.id);
   const existingProfiles=(state.groupChat.agents[room.id]||[]).map(a=>a.profile);
   const available=profiles.filter(p=>!existingProfiles.includes(p));
   openModal(`
@@ -2153,12 +2857,36 @@ function getProfiles(){
       {id:'designer',name:'设计顾问',modelId:state.modelsConfig?.scenarios?.chat||'auto',model:scenarioModel('chat'),systemPrompt:'你是一位设计顾问，关注视觉层级、交互细节和用户体验。',color:'var(--c-block-mint)'},
       {id:'researcher',name:'研究员',modelId:state.modelsConfig?.scenarios?.reasoning||'auto',model:scenarioModel('reasoning'),systemPrompt:'你是一位研究员，擅长资料整理、分析和长文总结。',color:'var(--c-block-coral)'},
     ]);
+    _profilesCache=_profilesCache.map(p=>normalizeProfile(p));
+    LS.set('hermes.profiles',_profilesCache);
   }
   return _profilesCache;
 }
 
+function normalizeProfile(profile){
+  const p={...profile};
+  if(p.enabled===undefined) p.enabled=true;
+  if(!Array.isArray(p.skillIds)) p.skillIds=[];
+  if(!p.modelId) p.modelId=p.model&&p.model!=='auto'?p.model:'auto';
+  if(!p.color) p.color='var(--c-block-lime)';
+  if(!p.avatar) p.avatar='';
+  return p;
+}
+
 function getActiveProfile(){
-  return getProfiles().find(p=>p.id===state.activeProfile) || getProfiles()[0] || null;
+  const profiles=getProfiles();
+  let p=profiles.find(p=>p.id===state.activeProfile&&p.enabled!==false);
+  if(!p) p=profiles.find(p=>p.enabled!==false) || profiles[0] || null;
+  if(p&&state.activeProfile!==p.id){state.activeProfile=p.id;save();}
+  return p;
+}
+
+function profileForChat(chat=currentChat()){
+  const profiles=getProfiles();
+  const agentId=chat?.agentId||state.chatFullData?.[chat?.id]?.agentId||'';
+  const byChat=agentId ? profiles.find(p=>p.id===agentId) : null;
+  if(byChat) return byChat;
+  return getActiveProfile();
 }
 
 gcShowAddAgent=function(){
@@ -2665,7 +3393,12 @@ function renderSkills(){
     detailHtml=`
       <div class="skill-detail-breadcrumb"><span onclick="skSelect(null)">技能中心</span> / <span onclick="skFilterCat('${esc(sel.category)}')">${esc(sel.category)}</span> / ${esc(sel.name)}</div>
       <div class="skill-detail-header">
-        <div class="skill-detail-name">${esc(sel.name)}</div>
+        <div class="skill-detail-title">
+          <div class="skill-detail-name">${esc(sel.name)}</div>
+          <button class="skill-edit-icon" onclick="skEdit('${sel.id}')" title="编辑技能" aria-label="编辑技能">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.12 2.12 0 0 1 3 3L12 15l-4 1 1-4Z"/></svg>
+          </button>
+        </div>
         <button class="fig-icon-btn" onclick="skTogglePin('${sel.id}')" title="${sel.pinned?'取消置顶':'置顶'}" style="${sel.pinned?'color:var(--c-accent)':''}">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="${sel.pinned?'currentColor':'none'}" stroke="currentColor" stroke-width="1.5"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
         </button>
@@ -2678,23 +3411,25 @@ function renderSkills(){
         ${sel.patchCount>0?`<div class="skill-meta-item"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg> 补丁 ${sel.patchCount}</div>`:''}
       </div>
       <div class="skill-detail-actions">
-        <button class="btn ${sel.enabled?'btn-secondary':'btn-primary'} btn-sm" onclick="skToggle('${sel.id}')">${sel.enabled?'禁用':'启用'}</button>
-        <button class="btn btn-secondary btn-sm" onclick="skEdit('${sel.id}')">编辑</button>
         <button class="btn btn-secondary btn-sm" onclick="skOpenFolder('${sel.id}')" title="打开文件夹">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/></svg>
           文件夹
         </button>
         ${sel.source!=='builtin'?`<button class="btn btn-secondary btn-sm" style="color:var(--c-error)" onclick="skDelete('${sel.id}')">删除</button>`:''}
+        <div class="skill-toggle-wrap" onclick="event.stopPropagation()">
+          <span class="skill-toggle-label">${sel.enabled?'已启用':'已停用'}</span>
+          <label class="toggle skill-toggle" title="${sel.enabled?'关闭技能':'启用技能'}">
+            <input type="checkbox" ${sel.enabled?'checked':''} onchange="skSetEnabled('${sel.id}',this.checked)">
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
       </div>
       <div class="skill-files">
         <h4>技能文件 <button class="btn btn-xs btn-secondary" style="margin-left:8px" onclick="refreshSkillFiles('${sel.id}')">刷新</button></h4>
         ${filesHtml||'<div style="font-size:13px;color:var(--c-ink-muted)">无附件</div>'}
       </div>
       <div id="skFileContent"></div>
-      <div class="skill-md-preview" style="margin-top:16px">
-        <h4>技能说明</h4>
-        <div style="background:var(--c-canvas);border:1px solid var(--c-hairline);border-radius:var(--r-md);padding:16px;font-size:13px;line-height:1.6;white-space:pre-wrap;max-height:300px;overflow-y:auto">${esc(sel.description)}</div>
-      </div>`;
+      `;
   } else {
     detailHtml=`<div class="skill-empty">
       <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
@@ -2729,9 +3464,17 @@ function skSelect(id){
   if(id){
     const s=state.skills.find(x=>x.id===id);
     if(s) s.viewCount=(s.viewCount||0)+1;
-    refreshSkillFiles(id, true);
+    refreshSkillFiles(id, true).then(()=>setTimeout(()=>skPreviewPrimaryFile(id),0));
   }
   save();renderPage();
+}
+
+async function skPreviewPrimaryFile(id){
+  const s=state.skills.find(x=>x.id===id);
+  if(!s) return;
+  const files=(s.files||[]).map(f=>typeof f==='string'?f:f.name).filter(Boolean);
+  const file=files.find(f=>/skill\.md$/i.test(f))||files.find(f=>/\.md$/i.test(f))||files[0];
+  if(file) await skViewFileReal(id,file,{previewOnly:true});
 }
 
 async function refreshSkillFiles(id,silent){
@@ -2750,7 +3493,25 @@ async function refreshSkillFiles(id,silent){
 
 function skToggle(id){
   const s=state.skills.find(x=>x.id===id);
-  if(s){s.enabled=!s.enabled;save();renderPage();toast(s.enabled?'已启用':'已禁用','info')}
+  if(s){
+    skSetEnabled(id,!s.enabled);
+  }
+}
+
+function skSetEnabled(id,on){
+  const s=state.skills.find(x=>x.id===id);
+  if(!s) return;
+  s.enabled=!!on;
+  s.on=s.enabled;
+  apiPut('/api/skills/'+encodeURIComponent(id),{on:s.on,enabled:s.enabled});
+  save();renderPage();toast(s.enabled?'已启用':'已禁用','info');
+}
+
+function syncSkillEnabledFlags(){
+  (state.skills||[]).forEach(s=>{
+    if(s.enabled===undefined) s.enabled=s.on!==false;
+    if(s.on===undefined) s.on=!!s.enabled;
+  });
 }
 
 function skTogglePin(id){
@@ -2923,22 +3684,19 @@ function skDelete(id){
   `);
 }
 
-async function skViewFileReal(skillId,fileName){
+async function skViewFileReal(skillId,fileName,options={}){
   const el=$('#skFileContent');
   if(!el) return;
-  el.innerHTML='<div class="skill-content">正在读取文件...</div>';
+  el.innerHTML='<div class="skill-file-preview-card">正在读取文件...</div>';
   const data=await apiGet('/api/skills/'+encodeURIComponent(skillId)+'/file?path='+encodeURIComponent(fileName));
-  if(!data){el.innerHTML='<div class="skill-content">文件读取失败</div>';return}
+  if(!data){el.innerHTML='<div class="skill-file-preview-card">文件读取失败</div>';return}
   const content=data.content||'';
-  const isMd=/\.md$/i.test(fileName);
-  el.innerHTML=`<div style="margin-top:16px">
-    <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
-      <button class="btn btn-secondary btn-sm" onclick="document.getElementById('skFileContent').innerHTML=''">← 返回</button>
-      <span style="font-size:13px;color:var(--c-ink-muted);font-family:var(--font-mono);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(data.path||fileName)}</span>
-      <button class="btn btn-primary btn-sm" style="margin-left:auto" onclick="skSaveFile('${esc(skillId)}','${esc(fileName)}')">保存</button>
+  el.innerHTML=`<div class="skill-file-preview-card">
+    <div class="skill-file-preview-head">
+      <div><strong>${esc(fileName)}</strong><span>${esc(data.path||fileName)}</span></div>
+      <button class="btn btn-primary btn-sm" onclick="skSaveFile('${esc(skillId)}','${esc(fileName)}')">保存</button>
     </div>
     <textarea id="skFileEditor" class="skill-file-editor">${esc(content)}</textarea>
-    ${isMd?`<div class="skill-md-preview artifact-preview markdown-body"><div style="font-size:12px;color:var(--c-ink-muted);margin-bottom:8px">Markdown 预览</div>${renderMessageMarkdown(content)}</div>`:''}
   </div>`;
   enhanceMessageMarkdown(el);
 }
@@ -3088,7 +3846,7 @@ function renderMemoryLibrary(){
 
   return `<div class="memory-view">
     <div class="memory-topbar">
-      <div class="memory-crumb"><span>小脑瓜</span><span>/</span><strong>记忆储存</strong></div>
+      <div class="memory-crumb"><span>技能中心</span><span>/</span><strong>记忆储存</strong></div>
       <div class="memory-workspace-path">工作区路径：<code>${esc(workspacePath)}</code></div>
       <button class="btn btn-sm btn-secondary" onclick="loadMemoryStore(true)">刷新</button>
     </div>
@@ -3230,14 +3988,8 @@ async function saveCoreMemory(id){
   toast('核心记忆已保存','success');
 }
 
-function renderModels(){
-  const providers=[
-    {name:'Anthropic',base:'https://api.anthropic.com',models:['claude-opus-4-7','claude-sonnet-4-5','claude-haiku-3-5']},
-    {name:'OpenAI',base:'https://api.openai.com',models:['gpt-4o','gpt-4o-mini','o3','o4-mini']},
-    {name:'Google',base:'https://generativelanguage.googleapis.com',models:['gemini-2.5-pro','gemini-2.5-flash']},
-    {name:'DeepSeek',base:'https://api.deepseek.com',models:['deepseek-r1','deepseek-v3']},
-    {name:'Meta',base:'https://api.together.xyz',models:['llama-4-maverick','llama-4-scout']},
-  ];
+function renderModelsLegacy(){
+  const providers=[];
   const currentProvider=state.model.provider||'openai';
   const providerObj=providers.find(p=>p.name.toLowerCase()===currentProvider);
   const providerModels=providerObj?providerObj.models:[];
@@ -3271,7 +4023,7 @@ function renderModels(){
       <div class="card" style="margin-bottom:24px">
         <h3 style="font-size:16px;font-weight:600;margin-bottom:16px">获取模型</h3>
         <div style="display:grid;gap:12px">
-          <div><label style="font-size:12px;color:var(--c-ink-muted)">API URL</label><input id="fetchUrl" placeholder="https://api.openai.com/v1/models" style="width:100%;margin-top:4px"></div>
+          <div><label style="font-size:12px;color:var(--c-ink-muted)">API URL</label><input id="fetchUrl" placeholder="https://your-provider.example/v1/models" style="width:100%;margin-top:4px"></div>
           <div><label style="font-size:12px;color:var(--c-ink-muted)">API Key</label><input id="fetchKey" type="password" placeholder="sk-..." style="width:100%;margin-top:4px"></div>
           <div style="display:flex;gap:8px;align-items:center"><button class="btn btn-accent btn-sm" onclick="fetchModels()">获取模型</button><span id="fetchMsg" style="font-size:12px;color:var(--c-ink-muted)"></span></div>
           <div id="fetchResult" style="display:none">
@@ -3292,13 +4044,7 @@ function renderModels(){
 }
 
 function onProviderInput(){
-  const providers=[
-    {name:'anthropic',base:'https://api.anthropic.com',models:['claude-opus-4-7','claude-sonnet-4-5','claude-haiku-3-5']},
-    {name:'openai',base:'https://api.openai.com',models:['gpt-4o','gpt-4o-mini','o3','o4-mini']},
-    {name:'google',base:'https://generativelanguage.googleapis.com',models:['gemini-2.5-pro','gemini-2.5-flash']},
-    {name:'deepseek',base:'https://api.deepseek.com',models:['deepseek-r1','deepseek-v3']},
-    {name:'meta',base:'https://api.together.xyz',models:['llama-4-maverick','llama-4-scout']},
-  ];
+  const providers=[];
   const val=$('#mProvider').value.trim().toLowerCase();
   const p=providers.find(x=>x.name===val);
   const base=$('#mBase');
@@ -3393,7 +4139,7 @@ let _usageFetchStarted=false;
 let usageRange=LS.get('hermes.usageRange','30d');
 let usageCustomStart=LS.get('hermes.usageCustomStart','');
 let usageCustomEnd=LS.get('hermes.usageCustomEnd','');
-function renderModelsV2(){
+function renderModelsV2Legacy(){
   const cfg=state.modelsConfig||{};
   const lib=Array.isArray(cfg.library)?cfg.library:[];
   const enabled=lib.filter(m=>m.enabled!==false);
@@ -3441,10 +4187,10 @@ function renderModelsV2(){
             <select id="mApiFormat" onchange="applyApiFormatPreset()">
               <option value="openai-chat">OpenAI 兼容 / Chat Completions</option>
               <option value="ollama">Ollama / 本地</option>
-              <option value="anthropic">Anthropic / Messages（预留）</option>
+              <option value="anthropic_messages">Anthropic / Messages</option>
               <option value="gemini">Gemini（预留）</option>
             </select>
-            <input id="mBase" placeholder="Base URL" value="${esc(state.model.base||'https://api.deepseek.com')}">
+            <input id="mBase" placeholder="Base URL" value="${esc(state.model.base||'')}">
             <select id="mAuthType" onchange="toggleCustomAuthHeader()">
               <option value="bearer">Bearer Token</option>
               <option value="x-api-key">x-api-key</option>
@@ -3472,7 +4218,7 @@ function renderModelsV2(){
   </div>`;
 }
 
-renderModels=renderModelsV2;
+// Legacy model page kept only for reference; the active entry is renderModelsV3 below.
 
 async function persistModelsConfig(cfg){
   const data=await apiPut('/api/models',cfg);
@@ -3482,7 +4228,14 @@ async function persistModelsConfig(cfg){
 async function setScenarioModel(scene,id){
   const cfg=state.modelsConfig||{};
   cfg.scenarios={...(cfg.scenarios||{}),[scene]:id};
+  if(scene==='chat') cfg.current=id || cfg.current || '';
   await persistModelsConfig(cfg);
+  if(scene==='chat'){
+    state.chatModelOverride='auto';
+    const item=getModelById(id);
+    if(item) state.model={...state.model,provider:item.provider||'',model:item.name||'',base:item.base||'',key:item.key||''};
+    save();
+  }
   toast('场景模型已更新','success');
   renderPage();
 }
@@ -3500,7 +4253,7 @@ function applyApiFormatPreset(){
     if(auth) auth.value='none';
   }else if(fmt==='openai-chat'){
     if(auth&&auth.value==='none') auth.value='bearer';
-  }else if(fmt==='anthropic'){
+  }else if(fmt==='anthropic'||fmt==='anthropic_messages'){
     if(base&&!base.value) base.value='https://api.anthropic.com';
     if(auth) auth.value='x-api-key';
   }else if(fmt==='gemini'){
@@ -3559,9 +4312,9 @@ function openModelEditor(model){
     <h3 style="margin-bottom:16px;font-size:18px;font-weight:600">${isEdit?'编辑模型':'添加模型'}</h3>
     <div style="display:grid;gap:12px">
       <input id="addModelProvider" placeholder="Provider，例如 openai / deepseek / siliconflow" value="${esc(model?.provider||'')}">
-      <input id="addModelName" placeholder="模型名称，例如 gpt-4o" value="${esc(model?.name||'')}">
+      <input id="addModelName" placeholder="模型名称，例如 claude-sonnet-thinking" value="${esc(model?.name||'')}">
       <select id="addModelApiFormat">
-        ${['openai-chat','ollama','anthropic','gemini'].map(v=>`<option value="${v}"${(model?.apiFormat||'openai-chat')===v?' selected':''}>${v==='openai-chat'?'OpenAI 兼容 / Chat Completions':v==='ollama'?'Ollama / 本地':v==='anthropic'?'Anthropic / Messages（预留）':'Gemini（预留）'}</option>`).join('')}
+        ${['openai-chat','ollama','anthropic_messages','gemini'].map(v=>`<option value="${v}"${(model?.apiFormat||'openai-chat')===v?' selected':''}>${v==='openai-chat'?'OpenAI 兼容 / Chat Completions':v==='ollama'?'Ollama / 本地':v==='anthropic_messages'?'Anthropic / Messages':'Gemini（预留）'}</option>`).join('')}
       </select>
       <input id="addModelBase" placeholder="Base URL" value="${esc(model?.base||'')}">
       <select id="addModelAuthType" onchange="document.getElementById('addModelAuthHeader').style.display=this.value==='custom'?'block':'none'">
@@ -3602,6 +4355,393 @@ async function testLibraryModel(id){
   const j=await r.json().catch(()=>({}));
   if(j.ok) toast('连接成功: '+m.name,'success');
   else toast('连接失败: '+(j.error||j.msg||'未知错误'),'error');
+}
+
+function apiFormatLabel(fmt){
+  return fmt==='openai-chat'?'OpenAI 兼容':fmt==='openai-image'?'OpenAI 图片接口':fmt==='ollama'?'Ollama':(fmt==='anthropic'||fmt==='anthropic_messages')?'Anthropic Messages':fmt==='gemini'?'Gemini':(fmt||'未设置');
+}
+function authTypeLabel(type,header=''){
+  if(type==='bearer') return 'Bearer Token';
+  if(type==='custom') return header?`自定义 Header: ${header}`:'自定义 Header';
+  if(type==='none') return '无需认证';
+  return type||'未设置';
+}
+function domId(value){
+  return String(value||'x').replace(/[^a-zA-Z0-9_-]/g,ch=>'_'+ch.charCodeAt(0).toString(16));
+}
+function inferModelTags(name=''){
+  const text=String(name).toLowerCase();
+  const tags=[];
+  if(/r1|reason|thinking|think|推理|思考/.test(text)) tags.push('reasoning');
+  if(/vision|image|draw|sd|dall|flux|midjourney|图像|图片/.test(text)) tags.push('vision');
+  if(!tags.includes('vision')) tags.unshift('chat');
+  return [...new Set(tags)];
+}
+function modelFormValues(prefix='m'){
+  return {
+    provider:$(`#${prefix}Provider`)?.value?.trim()||'',
+    base:$(`#${prefix}Base`)?.value?.trim()||'',
+    key:$(`#${prefix}Key`)?.value||'',
+    apiFormat:$(`#${prefix}ApiFormat`)?.value||'openai-chat',
+    authType:$(`#${prefix}AuthType`)?.value||'bearer',
+    authHeader:$(`#${prefix}AuthHeader`)?.value?.trim()||'',
+  };
+}
+function applyApiFormatPreset(prefix='m'){
+  const fmt=$(`#${prefix}ApiFormat`)?.value||'openai-chat';
+  const provider=$(`#${prefix}Provider`)?.value?.trim()||'';
+  const base=$(`#${prefix}Base`);
+  const auth=$(`#${prefix}AuthType`);
+  if(fmt==='ollama'){
+    if(base&&!base.value) base.value='http://127.0.0.1:11434';
+    if(auth) auth.value='none';
+  }else if(fmt==='openai-chat'){
+    if(auth&&auth.value==='none') auth.value='bearer';
+    if(auth&&/new\s*api|one\s*api|中转|gateway/i.test(provider)) auth.value='bearer';
+  }else if(fmt==='openai-image'){
+    if(auth&&auth.value==='none') auth.value='bearer';
+  }else if(fmt==='anthropic'||fmt==='anthropic_messages'){
+    if(auth) auth.value='x-api-key';
+  }else if(fmt==='gemini'){
+    if(auth) auth.value='x-api-key';
+  }
+  toggleCustomAuthHeader(prefix);
+  updateModelFormatHint(prefix);
+}
+function applyProviderPreset(prefix='m'){
+  const provider=$(`#${prefix}Provider`)?.value?.trim()||'';
+  const fmt=$(`#${prefix}ApiFormat`);
+  const auth=$(`#${prefix}AuthType`);
+  if(/ollama/i.test(provider)){
+    if(fmt) fmt.value='ollama';
+    if(auth) auth.value='none';
+  }else if(/anthropic|claude/i.test(provider)){
+    if(fmt) fmt.value='anthropic_messages';
+    if(auth) auth.value='x-api-key';
+  }else if(/new\s*api|one\s*api|openai|deepseek|siliconflow|openrouter|中转|gateway/i.test(provider)){
+    if(fmt) fmt.value='openai-chat';
+    if(auth&&auth.value==='none') auth.value='bearer';
+  }
+  applyApiFormatPreset(prefix);
+}
+function toggleCustomAuthHeader(prefix='m'){
+  const input=$(`#${prefix}AuthHeader`);
+  if(input) input.style.display=$(`#${prefix}AuthType`)?.value==='custom'?'block':'none';
+  updateModelFormatHint(prefix);
+}
+function updateModelFormatHint(prefix='m'){
+  const hint=$(`#${prefix}FormatHint`);
+  if(!hint) return;
+  const {apiFormat,authType}=modelFormValues(prefix);
+  if(apiFormat==='ollama') hint.textContent='Ollama 会测试 Base URL + /api/chat，通常只用于本机 11434。';
+  else if(apiFormat==='openai-chat') hint.textContent=`OpenAI 兼容会测试 Base URL + /v1/chat/completions；认证方式：${authTypeLabel(authType)}。Claude/Kiro 中转模型如对话空回复，改用 Anthropic Messages。`;
+  else if(apiFormat==='openai-image') hint.textContent=`OpenAI 图片接口会用 Base URL + /v1/models 验证连接；文生图请求 /v1/images/generations，上传参考图时优先请求 /v1/images/edits。`;
+  else if(apiFormat==='anthropic'||apiFormat==='anthropic_messages') hint.textContent=`Anthropic Messages 会测试 Base URL + /v1/messages；Claude/Kiro 中转模型建议用这个格式，认证方式通常是 x-api-key。`;
+  else hint.textContent='该格式目前主要是字段预留；如走中转站，请按 Provider 实际协议选择。';
+}
+
+function renderModelsV3(){
+  const cfg=state.modelsConfig||{library:[],scenarios:{}};
+  const lib=Array.isArray(cfg.library)?cfg.library:[];
+  const enabled=lib.filter(m=>m.enabled!==false);
+  const scenarios=cfg.scenarios||{};
+  const scenarioRows=[
+    ['chat','普通对话','日常问答和轻量任务。对话页选择“自动”时优先使用这里。'],
+    ['reasoning','深度推理','复杂操作、代码、规划、长链路任务和分身协作。'],
+    ['image','图像生成','后续接入图像模型时，Agent 会优先调用这里。'],
+  ];
+  const optionHtml=(selected)=>`<option value="">未设置</option>`+enabled.map(m=>`<option value="${esc(m.id)}"${selected===m.id?' selected':''}>${esc(m.name)} · ${esc(m.provider||'custom')}</option>`).join('');
+  const groups=lib.reduce((acc,m)=>{const k=m.provider||'custom';(acc[k]=acc[k]||[]).push(m);return acc},{});
+  const row=m=>`<div class="model-lib-row">
+    <label class="model-check" title="启用模型"><input type="checkbox" ${m.enabled!==false?'checked':''} onchange="toggleLibraryModel('${esc(m.id)}',this.checked)"><span></span></label>
+    <div class="model-lib-main">
+      <div class="model-lib-name">${esc(m.name)}</div>
+      <div class="model-lib-meta">${esc(apiFormatLabel(m.apiFormat))} · ${esc(authTypeLabel(m.authType,m.authHeader))} · ${esc(m.base||'未填写 Base URL')}</div>
+    </div>
+    <div class="model-lib-tags">${(m.tags||[]).map(t=>`<span>${esc(t)}</span>`).join('')}</div>
+    <button class="btn btn-xs btn-secondary" onclick="editLibraryModel('${esc(m.id)}')">编辑</button>
+    <button class="btn btn-xs btn-secondary" id="modelTestBtn_${domId(m.id)}" onclick="testLibraryModel('${esc(m.id)}')">测试</button>
+    <button class="btn btn-xs btn-ghost" style="color:var(--c-error)" onclick="deleteLibraryModel('${esc(m.id)}')">删除</button>
+  </div>`;
+  const groupHtml=Object.entries(groups).sort(([a],[b])=>a.localeCompare(b)).map(([provider,items])=>`
+    <div class="model-provider-group">
+      <div class="model-provider-head"><strong>${esc(provider)}</strong><span>${items.filter(m=>m.enabled!==false).length}/${items.length} 已启用</span></div>
+      ${items.map(row).join('')}
+    </div>`).join('');
+  const currentCards=scenarioRows.map(([id,title])=>{
+    const model=getModelById(scenarios[id]);
+    return `<div><strong>${title}</strong><span>${model?`${esc(model.name)} · ${esc(model.provider||'custom')}`:'未设置'}</span></div>`;
+  }).join('');
+  return `<div class="models-view">
+    <div class="page-header"><h2>模型配置</h2><button class="btn btn-sm btn-primary" onclick="addModelModal()">添加模型</button></div>
+    <div class="models-content">
+      <section class="model-panel" style="margin-bottom:16px">
+        <h3>当前生效</h3>
+        <p>这里展示真实后端配置，不再内置演示模型。没有配置时，对话会走 Hermes CLI 或提示你先添加模型。</p>
+        <div class="model-effective-grid">${currentCards}</div>
+      </section>
+      <div class="model-layout">
+        <section class="model-panel">
+          <h3>应用场景</h3>
+          <p>一个模型可以复用到多个场景；对话页默认“自动”，除非手动指定某个模型。</p>
+          ${scenarioRows.map(([id,title,desc])=>`<div class="scenario-row">
+            <div><strong>${title}</strong><span>${desc}</span></div>
+            <select onchange="setScenarioModel('${id}',this.value)">${optionHtml(scenarios[id])}</select>
+          </div>`).join('')}
+        </section>
+        <section class="model-panel">
+          <h3>获取模型</h3>
+          <p>填写 Provider、Base URL 和 Key 后，从远端拉取模型列表。New API / One API / 中转站通常选择 OpenAI 兼容。</p>
+          <div class="model-connector-grid">
+            <input id="mProvider" placeholder="Provider，如 New API / deepseek / openrouter" value="${esc(state.model.provider||'')}" oninput="applyProviderPreset('m')">
+            <select id="mApiFormat" onchange="applyApiFormatPreset('m')">
+              <option value="openai-chat">OpenAI 兼容 / Chat Completions</option>
+              <option value="openai-image">OpenAI 图片接口 / Images</option>
+              <option value="ollama">Ollama / 本地</option>
+              <option value="anthropic_messages">Anthropic / Messages</option>
+              <option value="gemini">Gemini（预留）</option>
+            </select>
+            <input id="mBase" placeholder="Base URL，如 http://host:3000 或 https://api.xxx.com/v1" value="${esc(state.model.base||'')}">
+            <select id="mAuthType" onchange="toggleCustomAuthHeader('m')">
+              <option value="bearer">Bearer Token</option>
+              <option value="x-api-key">x-api-key</option>
+              <option value="api-key">api-key</option>
+              <option value="custom">自定义 Header</option>
+              <option value="none">无需认证</option>
+            </select>
+            <input id="mAuthHeader" placeholder="自定义认证 Header" style="display:none">
+            <input id="mKey" type="password" placeholder="API Key / Token" value="${esc(state.model.key||'')}">
+            <div id="mFormatHint" class="model-format-hint"></div>
+            <button class="btn btn-secondary" id="fetchModelsBtn" onclick="fetchModelsForLibrary()">获取模型</button>
+          </div>
+          <div id="modelMsg" class="model-msg"></div>
+          <div id="fetchModelsList" class="model-fetch-list" style="display:none">
+            <div class="model-fetch-actions"><button class="btn btn-xs btn-secondary" onclick="selectAllFetchModels()">全选</button><button class="btn btn-xs btn-secondary" onclick="deselectAllFetchModels()">取消全选</button><button class="btn btn-xs btn-primary" onclick="addSelectedFetchedModels()">加入模型库</button></div>
+            <div id="fetchModelsItems"></div>
+          </div>
+        </section>
+      </div>
+      <section class="model-panel">
+        <h3>模型库</h3>
+        <p>模型库按 Provider 分组，是对话、角色和分身共用的真实配置。</p>
+        <div class="model-lib-list">${lib.length?groupHtml:'<div class="model-empty-state"><strong>还没有模型</strong><span>添加或获取真实 Provider 后，这里才会出现可用模型。WebUI 不再预置假数据。</span><button class="btn btn-sm btn-primary" onclick="addModelModal()">添加第一个模型</button></div>'}</div>
+      </section>
+    </div>
+  </div>`;
+}
+
+renderModels=renderModelsV3;
+
+async function setScenarioModel(scene,id){
+  const cfg=state.modelsConfig||{library:[],scenarios:{}};
+  cfg.scenarios={...(cfg.scenarios||{}),[scene]:id};
+  if(scene==='chat') cfg.current=id || cfg.current || '';
+  await persistModelsConfig(cfg);
+  if(scene==='chat'){
+    state.chatModelOverride='auto';
+    const item=getModelById(id);
+    if(item) state.model={...state.model,provider:item.provider||'',model:item.name||'',base:item.base||'',key:item.key||''};
+    save();
+  }
+  toast('场景模型已更新','success');
+  renderPage();
+}
+function toggleLibraryModel(id,on){
+  const cfg=state.modelsConfig||{library:[],scenarios:{}};
+  const item=(cfg.library||[]).find(m=>m.id===id);
+  if(item){item.enabled=on;persistModelsConfig(cfg).then(()=>renderPage())}
+}
+async function fetchModelsForLibrary(){
+  const values=modelFormValues('m');
+  const msg=$('#modelMsg');
+  const btn=$('#fetchModelsBtn');
+  if(!values.base){toast('请填写 Base URL','error');return}
+  if(msg) msg.textContent='正在获取模型...';
+  if(btn){btn.disabled=true;btn.textContent='获取中...'}
+  try{
+    const r=await fetch(apiBase()+'/api/models/fetch-remote',{method:'POST',cache:'no-store',headers:{'Content-Type':'application/json','Cache-Control':'no-cache'},body:JSON.stringify(values)});
+    const j=await r.json().catch(()=>({}));
+    const data=j.code===0?j.data:null;
+    if(!data||!data.models?.length){
+      if(msg) msg.textContent=(j.msg||'未找到模型，请检查 Base URL、API 格式和认证方式。');
+      return;
+    }
+    const provider=values.provider||'custom';
+    state._fetchedModels={...values,provider,models:data.models.map(m=>typeof m==='string'?m:(m.id||m.name||''))};
+    const box=$('#fetchModelsList'), items=$('#fetchModelsItems');
+    if(box) box.style.display='block';
+    if(items) items.innerHTML=state._fetchedModels.models.filter(Boolean).map(name=>`<label class="model-fetch-item"><input type="checkbox" class="fetch-model-cb" value="${esc(name)}" checked><span>${esc(name)}</span></label>`).join('');
+    if(msg) msg.textContent='找到 '+data.models.length+' 个模型，勾选后加入模型库。';
+    state.model={...state.model,provider,base:values.base,key:values.key};
+    save();
+  }catch(e){
+    if(msg) msg.textContent='获取失败: '+e.message;
+  }finally{
+    if(btn){btn.disabled=false;btn.textContent='获取模型'}
+  }
+}
+async function addSelectedFetchedModels(){
+  const selected=[...document.querySelectorAll('.fetch-model-cb:checked')].map(c=>c.value);
+  const f=state._fetchedModels;
+  if(!f||!selected.length){toast('请先选择模型','info');return}
+  const cfg=state.modelsConfig||{library:[],scenarios:{}};
+  const existing=new Map((cfg.library||[]).map(m=>[m.id,m]));
+  selected.forEach(name=>{
+    existing.set(`${f.provider}:${name}`,{
+      id:`${f.provider}:${name}`,
+      provider:f.provider,
+      name,
+      base:f.base,
+      key:f.key,
+      enabled:true,
+      tags:inferModelTags(name),
+      kind:'chat',
+      apiFormat:f.apiFormat,
+      authType:f.authType,
+      authHeader:f.authHeader,
+    });
+  });
+  cfg.library=[...existing.values()];
+  cfg.current=cfg.current||`${f.provider}:${selected[0]}`;
+  cfg.scenarios={...(cfg.scenarios||{})};
+  if(!cfg.scenarios.chat) cfg.scenarios.chat=`${f.provider}:${selected[0]}`;
+  const reasoning=selected.find(n=>inferModelTags(n).includes('reasoning'));
+  if(reasoning&&!cfg.scenarios.reasoning) cfg.scenarios.reasoning=`${f.provider}:${reasoning}`;
+  await persistModelsConfig(cfg);
+  toast('已加入 '+selected.length+' 个模型','success');
+  renderPage();
+}
+function addModelModal(){openModelEditor()}
+function openModelEditor(model){
+  const isEdit=!!model;
+  const tags=new Set(model?.tags||[]);
+  openModal(`<div class="model-editor-modal">
+    <h3>${isEdit?'编辑模型':'添加模型'}</h3>
+    <div class="model-editor-grid">
+      <label>Provider<input id="addModelProvider" placeholder="例如 New API / deepseek / openrouter" value="${esc(model?.provider||'')}" oninput="applyProviderPreset('addModel')"></label>
+      <label>模型名称<input id="addModelName" placeholder="例如 claude-sonnet-4.6-thinking" value="${esc(model?.name||'')}"></label>
+      <label>API 格式<select id="addModelApiFormat" onchange="applyApiFormatPreset('addModel')">
+        ${['openai-chat','openai-image','ollama','anthropic_messages','gemini'].map(v=>`<option value="${v}"${(model?.apiFormat||'openai-chat')===v?' selected':''}>${apiFormatLabel(v)}</option>`).join('')}
+      </select></label>
+      <label>认证方式<select id="addModelAuthType" onchange="toggleCustomAuthHeader('addModel')">
+        ${['bearer','x-api-key','api-key','custom','none'].map(v=>`<option value="${v}"${(model?.authType||'bearer')===v?' selected':''}>${authTypeLabel(v)}</option>`).join('')}
+      </select></label>
+      <label class="wide">Base URL<input id="addModelBase" placeholder="网关根地址或 /v1 地址" value="${esc(model?.base||'')}"></label>
+      <input id="addModelAuthHeader" class="wide" placeholder="自定义认证 Header" style="${(model?.authType||'bearer')==='custom'?'':'display:none'}" value="${esc(model?.authHeader||'')}">
+      <label class="wide">API Key<input id="addModelKey" type="password" placeholder="API Key / Token" value="${esc(model?.key||'')}"></label>
+      <div class="wide model-tag-editor">
+        <span>用途标签</span>
+        ${['chat','reasoning','vision','image'].map(t=>`<label><input type="checkbox" class="addModelTag" value="${t}" ${tags.has(t)?'checked':''}>${t}</label>`).join('')}
+      </div>
+      <div id="addModelFormatHint" class="wide model-format-hint"></div>
+    </div>
+    <div class="model-editor-actions">
+      <button class="btn btn-secondary" onclick="closeModal()">取消</button>
+      <button class="btn btn-secondary" onclick="doSaveModel('${esc(model?.id||'')}',true)">保存并测试</button>
+      <button class="btn btn-primary" onclick="doSaveModel('${esc(model?.id||'')}')">${isEdit?'保存':'添加'}</button>
+    </div>
+  </div>`);
+  setTimeout(()=>updateModelFormatHint('addModel'),0);
+}
+function editLibraryModel(id){
+  const model=getModelById(id);
+  if(!model){toast('模型不存在','error');return}
+  openModelEditor(model);
+}
+async function doSaveModel(existingId,shouldTest=false){
+  const values=modelFormValues('addModel');
+  const provider=values.provider||'custom';
+  const name=$('#addModelName')?.value?.trim();
+  if(!name){toast('请填写模型名称','error');return}
+  const old=getModelById(existingId)||{};
+  const tags=[...document.querySelectorAll('.addModelTag:checked')].map(c=>c.value);
+  const id=existingId||`${provider}:${name}`;
+  const item={...old,id,provider,name,base:values.base,key:values.key,enabled:old.enabled!==false,tags:tags.length?tags:inferModelTags(name),kind:'chat',apiFormat:values.apiFormat,authType:values.authType,authHeader:values.authHeader};
+  const data=await apiPost('/api/models/library',item);
+  if(data){
+    state.modelsConfig=data;
+    state.model={...state.model,provider,model:name,base:values.base,key:values.key};
+    save();
+    closeModal();
+    renderPage();
+    toast(existingId?'模型已保存':'模型已添加','success');
+    if(shouldTest) setTimeout(()=>testLibraryModel(id),80);
+  }
+}
+async function deleteLibraryModel(id){
+  const m=getModelById(id);
+  const okConfirm=await askConfirm(`确认删除模型「${m?.name||id}」？\n如果它正在某个应用场景中使用，会自动清空对应场景。`);
+  if(!okConfirm) return;
+  const data=await fetch(apiBase()+'/api/models/library/'+encodeURIComponent(id),{method:'DELETE',cache:'no-store',headers:{'Cache-Control':'no-cache'}}).then(r=>r.json()).catch(()=>null);
+  if(data&&data.code===0){state.modelsConfig=data.data;renderPage();toast('模型已删除','info')}
+  else toast('删除失败','error');
+}
+function buildModelTestModal(model,result){
+  const ok=!!result.ok;
+  const hints=Array.isArray(result.hints)?result.hints:[];
+  const canQuickFix=(result.apiFormat==='ollama'||model.apiFormat==='ollama') && !/127\.0\.0\.1:11434|localhost:11434|ollama/i.test(`${model.base} ${model.provider}`);
+  const canAnthropicFix=(model.apiFormat||result.apiFormat)==='openai-chat' && /claude|kiro|anthropic/i.test(`${model.name} ${model.provider}`);
+  return `<div class="model-test-modal">
+    <div class="model-test-head ${ok?'ok':'fail'}">
+      <span>${ok?'连接成功':'连接失败'}</span>
+      <strong>${esc(model.name)}</strong>
+    </div>
+    <div class="model-test-grid">
+      <div><span>测试地址</span><code>${esc(result.testedUrl||'未生成')}</code></div>
+      <div><span>API 格式</span><code>${esc(apiFormatLabel(result.apiFormat||model.apiFormat))}</code></div>
+      <div><span>认证方式</span><code>${esc(result.authHeader||authTypeLabel(model.authType,model.authHeader))}</code></div>
+      <div><span>状态</span><code>${esc(result.status?`${result.status} ${result.statusText||''}`:(ok?'OK':'未连接'))}</code></div>
+    </div>
+    ${result.error?`<div class="model-test-error">${esc(result.error)}</div>`:''}
+    ${result.bodySnippet?`<pre class="model-test-snippet">${esc(result.bodySnippet)}</pre>`:''}
+    ${hints.length?`<div class="model-test-hints"><strong>建议排查</strong>${hints.map(h=>`<p>${esc(h)}</p>`).join('')}</div>`:''}
+    <div class="model-editor-actions">
+      ${canQuickFix?`<button class="btn btn-secondary" onclick="quickFixOpenAICompat('${esc(model.id)}')">改为 OpenAI 兼容 + Bearer 后重试</button>`:''}
+      ${canAnthropicFix?`<button class="btn btn-secondary" onclick="quickFixAnthropicMessages('${esc(model.id)}')">改为 Anthropic Messages 后重试</button>`:''}
+      <button class="btn btn-secondary" onclick="editLibraryModel('${esc(model.id)}')">编辑配置</button>
+      <button class="btn btn-primary" onclick="closeModal()">知道了</button>
+    </div>
+  </div>`;
+}
+async function quickFixAnthropicMessages(id){
+  const cfg=state.modelsConfig||{library:[],scenarios:{}};
+  const m=(cfg.library||[]).find(x=>x.id===id);
+  if(!m) return;
+  m.apiFormat='anthropic_messages';
+  m.authType='x-api-key';
+  const data=await persistModelsConfig(cfg);
+  if(data) state.modelsConfig=data;
+  closeModal();
+  renderPage();
+  setTimeout(()=>testLibraryModel(id),80);
+}
+async function quickFixOpenAICompat(id){
+  const cfg=state.modelsConfig||{library:[],scenarios:{}};
+  const m=(cfg.library||[]).find(x=>x.id===id);
+  if(!m) return;
+  m.apiFormat='openai-chat';
+  m.authType='bearer';
+  const data=await persistModelsConfig(cfg);
+  if(data) state.modelsConfig=data;
+  closeModal();
+  renderPage();
+  setTimeout(()=>testLibraryModel(id),80);
+}
+async function testLibraryModel(id){
+  const m=getModelById(id);
+  if(!m){toast('模型不存在','error');return}
+  const btn=$(`#modelTestBtn_${domId(id)}`);
+  if(btn){btn.disabled=true;btn.textContent='测试中...'}
+  try{
+    const r=await fetch(apiBase()+'/api/models/test',{method:'POST',cache:'no-store',headers:{'Content-Type':'application/json','Cache-Control':'no-cache'},body:JSON.stringify({provider:{provider:m.provider,base:m.base,model:m.name,key:m.key,apiFormat:m.apiFormat,authType:m.authType,authHeader:m.authHeader}})});
+    const j=await r.json().catch(()=>({}));
+    openModal(buildModelTestModal(m,j));
+    toast(j.ok?'连接成功':'连接失败',j.ok?'success':'error');
+  }catch(e){
+    openModal(buildModelTestModal(m,{ok:false,error:e.message,hints:['后端测试接口不可达，请确认 WebUI 后端服务已启动。']}));
+  }finally{
+    if(btn){btn.disabled=false;btn.textContent='测试'}
+  }
 }
 
 function renderUsage(){
@@ -3884,9 +5024,7 @@ let _profilesCache=null;
 function renderProfiles(){
   if(!_profilesCache){
     _profilesCache=LS.get('hermes.profiles',[
-      {id:'default',name:'默认助手',model:state.model.model||'deepseek-v4-flash',systemPrompt:'',color:'var(--c-block-lime)'},
-      {id:'coder',name:'代码专家',model:'deepseek-r1',systemPrompt:'你是一位资深代码专家，擅长代码审查、重构和架构设计。',color:'var(--c-block-lilac)'},
-      {id:'writer',name:'写作助手',model:'gpt-4o',systemPrompt:'你是一位专业的写作助手，擅长各类文案和内容创作。',color:'var(--c-block-cream)'},
+      {id:'default',name:'默认助手',modelId:'auto',model:scenarioModel('chat'),systemPrompt:'',color:'var(--c-block-lime)'},
     ]);
   }
   return `<div class="profiles-view">
@@ -3961,9 +5099,9 @@ function doEditProfile(id){
 function useProfile(id){
   const p=getProfiles().find(x=>x.id===id);
   if(!p) return;
+  if(p.enabled===false){toast('这个 Agent 已关闭，不能用于对话','info');return}
   state.activeProfile=p.id;
   state.model.model=p.model||scenarioModel('chat');
-  if(p.systemPrompt) state.settings.systemPrompt=p.systemPrompt;
   save();toast('已切换到角色: '+p.name,'success');
   if(state.page==='chat') renderPage();
 }
@@ -4068,35 +5206,80 @@ let _filesPath='';
 let _fileContentView=null;
 let _filesMeta=null;
 let _filesSelected='';
+const _filesExpanded=new Set();
+const _filesTreeCache={};
 function renderProfilesV2(){
   const profiles=getProfiles();
-  const models=getEnabledModels();
-  const modelOptions=(selected)=>`<option value="auto"${selected==='auto'?' selected':''}>自动（按场景）</option>`+models.map(m=>`<option value="${esc(m.id)}"${selected===m.id||selected===m.name?' selected':''}>${esc(m.name)} · ${esc(m.provider)}</option>`).join('');
   return `<div class="profiles-view">
-    <div class="page-header"><h2>角色配置</h2><button class="btn btn-sm btn-primary" onclick="addProfileV2()">${SVG.plus} 新建角色</button></div>
+    <div class="page-header"><h2>Agent 管理</h2><button class="btn btn-sm btn-primary" onclick="addProfileV2()">${SVG.plus} 新建 Agent</button></div>
     <div class="profiles-content">
-      <div class="profile-grid">${profiles.map(p=>`<div class="profile-card" onclick="editProfileV2('${p.id}')">
-        <div class="profile-avatar" style="background:${p.color}">${esc(p.name.charAt(0))}</div>
-        <div class="profile-name">${esc(p.name)}</div>
-        <div class="profile-model">${esc(p.modelId==='auto'?'自动 · '+scenarioModel('chat'):(getModelById(p.modelId)?.name||p.model||'未设置'))}</div>
-        <p style="font-size:12px;color:var(--c-ink-muted);line-height:1.5;margin-top:8px">${esc((p.systemPrompt||'通用角色').slice(0,90))}</p>
-        <div style="display:flex;gap:4px;margin-top:12px"><button class="btn btn-xs btn-primary" onclick="event.stopPropagation();useProfile('${p.id}')">用于对话</button>${p.id!=='default'?`<button class="btn btn-xs btn-ghost" style="color:var(--c-error)" onclick="event.stopPropagation();deleteProfile('${p.id}')">删除</button>`:''}</div>
-      </div>`).join('')}</div>
+      <div class="profile-grid agent-grid">${profiles.map(p=>{
+        const enabled=p.enabled!==false;
+        const skillNames=selectedProfileSkills(p).map(s=>s.name).slice(0,3);
+        const model=p.modelId==='auto'?'自动 · '+scenarioModel('chat'):(getModelById(p.modelId)?.name||p.model||'未设置');
+        return `<div class="profile-card agent-card${enabled?'':' disabled'}${state.activeProfile===p.id?' active':''}" onclick="editProfileV2('${p.id}')">
+        <div class="agent-card-head">
+          ${profileAvatarHtml(p,'profile-avatar')}
+          <div class="agent-card-title">
+            <div class="profile-name">${esc(p.name)}</div>
+            <div class="agent-card-status">${enabled?'可用于对话/分身':'已关闭'}</div>
+          </div>
+          <label class="toggle agent-toggle" title="${enabled?'关闭 Agent':'开启 Agent'}" onclick="event.stopPropagation()">
+            <input type="checkbox" ${enabled?'checked':''} onchange="toggleProfileEnabled('${p.id}',this.checked)">
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+        <div class="profile-model">${esc(model)}</div>
+        <p class="agent-prompt-preview">${esc((p.systemPrompt||'通用 Agent，没有额外提示词。').slice(0,100))}</p>
+        <div class="agent-skill-chips">${skillNames.length?skillNames.map(n=>`<span>${esc(n)}</span>`).join(''):'<span>未绑定技能</span>'}${(p.skillIds||[]).length>3?`<span>+${(p.skillIds||[]).length-3}</span>`:''}</div>
+        <div class="agent-card-actions">
+          <button class="btn btn-xs btn-primary" onclick="event.stopPropagation();useProfile('${p.id}')">用于对话</button>
+          ${p.id!=='default'?`<button class="btn btn-xs btn-ghost" style="color:var(--c-error)" onclick="event.stopPropagation();deleteProfile('${p.id}')">删除</button>`:''}
+        </div>
+      </div>`;
+      }).join('')}</div>
     </div>
   </div>`;
 }
 renderProfiles=renderProfilesV2;
 function profileModal(profile){
-  const p=profile||{id:'',name:'',modelId:'auto',systemPrompt:''};
+  const p=normalizeProfile(profile||{id:'',name:'',modelId:'auto',systemPrompt:'',enabled:true,skillIds:[]});
+  _profileAvatarDraft=p.avatar||'';
+  _profileAvatarCleared=false;
   const models=getEnabledModels();
   const opts=`<option value="auto"${p.modelId==='auto'?' selected':''}>自动（按场景）</option>`+models.map(m=>`<option value="${esc(m.id)}"${p.modelId===m.id||p.model===m.name?' selected':''}>${esc(m.name)} · ${esc(m.provider)}</option>`).join('');
-  openModal(`<div style="padding:24px;min-width:460px">
-    <h3 style="margin-bottom:16px;font-size:18px;font-weight:600">${profile?'编辑角色':'新建角色'}</h3>
-    <div style="display:grid;gap:12px">
-      <input id="pfName" placeholder="角色名称" value="${esc(p.name)}">
-      <select id="pfModel">${opts}</select>
-      <textarea id="pfPrompt" placeholder="系统提示词 / 角色能力" style="min-height:110px">${esc(p.systemPrompt||'')}</textarea>
-      <div style="font-size:12px;color:var(--c-ink-muted)">同一个模型可以被多个角色共用；如果选择自动，会跟随模型配置里的应用场景。</div>
+  const skills=(state.skills||[]);
+  const skillHtml=skills.length?skills.map(s=>{
+    const checked=(p.skillIds||[]).includes(s.id);
+    return `<label class="agent-skill-option">
+      <input type="checkbox" value="${esc(s.id)}" ${checked?'checked':''}>
+      <span><strong>${esc(s.name||'未命名技能')}</strong><small>${esc(s.description||s.desc||'暂无描述')}</small></span>
+    </label>`;
+  }).join(''):'<div class="empty-text">技能中心还没有技能。</div>';
+  openModal(`<div class="agent-editor-modal">
+    <h3>${profile?'编辑 Agent':'新建 Agent'}</h3>
+    <div class="agent-editor-grid">
+      <div class="agent-avatar-field wide">
+        <span id="pfAvatarPreview" class="profile-avatar" style="${p.avatar?`background-image:url('${esc(p.avatar)}');background-size:cover;background-position:center`:`background:${p.color||'var(--c-block-lime)'}`}">${p.avatar?'':esc((p.name||'A').charAt(0))}</span>
+        <div>
+          <strong>Agent 头像</strong>
+          <small>头像会同步显示到对话页面、Agent 切换和会话卡片。</small>
+          <div class="agent-avatar-actions">
+            <button class="btn btn-xs btn-secondary" onclick="document.getElementById('pfAvatarInput').click()">更换头像</button>
+            <button class="btn btn-xs btn-ghost" onclick="resetProfileAvatar()">恢复默认头像</button>
+          </div>
+          <input id="pfAvatarInput" type="file" accept="image/*" style="display:none" onchange="handleProfileAvatarInput(this)">
+        </div>
+      </div>
+      <label>名称<input id="pfName" placeholder="Agent 名称" value="${esc(p.name)}"></label>
+      <label>模型<select id="pfModel">${opts}</select></label>
+      <label class="wide">Agent 提示词<textarea id="pfPrompt" placeholder="描述这个 Agent 的身份、能力边界、工作方式…" style="min-height:130px">${esc(p.systemPrompt||'')}</textarea></label>
+      <div class="agent-skill-picker wide">
+        <div><strong>可用技能</strong><small>与技能中心保持一致，只会注入被这个 Agent 勾选的技能。</small></div>
+        <div class="agent-skill-list">${skillHtml}</div>
+      </div>
+      <label class="agent-editor-switch wide"><input type="checkbox" id="pfEnabled" ${p.enabled!==false?'checked':''}> 启用这个 Agent</label>
+      <div class="model-format-hint">关闭后，这个 Agent 在对话、分身等任何场景都不会启动；默认 Agent 也可以关闭，但系统会自动选择下一个启用的 Agent。</div>
       <div style="display:flex;gap:8px;justify-content:flex-end"><button class="btn btn-secondary" onclick="closeModal()">取消</button><button class="btn btn-primary" onclick="${profile?`doEditProfileV2('${p.id}')`:'doAddProfileV2()'}">保存</button></div>
     </div>
   </div>`);
@@ -4110,7 +5293,8 @@ function doAddProfileV2(){
   const model=getModelById(modelId)?.name||scenarioModel('chat');
   const colors=['var(--c-block-lime)','var(--c-block-lilac)','var(--c-block-cream)','var(--c-block-mint)','var(--c-block-coral)'];
   _profilesCache=getProfiles();
-  _profilesCache.push({id:'pf_'+Date.now(),name,modelId,model,systemPrompt:$('#pfPrompt')?.value?.trim()||'',color:colors[_profilesCache.length%colors.length]});
+  const skillIds=[...document.querySelectorAll('.agent-skill-option input:checked')].map(i=>i.value);
+  _profilesCache.push({id:'pf_'+Date.now(),name,modelId,model,enabled:$('#pfEnabled')?.checked!==false,skillIds,systemPrompt:$('#pfPrompt')?.value?.trim()||'',color:colors[_profilesCache.length%colors.length],avatar:_profileAvatarDraft||''});
   LS.set('hermes.profiles',_profilesCache);closeModal();renderPage();toast('角色已保存','success');
 }
 function doEditProfileV2(id){
@@ -4118,15 +5302,42 @@ function doEditProfileV2(id){
   p.name=$('#pfName')?.value?.trim()||p.name;
   p.modelId=$('#pfModel')?.value||'auto';
   p.model=getModelById(p.modelId)?.name||scenarioModel('chat');
+  p.enabled=$('#pfEnabled')?.checked!==false;
+  p.skillIds=[...document.querySelectorAll('.agent-skill-option input:checked')].map(i=>i.value);
   p.systemPrompt=$('#pfPrompt')?.value?.trim()||'';
+  p.avatar=_profileAvatarCleared?'':(_profileAvatarDraft||p.avatar||'');
+  if(_profileAvatarCleared&&!p.color) p.color=presetProfileColor(p.name);
+  if(p.enabled===false&&state.activeProfile===p.id){
+    const next=getProfiles().find(x=>x.id!==p.id&&x.enabled!==false);
+    if(next) state.activeProfile=next.id;
+  }
   LS.set('hermes.profiles',_profilesCache);closeModal();renderPage();toast('角色已更新','success');
+}
+
+function toggleProfileEnabled(id,on){
+  const p=getProfiles().find(x=>x.id===id);
+  if(!p) return;
+  p.enabled=!!on;
+  if(!p.enabled&&state.activeProfile===id){
+    const next=getProfiles().find(x=>x.id!==id&&x.enabled!==false);
+    if(next) state.activeProfile=next.id;
+  }
+  LS.set('hermes.profiles',_profilesCache);
+  save();
+  renderPage();
+  toast(p.enabled?'Agent 已启用':'Agent 已关闭','info');
 }
 
 function renderFiles(){
   if(!_filesCache){
     const initialDir=state.settings.mdLibraryDir||'';
     apiGet('/api/system/files'+(initialDir?'?dir='+encodeURIComponent(initialDir):'')).then(data=>{
-      if(data){_filesCache=data.items||[];_filesPath=data.path||'';_filesMeta=data}
+      if(data){
+        _filesCache=data.items||[];
+        _filesPath=data.path||'';
+        _filesMeta=data;
+        if(data.path){_filesExpanded.add(data.path);_filesTreeCache[data.path]=data.items||[]}
+      }
       else _filesCache=[];
       const root=$('#filesContent');
       if(root) root.innerHTML=buildFilesViewHtml();
@@ -4162,15 +5373,41 @@ function buildFilesViewHtml(){
     </section>
   </div>`;
 }
-function buildFilesHtml(items){
+function isPreviewImage(path=''){
+  return /\.(png|jpe?g|webp|gif|bmp|svg)$/i.test(String(path||''));
+}
+
+function isPreviewText(path=''){
+  return /\.(md|txt|json|js|css|html|xml|yml|yaml|log|csv|env|bat|ps1|py|ts|tsx|jsx)$/i.test(String(path||''));
+}
+
+function fileTreeIndent(depth){
+  return 12 + (Number(depth)||0)*18;
+}
+
+function buildFilesHtml(items,depth=0){
   if(!items||!items.length) return '<div style="font-size:13px;color:var(--c-ink-muted);padding:8px 12px">空目录</div>';
-  return items.map(f=>`
-    <div class="file-item${f.type==='folder'?' folder':''}${_filesSelected===f.path?' active':''}" style="padding-left:12px" onclick="${f.type==='folder'?`browseFilesAbs('${encodeURIComponent(f.path)}')`:`viewFileAbs('${encodeURIComponent(f.path)}')`}">
-      ${f.type==='folder'?SVG.folder:SVG.file}
+  return items.map(f=>{
+    const encoded=encodeURIComponent(f.path);
+    if(f.type==='folder'){
+      const open=_filesExpanded.has(f.path);
+      const children=_filesTreeCache[f.path]||[];
+      return `<div class="file-tree-node">
+        <div class="file-item folder${_filesSelected===f.path?' active':''}" style="padding-left:${fileTreeIndent(depth)}px" onclick="toggleFileFolder('${encoded}')">
+          <span class="file-chevron${open?' open':''}">${SVG.chevronDown}</span>
+          ${SVG.folder}
+          <span>${esc(f.name)}</span>
+        </div>
+        ${open?`<div class="file-tree-children">${children.length?buildFilesHtml(children,depth+1):'<div class="file-tree-loading" style="padding-left:'+fileTreeIndent(depth+1)+'px">空目录</div>'}</div>`:''}
+      </div>`;
+    }
+    return `<div class="file-item${_filesSelected===f.path?' active':''}" style="padding-left:${fileTreeIndent(depth)}px" onclick="viewFileAbs('${encoded}')">
+      <span class="file-chevron spacer"></span>
+      ${isPreviewImage(f.path)?SVG.image:SVG.file}
       <span>${esc(f.name)}</span>
       ${f.size?`<span style="font-size:11px;color:var(--c-ink-muted);margin-left:auto">${formatBytes(f.size)}</span>`:''}
-    </div>
-  `).join('');
+    </div>`;
+  }).join('');
 }
 async function browseFiles(name){
   const dir=_filesPath?_filesPath+'/'+name:name;
@@ -4179,7 +5416,25 @@ async function browseFiles(name){
 async function browseFilesAbs(encodedPath){
   const dir=decodeURIComponent(encodedPath||'');
   const data=await apiGet('/api/system/files?dir='+encodeURIComponent(dir));
-  if(data){_filesCache=data.items||[];_filesPath=data.path||dir;_filesMeta=data;_filesSelected=''}
+  if(data){_filesCache=data.items||[];_filesPath=data.path||dir;_filesMeta=data;_filesSelected='';_filesExpanded.add(data.path||dir);_filesTreeCache[data.path||dir]=data.items||[]}
+  const root=$('#filesContent');
+  if(root) root.innerHTML=buildFilesViewHtml();
+}
+
+async function toggleFileFolder(encodedPath){
+  const dir=decodeURIComponent(encodedPath||'');
+  if(_filesExpanded.has(dir)){
+    _filesExpanded.delete(dir);
+  }else{
+    _filesExpanded.add(dir);
+    if(!_filesTreeCache[dir]){
+      _filesTreeCache[dir]=[];
+      const root=$('#filesContent');
+      if(root) root.innerHTML=buildFilesViewHtml();
+      const data=await apiGet('/api/system/files?dir='+encodeURIComponent(dir));
+      _filesTreeCache[dir]=data?.items||[];
+    }
+  }
   const root=$('#filesContent');
   if(root) root.innerHTML=buildFilesViewHtml();
 }
@@ -4190,6 +5445,23 @@ async function viewFile(name){
 async function viewFileAbs(encodedPath){
   const p=decodeURIComponent(encodedPath||'');
   _filesSelected=p;
+  if(isPreviewImage(p)){
+    const raw=apiBase()+'/api/system/file-raw?path='+encodeURIComponent(p);
+    _fileContentView=`<div class="file-preview-panel"><div class="file-preview-head"><button class="btn btn-secondary btn-sm" onclick="clearFilePreview()">← 返回</button><div><strong>${esc(p.split(/[\\/]/).pop())}</strong><span>${esc(p)}</span></div></div><div class="file-preview-image"><img src="${esc(raw)}" alt="${esc(p.split(/[\\/]/).pop())}"></div></div>`;
+      const root=$('#filesContent');
+      if(root) root.innerHTML=buildFilesViewHtml();
+      const main=$('#filesMain');
+      if(main) main.innerHTML=_fileContentView;
+      return;
+  }
+  if(!isPreviewText(p)){
+    _fileContentView=`<div class="file-preview-panel"><div class="file-preview-head"><button class="btn btn-secondary btn-sm" onclick="clearFilePreview()">← 返回</button><div><strong>${esc(p.split(/[\\/]/).pop())}</strong><span>${esc(p)}</span></div></div><div class="files-empty"><div>${SVG.file}</div><h3>暂不支持直接预览</h3><p>这个文件类型不能在 WebUI 内安全预览，可以从左侧定位后使用“打开当前目录”。</p></div></div>`;
+    const root=$('#filesContent');
+    if(root) root.innerHTML=buildFilesViewHtml();
+    const main=$('#filesMain');
+    if(main) main.innerHTML=_fileContentView;
+    return;
+  }
   const data=await apiGet('/api/system/file-content?path='+encodeURIComponent(p));
   const el=$('#filesMain');
   if(!el) return;
@@ -4277,17 +5549,21 @@ function execTerm(cmd){
   out.scrollTop=out.scrollHeight;
 }
 
-function openModal(html){
+function openModal(html,options={}){
   const overlay=$('#modalOverlay');
   const content=$('#modalContent');
   if(!overlay||!content) return;
+  content.className='modal';
+  if(options.className) content.classList.add(options.className);
   content.innerHTML=html;
   overlay.classList.add('show');
 }
 
 function closeModal(){
   const overlay=$('#modalOverlay');
+  const content=$('#modalContent');
   if(overlay) overlay.classList.remove('show');
+  if(content) content.className='modal';
 }
 
 function askConfirm(message){
@@ -4726,59 +6002,37 @@ async function initApp() {
   const modelData = await apiGet('/api/models');
   if (modelData) {
     state.modelsConfig = modelData;
-    const currentM = modelData.current || 'deepseek-v4-flash';
-    for (const [prov, cfg] of Object.entries(modelData)) {
-      if (cfg && cfg.model) {
-        state.model = {
-          provider: prov,
-          model: cfg.model || currentM,
-          base: cfg.base || 'https://api.deepseek.com',
-          key: cfg.key || '',
-          temperature: modelData.params?.temperature || 0.7,
-          topP: modelData.params?.topP || 1,
-          maxTokens: modelData.params?.maxTokens || 4096,
-        };
-        break;
-      }
-    }
+    const lib=Array.isArray(modelData.library)?modelData.library:[];
+    const currentId=modelData.current || modelData.scenarios?.chat || '';
+    const current=lib.find(m=>m.id===currentId||m.name===currentId) || lib.find(m=>m.enabled!==false);
+    state.model = {
+      provider: current?.provider || '',
+      model: current?.name || '',
+      base: current?.base || '',
+      key: current?.key || '',
+      temperature: modelData.params?.temperature || state.model.temperature || 0.7,
+      topP: modelData.params?.topP || state.model.topP || 1,
+      maxTokens: modelData.params?.maxTokens || state.model.maxTokens || 4096,
+    };
   }
 
   // Load WebUI chats and real Hermes CLI sessions together.
-  const [sessions, chats] = await Promise.all([
-    apiGet('/api/cli/sessions?limit=200'),
-    apiGet('/api/chats'),
-  ]);
-  const webChats = (Array.isArray(chats)?chats:[]).map(c => ({
-    id: c.id,
-    title: c.title || '新建对话',
-    source: c.source || 'WebUI',
-    messages: [],
-    preview: c.preview || '',
-    messageCount: c.messageCount || 0,
-    updatedAt: c.updatedAt || c.createdAt || Date.now(),
-    createdAt: c.createdAt || c.updatedAt || Date.now(),
-    readOnly: false,
-    pinned: !!c.pinned,
-  }));
-  const cliChats = (Array.isArray(sessions)?sessions:[]).map(s => ({
-    id: s.id,
-    title: s.title || s.preview || '未命名对话',
-    source: s.source || 'cli',
-    messages: [],
-    preview: s.preview || '',
-    messageCount: s.messageCount || 0,
-    updatedAt: s.updatedAt || s.createdAt || Date.now(),
-    createdAt: s.createdAt || s.updatedAt || Date.now(),
-    readOnly: true,
-  }));
-  const byId=new Map();
-  [...webChats, ...cliChats].forEach(item=>{ if(item&&item.id&&!byId.has(item.id)) byId.set(item.id,item); });
-  state.chats=[...byId.values()].sort((a,b)=>(b.updatedAt||0)-(a.updatedAt||0));
-  if (state.chats.length) await selectChat(state.chats[0].id);
+  await refreshChatSources({limit:state.cliSessionLimit||500,keepCurrent:false});
+  if (state.chats.length) await selectChat(state.chats[state.chats.length-1].id);
 
   // Load skills
   const skills = await apiGet('/api/skills');
-  if (skills) state.skills = skills;
+  if (skills) {
+    state.skills = skills.map(s=>({
+      ...s,
+      description:s.description||s.desc||'',
+      category:s.category||(s.tags&&s.tags[0])||'未分类',
+      enabled:s.enabled!==undefined?s.enabled:s.on!==false,
+    }));
+    syncSkillEnabledFlags();
+  }
+  _profilesCache=null;
+  getProfiles();
 
   // Load gateways
   const gateways = await apiGet('/api/gateway');

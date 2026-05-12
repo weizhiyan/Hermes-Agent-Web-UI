@@ -10,7 +10,7 @@ const DEFAULT_MD_LIBRARY_DIR = path.join(store.DATA_DIR, 'output-md');
 
 function mdLibraryRoot() {
   const settings = store.read('settings', {}) || {};
-  return path.resolve(settings.mdLibraryDir || process.env.HERMES_MD_LIBRARY_DIR || DEFAULT_MD_LIBRARY_DIR);
+  return path.resolve(normalizeIncomingPath(settings.mdLibraryDir || process.env.HERMES_MD_LIBRARY_DIR || DEFAULT_MD_LIBRARY_DIR));
 }
 
 function roots() {
@@ -24,6 +24,28 @@ function roots() {
 function allowed(target) {
   const full = path.resolve(target);
   return roots().some(root => full === root || full.startsWith(root + path.sep));
+}
+
+function normalizeIncomingPath(target) {
+  const text = String(target || '');
+  const win = text.match(/^([a-zA-Z]):[\\/](.*)$/);
+  if (win && process.platform !== 'win32') {
+    return `/mnt/${win[1].toLowerCase()}/${win[2].replace(/\\/g, '/')}`;
+  }
+  const wsl = text.match(/^\/mnt\/([a-zA-Z])\/(.*)$/);
+  if (wsl && process.platform === 'win32') {
+    return `${wsl[1].toUpperCase()}:\\${wsl[2].replace(/\//g, '\\')}`;
+  }
+  return text;
+}
+
+function toExplorerPath(target) {
+  const text = String(target || '');
+  const match = text.match(/^\/mnt\/([a-zA-Z])\/(.*)$/);
+  if (match) {
+    return `${match[1].toUpperCase()}:\\${match[2].replace(/\//g, '\\')}`;
+  }
+  return target;
 }
 
 function safeStat(target) {
@@ -44,12 +66,13 @@ function itemFor(dir, entry) {
 }
 
 router.post('/open-path', (req, res) => {
-  const target = req.body.path;
+  const target = normalizeIncomingPath(req.body.path);
   if (!target || !allowed(target)) return res.fail('path not allowed', 403, 403);
   const finalTarget = fs.existsSync(target) ? target : path.dirname(target);
   if (!fs.existsSync(finalTarget)) return res.fail('path not found', 404, 404);
   const stat = safeStat(finalTarget);
-  const args = stat && stat.isFile() ? ['/select,', finalTarget] : [finalTarget];
+  const explorerTarget = toExplorerPath(finalTarget);
+  const args = stat && stat.isFile() ? ['/select,', explorerTarget] : [explorerTarget];
   spawn('explorer.exe', args, { detached: true, stdio: 'ignore' }).unref();
   res.ok({ path: finalTarget });
 });
@@ -75,7 +98,7 @@ router.post('/logs', (req, res) => {
 });
 
 router.get('/files', (req, res) => {
-  const dir = path.resolve(req.query.dir || store.DATA_DIR);
+  const dir = path.resolve(normalizeIncomingPath(req.query.dir || store.DATA_DIR));
   if (!allowed(dir)) return res.fail('path not allowed', 403, 403);
   try {
     const items = fs.readdirSync(dir, { withFileTypes: true })
@@ -102,7 +125,7 @@ router.get('/files', (req, res) => {
 });
 
 router.get('/file-content', (req, res) => {
-  const filePath = path.resolve(req.query.path || '');
+  const filePath = path.resolve(normalizeIncomingPath(req.query.path || ''));
   if (!filePath || !allowed(filePath)) return res.fail('path not allowed', 403, 403);
   try {
     const stat = fs.statSync(filePath);
@@ -112,6 +135,20 @@ router.get('/file-content', (req, res) => {
     res.ok({ path: filePath, content, size: stat.size, mtime: stat.mtimeMs, ext: path.extname(filePath).toLowerCase() });
   } catch (e) {
     res.fail('read failed: ' + e.message, 500, 500);
+  }
+});
+
+router.get('/file-raw', (req, res) => {
+  const filePath = path.resolve(normalizeIncomingPath(req.query.path || ''));
+  if (!filePath || !allowed(filePath)) return res.status(403).send('path not allowed');
+  try {
+    const stat = fs.statSync(filePath);
+    if (!stat.isFile()) return res.status(400).send('not a file');
+    if (stat.size > 30 * 1024 * 1024) return res.status(413).send('file too large');
+    res.setHeader('Cache-Control', 'no-store');
+    res.sendFile(filePath);
+  } catch (e) {
+    res.status(500).send('read failed: ' + e.message);
   }
 });
 

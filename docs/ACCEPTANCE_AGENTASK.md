@@ -1,4 +1,4 @@
-# AgentAsk 验收文档
+# AgentAsk Acceptance Guide
 
 本文档用于让其他 AI 或测试代理在 Hermes 本地页面上复验 AgentAsk 弹窗机制。目标不是读代码推断，而是在真实页面里按用户路径执行并确认行为。
 

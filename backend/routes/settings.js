@@ -13,7 +13,7 @@ const DEFAULTS = {
   systemPrompt: '',
   /** API 根地址（可选）。空则前端使用当前页面 origin。 */
   api: '',
-  hermesModel: 'deepseek-v4-flash',
+  hermesModel: '',
   hermesPath: '',
   quickMode: false,
   mdLibraryDir: '',

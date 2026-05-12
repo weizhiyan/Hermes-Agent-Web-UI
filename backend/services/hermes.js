@@ -21,6 +21,87 @@ function shQuote(value) {
   return `'${String(value || '').replace(/'/g, `'\\''`)}'`;
 }
 
+function providerArg(provider = '') {
+  const p = String(provider || '').trim().toLowerCase();
+  if (!p) return '';
+  return p.replace(/[^a-z0-9_-]/g, '');
+}
+
+function hermesProviderName(selectedModel, activeProvider = '') {
+  const raw = providerArg(selectedModel?.provider || activeProvider || 'webui');
+  const base = raw || 'custom';
+  return base.startsWith('webui-') ? base : `webui-${base}`;
+}
+
+function hermesApiMode(selectedModel = {}) {
+  const fmt = String(selectedModel.apiFormat || 'openai-chat').trim().toLowerCase();
+  if (fmt === 'anthropic' || fmt === 'anthropic-messages' || fmt === 'anthropic_messages') return 'anthropic_messages';
+  if (fmt === 'codex' || fmt === 'codex-responses' || fmt === 'codex_responses') return 'codex_responses';
+  return 'chat_completions';
+}
+
+function hermesBaseUrl(selectedModel = {}) {
+  let base = String(selectedModel.base || '').trim().replace(/\/+$/, '');
+  if (hermesApiMode(selectedModel) === 'anthropic_messages') {
+    base = base.replace(/\/v1$/i, '');
+  }
+  return base;
+}
+
+function hermesConfigYaml(providerName, selectedModel) {
+  const base = hermesBaseUrl(selectedModel);
+  const apiMode = hermesApiMode(selectedModel);
+  const modelName = String(selectedModel?.name || selectedModel?.model || '').trim();
+  const lines = [
+    'custom_providers:',
+    `- name: ${providerName}`,
+    `  base_url: ${base}`,
+    `  api_key: ${selectedModel.key}`,
+    `  api_mode: ${apiMode}`,
+  ];
+  if (modelName) lines.push(`  model: ${JSON.stringify(modelName)}`);
+  lines.push(
+    'model:',
+    `  provider: ${providerName}`,
+  );
+  if (modelName) lines.push(`  default: ${JSON.stringify(modelName)}`);
+  lines.push('mcp_servers: {}', '');
+  return lines.join('\n');
+}
+
+function syncHermesProviderConfig(providerName, selectedModel) {
+  if (!providerName || !selectedModel?.base || !selectedModel?.key) return;
+
+  try {
+    const dir = path.join(process.env.USERPROFILE || process.env.HOME || '', '.hermes');
+    if (!dir) return;
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+
+    const file = path.join(dir, 'config.yaml');
+    fs.writeFileSync(file, hermesConfigYaml(providerName, selectedModel), 'utf8');
+  } catch (_) {
+    // Env vars and CLI flags still carry the selected model; config sync is best-effort.
+  }
+}
+
+function wslPathForWindowsFile(filePath) {
+  const resolved = path.resolve(filePath).replace(/\\/g, '/');
+  const drive = resolved.match(/^([A-Za-z]):\/(.*)$/);
+  if (!drive) return resolved;
+  return `/mnt/${drive[1].toLowerCase()}/${drive[2]}`;
+}
+
+function syncWslHermesProviderConfig(providerName, selectedModel) {
+  if (!providerName || !selectedModel?.base || !selectedModel?.key) return '';
+
+  const tmpDir = path.join(process.cwd(), '.claude');
+  if (!fs.existsSync(tmpDir)) fs.mkdirSync(tmpDir, { recursive: true });
+  const tmpName = 'hermes_config_' + crypto.randomBytes(4).toString('hex') + '.yaml';
+  const tmpFile = path.join(tmpDir, tmpName);
+  fs.writeFileSync(tmpFile, hermesConfigYaml(providerName, selectedModel), 'utf8');
+  return tmpFile;
+}
+
 function detectHermesCommand() {
   const now = Date.now();
   if (cachedHermesCommandAt && now - cachedHermesCommandAt < 60000) return cachedHermesCommand;
@@ -107,19 +188,47 @@ async function* hermesStream(prompt, history, modelCfg, fullCfg = {}) {
   }
 
   const modelName = modelCfg?.model ? String(modelCfg.model) : '';
+  const selectedModel = fullCfg._selectedLibraryModel || null;
+  const providerName = selectedModel
+    ? hermesProviderName(selectedModel, fullCfg._activeProvider)
+    : providerArg(fullCfg._activeProvider || '');
+  syncHermesProviderConfig(providerName, selectedModel);
   let child;
   let tmpFile = null;
+  let wslConfigFile = null;
 
   // Inject environment variables from WebUI config
   const customEnv = { ...process.env, PYTHONUNBUFFERED: '1' };
-  if (fullCfg.anthropic?.key) customEnv.ANTHROPIC_API_KEY = fullCfg.anthropic.key;
-  if (fullCfg.openai?.key) customEnv.OPENAI_API_KEY = fullCfg.openai.key;
-  if (fullCfg.openai?.base) customEnv.OPENAI_BASE_URL = fullCfg.openai.base;
-  if (fullCfg.deepseek?.key) customEnv.DEEPSEEK_API_KEY = fullCfg.deepseek.key;
-  if (fullCfg.deepseek?.base) customEnv.DEEPSEEK_BASE_URL = fullCfg.deepseek.base;
+  if (selectedModel?.key) {
+    if (hermesApiMode(selectedModel) === 'anthropic_messages') {
+      customEnv.ANTHROPIC_API_KEY = selectedModel.key;
+      delete customEnv.OPENAI_API_KEY;
+    } else {
+      customEnv.OPENAI_API_KEY = selectedModel.key;
+      delete customEnv.ANTHROPIC_API_KEY;
+    }
+    delete customEnv.DEEPSEEK_API_KEY;
+  }
+  if (selectedModel?.base) {
+    if (hermesApiMode(selectedModel) === 'anthropic_messages') {
+      customEnv.ANTHROPIC_BASE_URL = hermesBaseUrl(selectedModel);
+      delete customEnv.OPENAI_BASE_URL;
+    } else {
+      customEnv.OPENAI_BASE_URL = hermesBaseUrl(selectedModel);
+      delete customEnv.ANTHROPIC_BASE_URL;
+    }
+    delete customEnv.DEEPSEEK_BASE_URL;
+  }
+  if (!selectedModel) {
+    if (fullCfg.anthropic?.key) customEnv.ANTHROPIC_API_KEY = fullCfg.anthropic.key;
+    if (fullCfg.openai?.key) customEnv.OPENAI_API_KEY = fullCfg.openai.key;
+    if (fullCfg.openai?.base) customEnv.OPENAI_BASE_URL = fullCfg.openai.base;
+    if (fullCfg.deepseek?.key) customEnv.DEEPSEEK_API_KEY = fullCfg.deepseek.key;
+    if (fullCfg.deepseek?.base) customEnv.DEEPSEEK_BASE_URL = fullCfg.deepseek.base;
+  }
 
   try {
-    if (fullPrompt.length > 8000) {
+    if (hermesCmd.type === 'wsl' || fullPrompt.length > 8000) {
       const tmpDir = path.join(process.cwd(), '.claude');
       if (!fs.existsSync(tmpDir)) fs.mkdirSync(tmpDir, { recursive: true });
       const tmpName = 'prompt_' + crypto.randomBytes(4).toString('hex') + '.txt';
@@ -128,13 +237,18 @@ async function* hermesStream(prompt, history, modelCfg, fullCfg = {}) {
     }
 
     if (hermesCmd.type === 'wsl') {
+      wslConfigFile = syncWslHermesProviderConfig(providerName, selectedModel);
       let cmd;
+      const syncConfigCmd = wslConfigFile
+        ? `mkdir -p ~/.hermes && cp ${shQuote(wslPathForWindowsFile(wslConfigFile))} ~/.hermes/config.yaml && `
+        : '';
       if (tmpFile) {
         const posixPath = '.claude/' + path.basename(tmpFile);
-        cmd = `hermes chat -q "$(< ${posixPath})" -Q`;
+        cmd = `${syncConfigCmd}hermes chat -q "$(< ${posixPath})" -Q`;
       } else {
-        cmd = `hermes chat -q ${shQuote(fullPrompt)} -Q`;
+        cmd = `${syncConfigCmd}hermes chat -q ${shQuote(fullPrompt)} -Q`;
       }
+      if (providerName) cmd += ` --provider ${shQuote(providerName)}`;
       if (modelName) cmd += ` -m ${shQuote(modelName)}`;
       child = spawn('wsl', ['-e', 'bash', '-lc', cmd], {
         stdio: ['ignore', 'pipe', 'pipe'],
@@ -144,6 +258,7 @@ async function* hermesStream(prompt, history, modelCfg, fullCfg = {}) {
       });
     } else {
       const args = ['chat', '-q', fullPrompt, '-Q'];
+      if (providerName) args.push('--provider', providerName);
       if (modelName) args.push('-m', modelName);
       child = spawn('hermes', args, {
         stdio: ['ignore', 'pipe', 'pipe'],
@@ -189,6 +304,9 @@ async function* hermesStream(prompt, history, modelCfg, fullCfg = {}) {
   } finally {
     if (tmpFile && fs.existsSync(tmpFile)) {
       try { fs.unlinkSync(tmpFile); } catch (_) {}
+    }
+    if (wslConfigFile && fs.existsSync(wslConfigFile)) {
+      try { fs.unlinkSync(wslConfigFile); } catch (_) {}
     }
   }
 }

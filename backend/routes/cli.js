@@ -156,7 +156,7 @@ function mergeToolMessages(rawMessages) {
 
 router.get('/sessions', (req, res) => {
   try {
-    const limit = String(Math.min(Number(req.query.limit) || 200, 500));
+    const limit = String(Math.min(Number(req.query.limit) || 500, 5000));
     const raw = runHermes(['sessions', 'list', '--limit', limit]);
     const lines = raw.split('\n').filter(l => l.trim());
     const sessions = [];

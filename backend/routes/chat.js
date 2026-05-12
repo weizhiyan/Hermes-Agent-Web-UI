@@ -10,6 +10,19 @@ const { redactSecrets, sanitizeAny, sanitizeChat } = require('../services/securi
 const router = express.Router();
 const KEY = 'chats';
 const HISTORY_DIR = path.join(store.DATA_DIR, 'history-md');
+const WEBUI_SELF_PROTECTION_PROMPT = `【WebUI 自保护规则】
+当前请求来自 Hermes WebUI 对话页面。除非用户明确说明“现在不用 WebUI，而是在 CLI/代码模式中修改项目”，否则你不能修改当前 Hermes WebUI 的核心代码与服务文件。
+
+禁止修改范围包括但不限于：
+- index.html、app-new.js、frontend/、backend/routes/、backend/services/、backend/server.js
+- 启动脚本、模型连接核心逻辑、WebUI 路由和页面样式
+
+允许操作范围：
+- 读取文件、解释现状、给出方案
+- 写入或更新数据文件，例如用户授权的第三方 API 配置、记忆文件、图片/Markdown 输出目录、backend/data 下的业务数据
+- 指导用户在 CLI 中执行维护操作
+
+如果用户在 WebUI 对话里要求修改 WebUI 自身，请说明需要切换到 CLI/代码维护模式后再执行。`;
 
 function loadAll() { return store.read(KEY, []); }
 function saveAll(list) { store.write(KEY, list); }
@@ -49,6 +62,8 @@ router.get('/', (req, res) => {
     id: c.id,
     title: redactSecrets(c.title),
     model: c.model,
+    agentId: c.agentId,
+    agentName: c.agentName,
     source: c.source || 'WebUI',
     updatedAt: c.updatedAt,
     createdAt: c.createdAt,
@@ -64,6 +79,8 @@ router.post('/', (req, res) => {
     id: crypto.randomUUID(),
     title: req.body.title || '新建对话',
     model: req.body.model || 'hermes-agent',
+    agentId: req.body.agentId || '',
+    agentName: req.body.agentName || '',
     source: req.body.source || 'WebUI',
     messages: [],
     createdAt: now,
@@ -136,6 +153,8 @@ router.put('/:id', (req, res) => {
   if (!chat) return res.fail('chat not found', 404, 404);
   if (req.body.title) chat.title = req.body.title;
   if (req.body.pinned !== undefined) chat.pinned = Boolean(req.body.pinned);
+  if (req.body.agentId !== undefined) chat.agentId = String(req.body.agentId || '');
+  if (req.body.agentName !== undefined) chat.agentName = String(req.body.agentName || '');
   chat.updatedAt = Date.now();
   saveAll(list);
   res.ok(sanitizeChat(chat));
@@ -152,14 +171,22 @@ router.post('/:id/messages', async (req, res) => {
 
   const userMsg = { role: 'user', content: redactSecrets(String(req.body.content || '')), ts: Date.now() };
   chat.messages.push(userMsg);
+  if (req.body.profileId) chat.agentId = String(req.body.profileId);
+  if (req.body.profileName) chat.agentName = String(req.body.profileName).slice(0, 120);
 
-  const skills = store.read('skills', []).filter(s => s.on && s.prompt);
+  const requestedSkillIds = Array.isArray(req.body.profileSkillIds) ? req.body.profileSkillIds.map(String) : [];
+  const skills = store.read('skills', []).filter(s => {
+    if (!s.prompt) return false;
+    if (requestedSkillIds.length) return requestedSkillIds.includes(String(s.id));
+    return s.on;
+  });
   const settings = store.read('settings', {});
   const systemParts = [];
+  systemParts.push(WEBUI_SELF_PROTECTION_PROMPT);
   const memoryPrompt = readCoreMemoryPrompt();
   if (memoryPrompt) systemParts.push(memoryPrompt);
   if (settings.systemPrompt) systemParts.push(settings.systemPrompt);
-  if (req.body.profilePrompt) systemParts.push(`[当前角色]\n${String(req.body.profilePrompt).slice(0, 6000)}`);
+  if (req.body.profilePrompt || req.body.profileName) systemParts.push(`[当前 Agent: ${String(req.body.profileName || req.body.profileId || '默认助手').slice(0, 80)}]\n${String(req.body.profilePrompt || '').slice(0, 6000)}`);
   skills.forEach(s => systemParts.push(`[技能: ${s.name}] ${s.prompt}`));
   const systemPrompt = systemParts.join('\n\n');
   const historyLimit = Math.max(4, Math.min(Number(settings.history) || 16, 60));

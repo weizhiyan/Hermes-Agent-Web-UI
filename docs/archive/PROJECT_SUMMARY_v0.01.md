@@ -1,4 +1,4 @@
-# Hermes Agent WebUI - 项目总结文档
+# Hermes Agent WebUI Project Summary v0.01
 
 ## 项目概述
 
