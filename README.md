@@ -25,6 +25,7 @@ node server.js
 项目文档统一放在 [docs](./docs/)：
 
 - [Documentation Index](./docs/README.md)
+- [WebUI Introduction](./docs/WEBUI_INTRODUCTION.md)
 - [API Reference](./docs/API_REFERENCE.md)
 - [AI Handoff Guide](./docs/AI_HANDOFF_GUIDE.md)
 - [AgentAsk Acceptance Guide](./docs/ACCEPTANCE_AGENTASK.md)

@@ -5,6 +5,7 @@
 ## 文档目录
 
 - [API_REFERENCE.md](./API_REFERENCE.md)：后端 API、SSE 事件和对接协议。
+- [WEBUI_INTRODUCTION.md](./WEBUI_INTRODUCTION.md)：适合放在 GitHub 上的 WebUI 项目介绍。
 - [AI_HANDOFF_GUIDE.md](./AI_HANDOFF_GUIDE.md)：给后续 AI / Agent 接手项目用的总指南，包含自保护、跨电脑适配、模型、技能、记忆、图像生成、语雀、安全和样式规范。
 - [ACCEPTANCE_AGENTASK.md](./ACCEPTANCE_AGENTASK.md)：AgentAsk 弹窗验收指南。
 - [archive/DESIGN_REFERENCE.md](./archive/DESIGN_REFERENCE.md)：旧设计参考归档。
