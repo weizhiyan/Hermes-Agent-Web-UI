@@ -23,34 +23,12 @@
 
 ## 快速开始
 
-### Windows
+1. 安装 `Node.js 18+`。
+2. 解压项目到一个普通文件夹。
+3. Windows 直接双击 `start.bat`。
+4. 打开 `http://127.0.0.1:8787/`。
 
-双击 `start.bat`。
-
-首次运行会自动安装后端依赖并启动服务。
-
-### PowerShell
-
-```powershell
-Copy-Item .env.example .env -ErrorAction SilentlyContinue
-.\start.ps1
-```
-
-### Linux / macOS
-
-```bash
-cp .env.example .env
-chmod +x start.sh
-./start.sh
-```
-
-### Docker / Docker Compose
-
-```bash
-docker compose up --build
-```
-
-打开：`http://127.0.0.1:8787/`
+如果你用 PowerShell / Linux / Docker，细节见 `docs/INSTALLATION.md`。
 
 ## 安装与部署
 
