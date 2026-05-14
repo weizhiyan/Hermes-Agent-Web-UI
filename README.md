@@ -1,23 +1,42 @@
 # Hermes Agent WebUI
 
-Hermes Agent WebUI 是一个本地优先的 AI 工作台，支持对话、文件、记忆、技能和预览。
+本地优先的 Hermes WebUI，面向对话、文件预览、记忆、技能与分身协作。
 
-## 安装方式
+## 亮点
 
-### 方式一：Windows 一键启动
+- 黑白极简风格，优先浅色模式。
+- 右侧 Markdown / Artifact 预览，支持历史文件和版本切换。
+- 对话流式输出、思考块、工具调用块统一展示。
+- 支持 `.env`、Docker Compose、Windows / PowerShell / Shell 一键启动。
+- 版本化发布，适合按 `v1.0.0`、`v1.0.1` 这种方式打包下载。
+
+## 当前版本
+
+- 当前版本：`v1.0.0`
+- 版本记录：[`CHANGELOG.md`](CHANGELOG.md)
+
+## 推荐下载方式
+
+- 每个稳定版本打一个 GitHub Release。
+- Release 附带一个压缩包，方便在其他电脑直接解压运行。
+- 每个版本只写这版改了什么，历史版本保留在 `CHANGELOG.md`。
+
+## 快速开始
+
+### Windows
 
 双击 `start.bat`。
 
 首次运行会自动安装后端依赖并启动服务。
 
-### 方式二：PowerShell
+### PowerShell
 
 ```powershell
 Copy-Item .env.example .env -ErrorAction SilentlyContinue
 .\start.ps1
 ```
 
-### 方式三：Linux / macOS
+### Linux / macOS
 
 ```bash
 cp .env.example .env
@@ -25,29 +44,17 @@ chmod +x start.sh
 ./start.sh
 ```
 
-### 方式四：Docker / Docker Compose
+### Docker / Docker Compose
 
 ```bash
 docker compose up --build
 ```
 
-如需改端口，先复制 `.env.example` 为 `.env` 后再修改。
+打开：`http://127.0.0.1:8787/`
 
-## 手动启动
+## 安装与部署
 
-```powershell
-cd backend
-npm install
-npm start
-```
-
-打开 `http://127.0.0.1:8787/`。
-
-## 推荐部署方式
-
-- 本机快速体验：`start.bat`
-- 跨电脑复制使用：`Docker Compose`
-- 服务器部署：`Docker Compose` 或 `npm start` + 进程守护
+更完整的安装、迁移和健康检查说明见：[`docs/INSTALLATION.md`](docs/INSTALLATION.md)
 
 ## 文件结构
 
@@ -58,8 +65,8 @@ npm start
 - `frontend/css/hermes-theme-vars.css`：可手改的主题变量
 - `.env`：可选运行配置，和启动脚本、Docker Compose 共用
 
-## 说明
+## 发布约定
 
-- 默认端口：`8787`
-- 需要 `Node.js 18+`
-- Docker 部署会挂载 `backend/data/` 和 `logs/`，方便迁移与持久化
+- 主分支保留最新稳定开发内容。
+- 每次大版本单独打 tag，例如 `v1.1.0`。
+- GitHub Release 以 tag 为准，附带版本压缩包和改动说明。
