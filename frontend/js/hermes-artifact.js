@@ -486,9 +486,12 @@
     if (rs.dataset.resizeBound === '1' && shell.dataset.resizeBound === '1') return;
     rs.dataset.resizeBound = '1';
     shell.dataset.resizeBound = '1';
+    let pendingClientX = null;
+    let resizeRaf = 0;
+    let activePointerId = null;
 
     function clampSplit(next) {
-      splitPct = Math.round(next);
+      splitPct = Math.round(next * 10) / 10;
       if (splitPct < 28) {
         setLayout('preview');
         return;
@@ -507,32 +510,63 @@
       const w = rect.width;
       if (w <= 0) return;
       const x = clientX - rect.left;
-      const nextSplit = Math.round((x / w) * 100);
+      const nextSplit = (x / w) * 100;
       clampSplit(nextSplit);
+    }
+
+    function scheduleMove(clientX) {
+      pendingClientX = clientX;
+      if (resizeRaf) return;
+      resizeRaf = requestAnimationFrame(() => {
+        resizeRaf = 0;
+        if (pendingClientX == null) return;
+        const x = pendingClientX;
+        pendingClientX = null;
+        onMove(x);
+      });
     }
 
     function end() {
       dragActive = false;
       _dragMode = 'split';
+      document.body.classList.remove('artifact-resizing');
       document.removeEventListener('mousemove', mm);
       document.removeEventListener('mouseup', mu);
       document.removeEventListener('touchmove', tm);
       document.removeEventListener('touchend', te);
+      document.removeEventListener('pointermove', pm);
+      document.removeEventListener('pointerup', pu);
+      document.removeEventListener('pointercancel', pu);
+      if (resizeRaf) cancelAnimationFrame(resizeRaf);
+      resizeRaf = 0;
+      pendingClientX = null;
+      activePointerId = null;
       saveSplit();
     }
 
     function mm(e) {
       if (!dragActive) return;
-      onMove(e.clientX);
+      scheduleMove(e.clientX);
     }
     function mu() {
       end();
     }
     function tm(e) {
       if (!dragActive || !e.touches[0]) return;
-      onMove(e.touches[0].clientX);
+      if (e.cancelable) e.preventDefault();
+      scheduleMove(e.touches[0].clientX);
     }
     function te() {
+      end();
+    }
+
+    function pm(e) {
+      if (!dragActive || (activePointerId != null && e.pointerId !== activePointerId)) return;
+      if (e.cancelable) e.preventDefault();
+      scheduleMove(e.clientX);
+    }
+    function pu(e) {
+      if (activePointerId != null && e.pointerId !== activePointerId) return;
       end();
     }
 
@@ -540,29 +574,42 @@
       dragActive = true;
       _dragMode = mode || 'split';
       if (e?.preventDefault) e.preventDefault();
+      document.body.classList.add('artifact-resizing');
       document.addEventListener('mousemove', mm);
       document.addEventListener('mouseup', mu);
+      onMove(e.clientX);
+    }
+
+    function startPointerDrag(mode, e) {
+      if (!e || e.pointerType === 'mouse' && e.button !== 0) return;
+      dragActive = true;
+      _dragMode = mode || 'split';
+      activePointerId = e.pointerId;
+      if (e.currentTarget?.setPointerCapture) {
+        try { e.currentTarget.setPointerCapture(e.pointerId); } catch (_) {}
+      }
+      if (e.preventDefault) e.preventDefault();
+      document.body.classList.add('artifact-resizing');
+      document.addEventListener('pointermove', pm, { passive: false });
+      document.addEventListener('pointerup', pu);
+      document.addEventListener('pointercancel', pu);
+      onMove(e.clientX);
     }
 
     function startTouchDrag(mode, e) {
       dragActive = true;
       _dragMode = mode || 'split';
+      document.body.classList.add('artifact-resizing');
       document.addEventListener('touchmove', tm, { passive: false });
       document.addEventListener('touchend', te);
     }
 
-    rs.addEventListener('mousedown', (e) => startDrag('split', e));
-    rs.addEventListener('touchstart', (e) => startTouchDrag('split', e));
+    rs.addEventListener('pointerdown', (e) => startPointerDrag('split', e));
     shell.addEventListener('mousedown', (e) => {
       if (!shell.classList.contains('open')) return;
       if (!e.target.closest('.artifact-edge-resizer')) return;
-      startDrag('edge', e);
+      startPointerDrag('edge', e);
     });
-    shell.addEventListener('touchstart', (e) => {
-      if (!shell.classList.contains('open')) return;
-      if (!e.target.closest('.artifact-edge-resizer')) return;
-      startTouchDrag('edge', e);
-    }, { passive: true });
   }
 
   function ensureShellMarkup() {
@@ -574,7 +621,6 @@
   <div class="artifact-toolbar">
     <div class="artifact-toolbar-label">
       <span>Markdown 预览</span>
-      <small>拖拽右侧边缘可调整宽度</small>
     </div>
     <div class="artifact-toolbar-actions">
       <button type="button" class="artifact-icon-btn" id="artifactCopyBtn" title="复制" onclick="HermesArtifact.copyContent()">${renderToolbarIcon('copy')}</button>

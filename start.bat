@@ -9,6 +9,10 @@ set "LOG_DIR=%ROOT%logs"
 set "LOG_FILE=%LOG_DIR%\server.log"
 title Hermes Agent Launcher
 
+if exist "%ROOT%.env" call :load_env "%ROOT%.env"
+if exist "%BACKEND%.env" call :load_env "%BACKEND%.env"
+set "URL=http://127.0.0.1:%PORT%/"
+
 echo.
 echo ========================================
 echo   Hermes Agent WebUI - Launcher
@@ -96,5 +100,17 @@ for /f "tokens=5" %%P in ('netstat -ano ^| findstr /R /C:":%PORT% .*LISTENING"')
   > "%PID_FILE%" echo %%P
   echo [Hermes] Server PID: %%P
   exit /b 0
+)
+exit /b 0
+
+:load_env
+set "ENV_FILE=%~1"
+for /f "usebackq tokens=1,* delims==" %%A in ("%ENV_FILE%") do (
+  if not "%%A"=="" (
+    if not "%%A:~0,1%"=="#" (
+      if /i "%%A"=="PORT" set "PORT=%%B"
+      if /i "%%A"=="NODE_ENV" set "NODE_ENV=%%B"
+    )
+  )
 )
 exit /b 0

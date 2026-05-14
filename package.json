@@ -1,0 +1,15 @@
+{
+  "name": "hermes-agent-webui",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Hermes Agent WebUI launcher package",
+  "scripts": {
+    "postinstall": "npm --prefix backend install",
+    "start": "npm --prefix backend start",
+    "dev": "npm --prefix backend run dev",
+    "health": "node -e \"fetch('http://127.0.0.1:'+(process.env.PORT||8787)+'/api/health').then(r=>{console.log(r.status);process.exit(r.ok?0:1)}).catch(e=>{console.error(e.message);process.exit(1)})\""
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

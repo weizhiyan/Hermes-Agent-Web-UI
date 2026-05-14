@@ -17,6 +17,7 @@ const DEFAULTS = {
   hermesPath: '',
   quickMode: false,
   mdLibraryDir: '',
+  debugPerf: false,
 };
 
 router.get('/', (req, res) => res.ok(store.read(KEY, DEFAULTS)));

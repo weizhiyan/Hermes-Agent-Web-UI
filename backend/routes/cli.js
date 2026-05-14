@@ -19,8 +19,8 @@ function runHermes(args) {
   const hermes = detectHermesCommand();
   if (!hermes) throw new Error('Hermes CLI 未找到。请先在 WSL 或本机安装 hermes。');
 
-  const result = hermes.type === 'wsl'
-    ? spawnSync('wsl', ['-e', 'bash', '-lc', `hermes ${args.map(shQuote).join(' ')}`], {
+const result = hermes.type === 'wsl'
+    ? spawnSync('wsl', ['-e', 'bash', '-lc', `export PATH="$HOME/.local/bin:$HOME/bin:/usr/local/bin:/usr/bin:/bin:$PATH"; hermes ${args.map(shQuote).join(' ')}`], {
         encoding: 'utf8',
         timeout: 25000,
         maxBuffer: 20 * 1024 * 1024,

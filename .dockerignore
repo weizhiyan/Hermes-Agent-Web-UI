@@ -1,0 +1,14 @@
+.git
+.claude
+node_modules
+backend/node_modules
+logs
+*.log
+*.pid
+.hermes-server.pid
+backend/data
+awesome-design-md
+awesome-design-md-main
+.env
+.DS_Store
+Thumbs.db

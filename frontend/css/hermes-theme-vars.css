@@ -1,0 +1,80 @@
+/*
+  Hermes Agent color variables
+  修改这个文件即可整体调整 Web UI 配色。
+
+  命名说明：
+  --c-primary / --c-on-primary：主按钮、头像、强强调色与其文字色
+  --c-ink / --c-ink-muted：主文字与次级文字
+  --c-canvas：页面底色
+  --c-surface1 / --c-surface2：卡片、侧栏、输入框等表面色
+  --c-hairline / --c-hairline-soft：边框、分割线
+  --c-accent / --c-accent-soft / --c-accent-muted：选中态、hover、轻强调
+  --c-success / --c-error / --c-warning：成功、错误、警告状态色
+  --c-preview-border：右侧预览面板边框与分割线
+  --c-preview-resizer-hover：鼠标悬停在预览拖拽区域时的背景
+  --c-preview-resizer-line：鼠标悬停时显示的极细拖拽参考线
+*/
+
+[data-theme="light"]{
+  --c-primary:#000000;
+  --c-on-primary:#ffffff;
+  --c-ink:#000000;
+  --c-ink-muted:#666666;
+  --c-canvas:#ffffff;
+  --c-surface1:#f7f7f5;
+  --c-surface2:#f1f1f1;
+  --c-hairline:#e6e6e6;
+  --c-hairline-soft:#f1f1f1;
+  --c-accent:#000000;
+  --c-accent-soft:rgba(0,0,0,0.06);
+  --c-accent-muted:rgba(0,0,0,0.12);
+  --c-success:#1ea64a;
+  --c-error:#e53935;
+  --c-warning:#f9a825;
+  --c-overlay:rgba(0,0,0,0.6);
+  --c-scrollbar:#d0d0d0;
+  --c-scrollbar-hover:#b0b0b0;
+  --c-code-bg:#f1f1f1;
+  --c-terminal-bg:#1a1a1a;
+  --c-terminal-ink:#e0e0e0;
+  --c-input-bg:#ffffff;
+  --c-input-shadow:0 8px 32px rgba(0,0,0,0.10),0 2px 8px rgba(0,0,0,0.06);
+  --c-agent-panel-bg:#ffffff;
+  --c-agent-option-bg:linear-gradient(135deg,#ffffff 0%,#f7f7f5 100%);
+  --c-agent-option-selected-bg:linear-gradient(135deg,#f7f7f5 0%,#ffffff 100%);
+  --c-preview-border:rgba(0,0,0,0.08);
+  --c-preview-resizer-hover:rgba(0,0,0,0.035);
+  --c-preview-resizer-line:rgba(0,0,0,0.18);
+}
+
+[data-theme="dark"]{
+  --c-primary:#ffffff;
+  --c-on-primary:#000000;
+  --c-ink:#ffffff;
+  --c-ink-muted:#888888;
+  --c-canvas:#0a0a0a;
+  --c-surface1:#141414;
+  --c-surface2:#1c1c1c;
+  --c-hairline:#262626;
+  --c-hairline-soft:#1a1a1a;
+  --c-accent:#ffffff;
+  --c-accent-soft:rgba(255,255,255,0.06);
+  --c-accent-muted:rgba(255,255,255,0.12);
+  --c-success:#22c55e;
+  --c-error:#ef5350;
+  --c-warning:#ffb74d;
+  --c-overlay:rgba(0,0,0,0.7);
+  --c-scrollbar:#333333;
+  --c-scrollbar-hover:#444444;
+  --c-code-bg:#1c1c1c;
+  --c-terminal-bg:#0d0d0d;
+  --c-terminal-ink:#e0e0e0;
+  --c-input-bg:var(--c-surface1);
+  --c-input-shadow:0 8px 32px rgba(0,0,0,0.45),0 2px 8px rgba(0,0,0,0.25);
+  --c-agent-panel-bg:var(--c-surface1);
+  --c-agent-option-bg:linear-gradient(135deg,var(--c-surface2) 0%,var(--c-canvas) 100%);
+  --c-agent-option-selected-bg:linear-gradient(135deg,var(--c-surface2) 0%,color-mix(in srgb,var(--c-ink) 8%,var(--c-canvas)) 100%);
+  --c-preview-border:rgba(255,255,255,0.075);
+  --c-preview-resizer-hover:rgba(255,255,255,0.035);
+  --c-preview-resizer-line:rgba(255,255,255,0.18);
+}

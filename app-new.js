@@ -99,6 +99,19 @@ async function apiPost(path, body) {
     return j.code === 0 ? j.data : null;
   } catch { return null; }
 }
+
+function hermesPerfEnabled(){
+  try{
+    return new URLSearchParams(window.location.search).has('perf')
+      || LS.get('hermes.debugPerf', false)
+      || !!(typeof state !== 'undefined' && state.settings && state.settings.debugPerf);
+  }catch(_){ return false; }
+}
+
+function hermesPerfLog(stage, data={}){
+  if(!hermesPerfEnabled()) return;
+  try{ console.info('[Hermes Perf]', stage, data); }catch(_){}
+}
 async function apiPut(path, body) {
   try {
     const r = await fetch(apiBase() + path, {
@@ -120,6 +133,7 @@ async function apiDel(path) {
 // Real-time SSE stream for sending messages
 async function apiStream(path, body, callbacks) {
   try {
+    const perfStart = performance.now ? performance.now() : Date.now();
     const r = await fetch(apiBase() + path, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -127,9 +141,11 @@ async function apiStream(path, body, callbacks) {
       signal: callbacks?.signal,
     });
     if (!r.ok || !r.body) { callbacks.onError?.('Connection failed'); return; }
+    hermesPerfLog('stream-open', { ms: Math.round((performance.now ? performance.now() : Date.now()) - perfStart), path });
     const reader = r.body.getReader();
     const dec = new TextDecoder();
     let buf = '';
+    let firstEventAt = 0;
     while (true) {
       const { value, done } = await reader.read();
       if (done) break;
@@ -143,12 +159,17 @@ async function apiStream(path, body, callbacks) {
         if (!evt || !dat) continue;
         let data;
         try { data = JSON.parse(dat[1]); } catch { continue; }
+        if (!firstEventAt) {
+          firstEventAt = performance.now ? performance.now() : Date.now();
+          hermesPerfLog('first-event', { ms: Math.round(firstEventAt - perfStart), event: evt[1] });
+        }
         switch (evt[1]) {
           case 'token': callbacks.onToken?.(data.text); break;
           case 'reasoning': callbacks.onReasoning?.(data.text); break;
           case 'tool': callbacks.onTool?.(data); break;
           case 'tool_complete': callbacks.onToolComplete?.(data); break;
           case 'title': callbacks.onTitle?.(data); break;
+          case 'perf': callbacks.onPerf?.(data); break;
           case 'done': callbacks.onDone?.(data); break;
           case 'error': callbacks.onError?.(data.msg); break;
         }
@@ -172,7 +193,7 @@ const state={
   forceImageGeneration: LS.get('hermes.forceImageGeneration',false),
   pendingImageAttachments: LS.get('hermes.pendingImageAttachments',[]),
   cliSessionLimit: LS.get('hermes.cliSessionLimit',500),
-  settings: LS.get('hermes.settings',{lang:'zh',stream:true,quickMode:false,history:16,systemPrompt:'',api:'',mdLibraryDir:''}),
+  settings: LS.get('hermes.settings',{lang:'zh',stream:true,quickMode:false,history:16,systemPrompt:'',api:'',mdLibraryDir:'',debugPerf:false}),
   skills: [],
   skillFilter: {source:null,search:'',category:null},
   selectedSkill: null,
@@ -1202,10 +1223,11 @@ function renderMsg(m){
     const id='th_'+(m._msgId||(m.ts||Date.now()))+'_'+(m.ts||0);
     const duration=m.thinkingDuration?` · ${m.thinkingDuration}ms`:'';
     const isStreaming=m._streaming;
+    const thinkingLabel=isStreaming?'思考中':'已思考';
     thinkingHtml=`<div class="msg-thinking">
       <div class="msg-thinking-header" onclick="toggleAllThinking('${id}')">
-        <svg class="thinking-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>
-        <span class="thinking-label">思考过程${isStreaming?'<span class="thinking-dots"><span></span><span></span><span></span></span>':''}</span>
+        <svg class="thinking-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M8.5 3.8 7.4 6.2 5 7.3l2.4 1.1 1.1 2.4 1.1-2.4L12 7.3 9.6 6.2 8.5 3.8Z"/><path d="M15.8 10.5 14.4 14l-3.4 1.4 3.4 1.4 1.4 3.4 1.4-3.4 3.4-1.4-3.4-1.4-1.4-3.5Z"/></svg>
+        <span class="thinking-label">${thinkingLabel}${isStreaming?'<span class="thinking-dots"><span></span><span></span><span></span></span>':''}</span>
         <span class="thinking-duration">${duration}</span>
         <span class="thinking-toggle collapsed" id="toggle_${id}">▶</span>
       </div>
@@ -1219,8 +1241,8 @@ function renderMsg(m){
       const statusCls=tc.status==='success'?'success':tc.status==='error'?'error':'running';
       const statusText=tc.status==='success'?'完成':tc.status==='error'?'失败':'运行中';
       let bodyHtml='';
-      if(tc.input) bodyHtml+=`<div class="tool-input">→ ${esc(typeof tc.input==='string'?tc.input:JSON.stringify(tc.input,null,2))}</div>`;
-      if(tc.output) bodyHtml+=`<div class="tool-output">← ${esc(typeof tc.output==='string'?tc.output:JSON.stringify(tc.output,null,2))}</div>`;
+      if(tc.input) bodyHtml+=`<div class="tool-input">输入\n${esc(typeof tc.input==='string'?tc.input:JSON.stringify(tc.input,null,2))}</div>`;
+      if(tc.output) bodyHtml+=`<div class="tool-output">输出\n${esc(typeof tc.output==='string'?tc.output:JSON.stringify(tc.output,null,2))}</div>`;
 
       let previewBtn = '';
       if (tc.status === 'success' && (tc.name === 'Write' || tc.name === 'Edit')) {
@@ -1238,13 +1260,13 @@ function renderMsg(m){
 
       return `<div class="msg-tool-call">
         <div class="msg-tool-call-header" data-tool="${esc(tc.name)}" onclick="toggleCollapse('${id}')">
-          <svg class="tool-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M14.7 6.3a1 1 0 000 1.4l1.6 1.6a1 1 0 001.4 0l3.77-3.77a6 6 0 01-7.94 7.94l-6.91 6.91a2.12 2.12 0 01-3-3l6.91-6.91a6 6 0 017.94-7.94l-3.76 3.76z"/></svg>
+          <svg class="tool-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M4 7.5h16"/><path d="M7.5 4v7"/><path d="m4 16 4-4 4 4"/><path d="m12 16 4-4 4 4"/></svg>
           <span class="tool-name">${esc(tc.name)}</span>
           <span class="tool-status ${statusCls}">${statusText}</span>
           ${previewBtn}
-          <span class="tool-toggle" id="toggle_${id}">▼</span>
+          <span class="tool-toggle collapsed" id="toggle_${id}">▼</span>
         </div>
-        <div class="msg-tool-call-body" id="body_${id}">${bodyHtml}</div>
+        <div class="msg-tool-call-body collapsed" id="body_${id}">${bodyHtml}</div>
       </div>`;
     }).join('')+'</div>';
   }
@@ -1270,13 +1292,16 @@ function renderMsg(m){
 
   let artifactRefsHtml='';
   let previewActionHtml='';
+  let fileCardsHtml='';
   if(m.role==='assistant'&&typeof HermesArtifact!=='undefined'){
     const p=HermesArtifact.parseHermesStream(content);
     let vis=(p.visibleText||'').trim();
-    if(!vis&&(p.activeArtifact||(p.completedArtifacts||[]).length))vis='已为你生成文件，可在右侧面板或下方引用查看。';
+    const mdCount=(p.completedArtifacts||[]).filter(a=>String(a?.attrs?.type||'markdown').toLowerCase()==='markdown').length;
+    if(!vis&&(p.activeArtifact||(p.completedArtifacts||[]).length))vis=mdCount?'':'已为你生成文件，可在右侧面板或下方引用查看。';
     content=vis;
     artifactRefsHtml=buildArtifactRefHtml(p);
     previewActionHtml=buildPreviewActionHtml(m.content||content);
+    fileCardsHtml=renderMarkdownFileCards(m);
   }
   const modelBadge = '';
   // Streaming dots at bottom of content
@@ -1290,7 +1315,8 @@ function renderMsg(m){
     <div class="msg-main">
       ${thinkingHtml}
       ${toolCallsHtml}
-      <div class="msg-bubble markdown-body">${stepHtml}${formatMsg(content)}${artifactRefsHtml}${previewActionHtml}${modelBadge}${streamDots}</div>
+      <div class="msg-bubble markdown-body">${stepHtml}${content?formatMsg(content):''}${fileCardsHtml}${artifactRefsHtml}${previewActionHtml}${modelBadge}${streamDots}</div>
+      ${renderMessageActions(m)}
     </div>
   </div>`;
 }
@@ -1306,16 +1332,13 @@ function toggleCollapse(id){
 
 function toggleAllThinking(id){
   const clicked=document.getElementById('body_'+id);
-  const shouldOpen=!clicked || clicked.classList.contains('collapsed');
-  document.querySelectorAll('.msg-thinking-body').forEach(body=>{
-    body.classList.toggle('collapsed',!shouldOpen);
-  });
-  document.querySelectorAll('.msg-thinking .thinking-toggle').forEach(toggle=>{
-    toggle.classList.toggle('collapsed',!shouldOpen);
-  });
+  const toggle=document.getElementById('toggle_'+id);
+  if(clicked) clicked.classList.toggle('collapsed');
+  if(toggle) toggle.classList.toggle('collapsed');
 }
 function cleanMessageContent(raw){
   let content = redactSecrets(raw || '');
+  content = content.replace(/(?:^|\n)\s*↻\s*Resumed session\s+[A-Za-z0-9_-]+\s*\(\d+\s+user messages?,\s*\d+\s+total messages?\)\s*(?=\n|$)/gi, '\n');
   content = content.replace(/⚠️\s*Normalized model.*?for deepseek\.?\n?/g, '');
   content = content.replace(/⚠\s*Normalized model.*?for deepseek\.?\n?/g, '');
   content = content.replace(/(?:^|\n)\s*(?:文件位置|本地路径)：[\s\S]*?(?=\n\s*\n|$)/g, '');
@@ -1346,7 +1369,104 @@ function renderMessageMarkdown(text){
   return `<pre>${esc(raw)}</pre>`;
 }
 
+function getMessageKey(msg){
+  return String(msg?._msgId || msg?.ts || '');
+}
+
+function getAssistantRenderData(msg){
+  const raw = cleanMessageContent(msg?.content || '');
+  const parsed = typeof HermesArtifact !== 'undefined' ? HermesArtifact.parseHermesStream(raw) : null;
+  const visible = parsed ? (parsed.visibleText || '').trim() : raw.trim();
+  const artifacts = parsed ? (parsed.completedArtifacts || []) : [];
+  const markdownArtifacts = artifacts.filter(a => String(a?.attrs?.type || 'markdown').toLowerCase() === 'markdown');
+  return { raw, parsed, visible, artifacts, markdownArtifacts };
+}
+
+function openMarkdownArtifact(encodedTitle){
+  if(typeof HermesArtifact==='undefined') return;
+  const title=decodeURIComponent(encodedTitle||'');
+  if(!title) return;
+  HermesArtifact.openRef(title);
+}
+
+function renderMarkdownFileCards(msg){
+  if (!msg || msg.role !== 'assistant' || typeof HermesArtifact === 'undefined') return '';
+  const data = getAssistantRenderData(msg);
+  if (!data.markdownArtifacts.length) return '';
+  return '<div class="md-file-card-list">' + data.markdownArtifacts.map((artifact, index) => {
+    const title = artifact?.attrs?.title || `Markdown 文档 ${index + 1}`;
+    const content = String(artifact?.content || '').trim();
+    const desc = content ? content.replace(/\s+/g, ' ').slice(0, 110) : 'Markdown 文档预览';
+    const safeTitle = encodeURIComponent(title);
+    const meta = artifact?.attrs?.language ? ` · ${esc(artifact.attrs.language)}` : '';
+    return `<div class="md-file-card" data-title="${esc(title)}" onclick="openMarkdownArtifact('${safeTitle}')">
+      <div class="md-file-card-icon">MD</div>
+      <div class="md-file-card-body">
+        <div class="md-file-card-title">${esc(title)}</div>
+        <div class="md-file-card-meta">文件类型 · Markdown${meta}</div>
+        <div class="md-file-card-desc">${esc(desc)}</div>
+        <div class="md-file-card-actions">
+          <button type="button" class="history-card-btn primary" onclick="event.stopPropagation(); openMarkdownArtifact('${safeTitle}')">预览</button>
+        </div>
+      </div>
+    </div>`;
+  }).join('') + '</div>';
+}
+
+function getMessageCopyText(msg){
+  const data = getAssistantRenderData(msg);
+  if (data.markdownArtifacts.length) return String(data.markdownArtifacts[0]?.content || data.visible || data.raw || '');
+  return String(data.visible || data.raw || '');
+}
+
+function getMessageFeedbackValue(msg){
+  return msg?.feedback?.value || msg?.feedback || '';
+}
+
+async function sendMessageFeedback(chatId, msgKey, feedback){
+  const value = feedback === 'like' ? 'like' : feedback === 'dislike' ? 'dislike' : '';
+  if (!chatId || !msgKey || !value) return false;
+  const data = await apiPost(`/api/chats/${encodeURIComponent(chatId)}/messages/feedback`, { msgId: msgKey, feedback: value });
+  return Boolean(data);
+}
+
+function renderMessageActions(m){
+  if (!m || m.role !== 'assistant') return '';
+  const active = getMessageFeedbackValue(m);
+  const key = getMessageKey(m);
+  const chatId = esc(currentChat()?.id || currentChat()?._id || '');
+  const likeActive = active === 'like' ? ' active' : '';
+  const dislikeActive = active === 'dislike' ? ' active' : '';
+  return `<div class="msg-actions" data-msg-key="${esc(key)}">
+    <button type="button" class="msg-action-btn" onclick="copyMessageContent('${esc(key)}')" title="复制" aria-label="复制">${COPY_ICON}</button>
+    <button type="button" class="msg-action-btn${likeActive}" onclick="setMessageFeedback('${chatId}','${esc(key)}','like')" title="喜欢" aria-label="喜欢">${likeActive ? LIKE_FILLED_ICON : LIKE_ICON}</button>
+    <button type="button" class="msg-action-btn${dislikeActive}" onclick="setMessageFeedback('${chatId}','${esc(key)}','dislike')" title="不喜欢" aria-label="不喜欢">${dislikeActive ? DISLIKE_FILLED_ICON : DISLIKE_ICON}</button>
+  </div>`;
+}
+
+async function copyMessageContent(msgKey){
+  const chat=currentChat();
+  const msg=(chat?.messages||[]).find(item=>getMessageKey(item)===String(msgKey));
+  if(!msg) return;
+  copyText(getMessageCopyText(msg), '已复制消息');
+}
+
+async function setMessageFeedback(chatId, msgKey, feedback){
+  const chat=currentChat();
+  if (!chat || String(chat.id || chat._id || '') !== String(chatId || '')) return;
+  const msg=(chat.messages||[]).find(item=>getMessageKey(item)===String(msgKey));
+  if (!msg || msg.role !== 'assistant') return;
+  msg.feedback = { value: feedback === 'like' ? 'like' : 'dislike', updatedAt: Date.now() };
+  save();
+  renderPage();
+  sendMessageFeedback(chatId, msgKey, feedback).catch(()=>{});
+}
+
 const COPY_ICON='<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>';
+const LIKE_ICON='<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M7 22H4a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2h3m0 11V11m0 11 6.5-11.5A2 2 0 0 0 12 7V4a2 2 0 0 1 2-2h.5a2 2 0 0 1 2 2c0 2.2-.7 4.3-2 6l4 0a2 2 0 0 1 2 2v2a2 2 0 0 1-2 2h-5.5"/></svg>';
+const DISLIKE_ICON='<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M17 2h3a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2h-3M17 2v11m0-11-6.5 11.5A2 2 0 0 1 12 17v3a2 2 0 0 0-2 2h-.5a2 2 0 0 1-2-2c0-2.2.7-4.3 2-6l-4 0a2 2 0 0 1-2-2v-2a2 2 0 0 1 2-2H11.5"/></svg>';
+const LIKE_FILLED_ICON='<svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="1.4"><path d="M10 21.5H4.5a2 2 0 0 1-2-2V11.5a2 2 0 0 1 2-2H8V7.6c0-1.6.6-3 1.7-4.1l.8-.8A1.8 1.8 0 0 1 13.5 4v4.6H18a2 2 0 0 1 2 2v1.1a2 2 0 0 1-.4 1.2l-2.4 3.6a2 2 0 0 0-.3 1.1V19a2.5 2.5 0 0 1-2.5 2.5H10z"/></svg>';
+const DISLIKE_FILLED_ICON='<svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="1.4"><path d="M14 2.5h5.5a2 2 0 0 1 2 2V12a2 2 0 0 1-2 2H17v2.4c0 1.6-.6 3-1.7 4.1l-.8.8A1.8 1.8 0 0 1 11 20v-4.6H6.5a2 2 0 0 1-2-2v-1.1a2 2 0 0 1 .4-1.2l2.4-3.6A2 2 0 0 0 7.6 6V5a2.5 2.5 0 0 1 2.5-2.5H14z"/></svg>';
 const FILE_LOCATION_ICON='<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M8 15h8"/><path d="M8 18h5"/></svg>';
 
 function normalizeMediaRef(value){
@@ -1946,6 +2066,10 @@ async function sendMessage(){
   let fullContent = '';
   let fullReasoning = '';
   const tools = [];
+  let lastArtifactFeedAt = 0;
+  const perfStart = performance.now ? performance.now() : Date.now();
+  let firstTokenAt = 0;
+  let tokenCount = 0;
 
   const profile=profileForChat(c);
   const requestModel = state.chatModelOverride !== 'auto' ? state.chatModelOverride : (profile?.modelId && profile.modelId !== 'auto' ? profile.modelId : 'auto');
@@ -1959,13 +2083,28 @@ async function sendMessage(){
     profileSkillIds:profile?.skillIds||[],
   }, {
     signal: streamController.signal,
+    onPerf(data) {
+      hermesPerfLog('backend', data);
+    },
     onToken(text) {
+      tokenCount += 1;
+      if (!firstTokenAt) {
+        firstTokenAt = performance.now ? performance.now() : Date.now();
+        hermesPerfLog('first-token', { ms: Math.round(firstTokenAt - perfStart), chars: String(text||'').length });
+      }
       fullContent += text;
       assistantMsg.content = fullContent;
       if (typeof HermesArtifact !== 'undefined') {
-        const p = HermesArtifact.parseHermesStream(fullContent);
-        assistantMsg.thinking = [fullReasoning, p.think].filter(Boolean).join('\n\n');
-        HermesArtifact.feedStream(p, true);
+        const now = performance.now ? performance.now() : Date.now();
+        const shouldFeedArtifact = /<\/?(?:artifact|think)\b/i.test(text) || now - lastArtifactFeedAt >= STREAM_MARKDOWN_INTERVAL_MS;
+        if (shouldFeedArtifact) {
+          const p = HermesArtifact.parseHermesStream(fullContent);
+          assistantMsg.thinking = [fullReasoning, p.think].filter(Boolean).join('\n\n');
+          HermesArtifact.feedStream(p, true);
+          lastArtifactFeedAt = now;
+        } else if (fullReasoning) {
+          assistantMsg.thinking = fullReasoning;
+        }
       } else {
         assistantMsg.thinking = fullReasoning;
       }
@@ -1973,12 +2112,7 @@ async function sendMessage(){
     },
     onReasoning(text) {
       fullReasoning += text;
-      if (typeof HermesArtifact !== 'undefined') {
-        const p = HermesArtifact.parseHermesStream(fullContent);
-        assistantMsg.thinking = [fullReasoning, p.think].filter(Boolean).join('\n\n');
-      } else {
-        assistantMsg.thinking = fullReasoning;
-      }
+      assistantMsg.thinking = fullReasoning;
       renderMsgUpdate(msgId, assistantMsg);
     },
     onTool(data) {
@@ -2082,6 +2216,7 @@ async function sendMessage(){
     onDone() {
       assistantMsg._streaming = false;
       setStreamingState(false,null,null);
+      hermesPerfLog('done', { ms: Math.round((performance.now ? performance.now() : Date.now()) - perfStart), tokens: tokenCount, chars: fullContent.length });
 
       // Check for <ask_user> XML tag OR a raw JSON block containing "question" and "options"
       let qData = null;
@@ -2183,18 +2318,26 @@ async function sendMessage(){
 
 let _renderThrottleTimer = null;
 let _pendingMsgUpdates = new Map();
+const STREAM_RENDER_INTERVAL_MS = 80;
+const STREAM_MARKDOWN_INTERVAL_MS = 260;
+let _lastStreamRenderAt = 0;
+let _lastStreamMarkdownAt = 0;
 
 function renderMsgUpdate(msgId, msg) {
   _pendingMsgUpdates.set(msgId, msg);
   if (!_renderThrottleTimer) {
-    _renderThrottleTimer = requestAnimationFrame(() => {
+    const now = performance.now ? performance.now() : Date.now();
+    const delay = msg?._streaming ? Math.max(0, STREAM_RENDER_INTERVAL_MS - (now - _lastStreamRenderAt)) : 0;
+    _renderThrottleTimer = setTimeout(() => requestAnimationFrame(() => {
       _renderThrottleTimer = null;
+      _lastStreamRenderAt = performance.now ? performance.now() : Date.now();
       flushMsgUpdates();
-    });
+    }), delay);
   }
 }
 
 function flushMsgUpdates() {
+  const perfStart = hermesPerfEnabled() ? (performance.now ? performance.now() : Date.now()) : 0;
   const updates = _pendingMsgUpdates;
   _pendingMsgUpdates = new Map();
   for (const [msgId, msg] of updates) {
@@ -2206,21 +2349,38 @@ function flushMsgUpdates() {
         let content = cleanMessageContent(msg.content || '');
         let refs = '';
         let previewAction = '';
+        let fileCards = '';
         const stepHtml = msg.step ? `<div class="msg-step-indicator">Step ${msg.step}</div>` : '';
+        const isStreaming = !!msg._streaming;
         if (msg.role === 'assistant' && typeof HermesArtifact !== 'undefined') {
           const p = HermesArtifact.parseHermesStream(content);
           let vis = (p.visibleText || '').trim();
           if (!vis && (p.activeArtifact || (p.completedArtifacts || []).length)) {
-            vis = '已为你生成文件，可在右侧面板或下方引用查看。';
+            const mdCount=(p.completedArtifacts||[]).filter(a=>String(a?.attrs?.type||'markdown').toLowerCase()==='markdown').length;
+            vis = mdCount ? '' : '已为你生成文件，可在右侧面板或下方引用查看。';
           }
           content = vis;
-          refs = buildArtifactRefHtml(p);
-          previewAction = buildPreviewActionHtml(msg.content || content);
+          if (isStreaming) {
+            refs = p.completedArtifacts?.length ? buildArtifactRefHtml(p) : '';
+            const now = performance.now ? performance.now() : Date.now();
+            if (now - _lastStreamMarkdownAt >= STREAM_MARKDOWN_INTERVAL_MS) {
+              previewAction = buildPreviewActionHtml(msg.content || content);
+              fileCards = renderMarkdownFileCards(msg);
+              _lastStreamMarkdownAt = now;
+            }
+          } else {
+            refs = buildArtifactRefHtml(p);
+            previewAction = buildPreviewActionHtml(msg.content || content);
+            fileCards = renderMarkdownFileCards(msg);
+          }
         }
         const modelBadge = '';
         const streamDots = msg._streaming ? '<span class="msg-streaming"><span></span><span></span><span></span></span>' : '';
-        bubble.innerHTML = stepHtml + formatMsg(content) + refs + previewAction + modelBadge + streamDots;
-        enhanceMessageMarkdown(bubble);
+        const bodyHtml = isStreaming && content && !fileCards && !refs
+          ? `<div>${esc(content).replace(/\n/g,'<br>')}</div>`
+          : (content ? formatMsg(content) : '');
+        bubble.innerHTML = stepHtml + bodyHtml + fileCards + refs + previewAction + modelBadge + streamDots;
+        if (!isStreaming || fileCards || refs) enhanceMessageMarkdown(bubble);
       }
       // Update thinking block
       const main = el.querySelector('.msg-main');
@@ -2238,7 +2398,8 @@ function flushMsgUpdates() {
           const thId = 'th_stream_' + msgId;
           const isStreaming=msg._streaming;
           const duration=msg.thinkingDuration?` · ${msg.thinkingDuration}ms`:'';
-          const thHtml = `<div class="msg-thinking"><div class="msg-thinking-header" onclick="toggleAllThinking('${thId}')"><svg class="thinking-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg><span class="thinking-label">思考过程${isStreaming?'<span class="thinking-dots"><span></span><span></span><span></span></span>':''}</span><span class="thinking-duration">${duration}</span><span class="thinking-toggle collapsed" id="toggle_${thId}">▶</span></div><div class="msg-thinking-body collapsed" id="body_${thId}">${esc(combinedThink)}</div></div>`;
+          const thinkingLabel=isStreaming?'思考中':'已思考';
+          const thHtml = `<div class="msg-thinking"><div class="msg-thinking-header" onclick="toggleAllThinking('${thId}')"><svg class="thinking-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M8.5 3.8 7.4 6.2 5 7.3l2.4 1.1 1.1 2.4 1.1-2.4L12 7.3 9.6 6.2 8.5 3.8Z"/><path d="M15.8 10.5 14.4 14l-3.4 1.4 3.4 1.4 1.4 3.4 1.4-3.4 3.4-1.4-3.4-1.4-1.4-3.5Z"/></svg><span class="thinking-label">${thinkingLabel}${isStreaming?'<span class="thinking-dots"><span></span><span></span><span></span></span>':''}</span><span class="thinking-duration">${duration}</span><span class="thinking-toggle collapsed" id="toggle_${thId}">▶</span></div><div class="msg-thinking-body collapsed" id="body_${thId}">${esc(combinedThink)}</div></div>`;
           if (thEl) thEl.outerHTML = thHtml;
           else if (bubbleWrap) bubbleWrap.insertAdjacentHTML('beforebegin', thHtml);
         } else if (thEl) {
@@ -2254,9 +2415,9 @@ function flushMsgUpdates() {
             const sc = tc.status === 'success' ? 'success' : tc.status === 'error' ? 'error' : 'running';
             const st = tc.status === 'success' ? '完成' : tc.status === 'error' ? '失败' : '运行中';
             let bh = '';
-            if (tc.input) bh += `<div class="tool-input">→ ${esc(typeof tc.input === 'string' ? tc.input : JSON.stringify(tc.input,null,2))}</div>`;
-            if (tc.output) bh += `<div class="tool-output">← ${esc(typeof tc.output === 'string' ? tc.output : JSON.stringify(tc.output,null,2))}</div>`;
-            return `<div class="msg-tool-call"><div class="msg-tool-call-header" data-tool="${esc(tc.name)}" onclick="toggleCollapse('${id}')"><svg class="tool-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M14.7 6.3a1 1 0 000 1.4l1.6 1.6a1 1 0 001.4 0l3.77-3.77a6 6 0 01-7.94 7.94l-6.91 6.91a2.12 2.12 0 01-3-3l6.91-6.91a6 6 0 017.94-7.94l-3.76 3.76z"/></svg><span class="tool-name">${esc(tc.name)}</span><span class="tool-status ${sc}">${st}</span><span class="tool-toggle" id="toggle_${id}">▼</span></div><div class="msg-tool-call-body" id="body_${id}">${bh}</div></div>`;
+            if (tc.input) bh += `<div class="tool-input">输入\n${esc(typeof tc.input === 'string' ? tc.input : JSON.stringify(tc.input,null,2))}</div>`;
+            if (tc.output) bh += `<div class="tool-output">输出\n${esc(typeof tc.output === 'string' ? tc.output : JSON.stringify(tc.output,null,2))}</div>`;
+            return `<div class="msg-tool-call"><div class="msg-tool-call-header" data-tool="${esc(tc.name)}" onclick="toggleCollapse('${id}')"><svg class="tool-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M4 7.5h16"/><path d="M7.5 4v7"/><path d="m4 16 4-4 4 4"/><path d="m12 16 4-4 4 4"/></svg><span class="tool-name">${esc(tc.name)}</span><span class="tool-status ${sc}">${st}</span><span class="tool-toggle collapsed" id="toggle_${id}">▼</span></div><div class="msg-tool-call-body collapsed" id="body_${id}">${bh}</div></div>`;
           }).join('') + '</div>';
           if (tcEl) tcEl.outerHTML = tcHtml;
           else if (bubbleWrap) bubbleWrap.insertAdjacentHTML('beforebegin', tcHtml);
@@ -2280,6 +2441,7 @@ function flushMsgUpdates() {
   }
   const area = $('#messagesArea');
   if (area && area.scrollTop > area.scrollHeight - area.clientHeight - 220) area.scrollTop = area.scrollHeight;
+  if (perfStart) hermesPerfLog('render-flush', { ms: Math.round((performance.now ? performance.now() : Date.now()) - perfStart), updates: updates.size });
 }
 
 function mockReply(q){
@@ -4936,6 +5098,9 @@ function renderSettings(){
         <div class="settings-item"><div><div class="settings-label">流式输出</div><div class="settings-desc">实时显示 AI 回复</div></div>
           <label class="toggle"><input type="checkbox" id="sStream" ${state.settings.stream?'checked':''}><span class="toggle-slider"></span></label>
         </div>
+        <div class="settings-item"><div><div class="settings-label">性能调试</div><div class="settings-desc">在浏览器控制台输出 WebUI / Hermes 流式时序</div></div>
+          <label class="toggle"><input type="checkbox" id="sDebugPerf" ${state.settings.debugPerf?'checked':''}><span class="toggle-slider"></span></label>
+        </div>
         <div class="settings-item"><div><div class="settings-label">快速模式</div><div class="settings-desc">跳过 Hermes Agent，直接调用大模型 API（更快但不支持工具调用）</div></div>
           <label class="toggle"><input type="checkbox" id="sQuick" ${state.settings.quickMode?'checked':''}><span class="toggle-slider"></span></label>
         </div>
@@ -4976,11 +5141,12 @@ function renderSettings(){
 }
 
 function saveSettings(){
-  state.settings={lang:$('#sLang').value,stream:$('#sStream').checked,quickMode:$('#sQuick').checked,history:parseInt($('#sHistory').value)||20,systemPrompt:$('#sSys').value,api:$('#sApi').value.trim(),style:$('#sStyle')?.value||'minimal',mdLibraryDir:$('#sMdLibraryDir')?.value?.trim()||''};
+  state.settings={lang:$('#sLang').value,stream:$('#sStream').checked,debugPerf:$('#sDebugPerf').checked,quickMode:$('#sQuick').checked,history:parseInt($('#sHistory').value)||20,systemPrompt:$('#sSys').value,api:$('#sApi').value.trim(),style:$('#sStyle')?.value||'minimal',mdLibraryDir:$('#sMdLibraryDir')?.value?.trim()||''};
   save();
   apiPut('/api/settings', {
     lang: state.settings.lang,
     stream: state.settings.stream,
+    debugPerf: state.settings.debugPerf,
     quickMode: state.settings.quickMode,
     history: state.settings.history,
     systemPrompt: state.settings.systemPrompt,
