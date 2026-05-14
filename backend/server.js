@@ -20,6 +20,33 @@ const modalRoutes = require('./routes/modal');
 const memoryRoutes = require('./routes/memory');
 const imageRoutes = require('./routes/images');
 
+function loadDotEnvFile(filePath) {
+  try {
+    const fs = require('fs');
+    if (!fs.existsSync(filePath)) return;
+    const content = fs.readFileSync(filePath, 'utf8');
+    content.split(/\r?\n/).forEach((line) => {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith('#')) return;
+      const match = trimmed.match(/^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$/);
+      if (!match) return;
+      const key = match[1];
+      let value = match[2].trim();
+      if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+        value = value.slice(1, -1);
+      }
+      if (process.env[key] == null || process.env[key] === '') {
+        process.env[key] = value;
+      }
+    });
+  } catch (error) {
+    console.warn('[hermes] failed to load env file', filePath, error.message);
+  }
+}
+
+loadDotEnvFile(path.join(__dirname, '..', '.env'));
+loadDotEnvFile(path.join(__dirname, '.env'));
+
 const app = express();
 const PORT = process.env.PORT || 8787;
 

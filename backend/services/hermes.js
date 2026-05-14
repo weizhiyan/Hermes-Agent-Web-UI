@@ -14,8 +14,23 @@ const THINKING_RE = /^\[THINKING\]\s*(.*)/;
 const ERROR_RE = /^\[ERROR\]\s*(.*)/;
 const TITLE_RE = /^\[TITLE\]\s*(.*)/;
 const AGENT_TAG_RE = /^\[AGENT:\w+\]\s*/;
+const SESSION_RE = /^Session:\s*([A-Za-z0-9_-]+)/;
+const SESSION_ID_RE = /^session_id:\s*([A-Za-z0-9_-]+)/i;
+const RESUMED_SESSION_RE = /^↻\s*Resumed session\s+([A-Za-z0-9_-]+)\s*\((\d+)\s+user message[s]?,\s*(\d+)\s+total message[s]?\)/i;
 let cachedHermesCommand = null;
 let cachedHermesCommandAt = 0;
+const HERMES_COMMAND_CACHE_MS = 5 * 60 * 1000;
+const HERMES_COMMAND_MISS_CACHE_MS = 10 * 1000;
+const MAX_CONTEXT_MESSAGE_CHARS = 6000;
+
+function compactHistoryContent(content = '') {
+  const text = String(content || '')
+    .replace(/<artifact\s+[^>]+>[\s\S]*?<\/artifact>/gi, '[已生成 Artifact 文档]')
+    .replace(/<think>[\s\S]*?<\/redacted_thinking>/gi, '')
+    .trim();
+  if (text.length <= MAX_CONTEXT_MESSAGE_CHARS) return text;
+  return text.slice(0, 2400) + '\n…\n' + text.slice(-2400);
+}
 
 function shQuote(value) {
   return `'${String(value || '').replace(/'/g, `'\\''`)}'`;
@@ -104,29 +119,33 @@ function syncWslHermesProviderConfig(providerName, selectedModel) {
 
 function detectHermesCommand() {
   const now = Date.now();
-  if (cachedHermesCommandAt && now - cachedHermesCommandAt < 60000) return cachedHermesCommand;
+  if (cachedHermesCommandAt) {
+    const ttl = cachedHermesCommand ? HERMES_COMMAND_CACHE_MS : HERMES_COMMAND_MISS_CACHE_MS;
+    if (now - cachedHermesCommandAt < ttl) return cachedHermesCommand;
+  }
+
   try {
-    const wslCheck = spawnSync('wsl', ['-e', 'bash', '-lc', 'command -v hermes >/dev/null 2>&1'], {
+    const nativeCheck = spawnSync('hermes', ['--version'], {
       encoding: 'utf8',
-      timeout: 4000,
+      timeout: 2000,
       windowsHide: true,
+      shell: true,
     });
-    if (wslCheck.status === 0) {
-      cachedHermesCommand = { type: 'wsl', cmd: 'wsl' };
+    if (!nativeCheck.error && nativeCheck.status === 0) {
+      cachedHermesCommand = { type: 'native', cmd: 'hermes' };
       cachedHermesCommandAt = now;
       return cachedHermesCommand;
     }
   } catch (_) {}
 
   try {
-    const nativeCheck = spawnSync('hermes', ['--version'], {
+    const wslCheck = spawnSync('wsl', ['-e', 'bash', '-lc', 'export PATH="$HOME/.local/bin:$HOME/bin:/usr/local/bin:/usr/bin:/bin:$PATH"; command -v hermes >/dev/null 2>&1'], {
       encoding: 'utf8',
-      timeout: 4000,
+      timeout: 2500,
       windowsHide: true,
-      shell: true,
     });
-    if (!nativeCheck.error && nativeCheck.status === 0) {
-      cachedHermesCommand = { type: 'native', cmd: 'hermes' };
+    if (wslCheck.status === 0) {
+      cachedHermesCommand = { type: 'wsl', cmd: 'wsl' };
       cachedHermesCommandAt = now;
       return cachedHermesCommand;
     }
@@ -141,6 +160,9 @@ function parseAgentLine(line) {
   const trimmed = String(line || '').replace(/\r$/, '');
   if (!trimmed) return null;
   let m;
+  if ((m = trimmed.match(RESUMED_SESSION_RE))) return { type: 'session', sessionId: m[1] };
+  if ((m = trimmed.match(SESSION_RE))) return { type: 'session', sessionId: m[1] };
+  if ((m = trimmed.match(SESSION_ID_RE))) return { type: 'session', sessionId: m[1] };
   if ((m = trimmed.match(TOOL_START_RE))) {
     try {
       const d = JSON.parse(m[1]);
@@ -166,7 +188,9 @@ function parseAgentLine(line) {
 }
 
 async function* hermesStream(prompt, history, modelCfg, fullCfg = {}) {
+  const perfStart = Date.now();
   const hermesCmd = detectHermesCommand();
+  yield { type: 'perf', stage: 'detect-hermes-command', ms: Date.now() - perfStart, command: hermesCmd?.type || 'missing' };
   if (!hermesCmd) {
     yield {
       type: 'error',
@@ -175,17 +199,23 @@ async function* hermesStream(prompt, history, modelCfg, fullCfg = {}) {
     return;
   }
 
+  const resumeSessionId = String(fullCfg._resumeSessionId || '').trim();
   const contextLines = [];
-  for (const m of (history || []).slice(0, -1)) {
-    if (m.role === 'system') contextLines.push(`[system]\n${m.content || ''}`);
-    else if (m.role === 'user') contextLines.push(`[user]\n${m.content || ''}`);
-    else if (m.role === 'assistant') contextLines.push(`[assistant]\n${m.content || ''}`);
+  if (!resumeSessionId) {
+    for (const m of (history || []).slice(0, -1)) {
+      const content = compactHistoryContent(m.content || '');
+      if (!content) continue;
+      if (m.role === 'system') contextLines.push(`[system]\n${content}`);
+      else if (m.role === 'user') contextLines.push(`[user]\n${content}`);
+      else if (m.role === 'assistant') contextLines.push(`[assistant]\n${content}`);
+    }
   }
 
   let fullPrompt = String(prompt || '');
   if (contextLines.length > 0) {
     fullPrompt = `[对话历史]\n${contextLines.join('\n---\n')}\n\n[当前问题]\n${fullPrompt}`;
   }
+  yield { type: 'perf', stage: 'prompt-built', ms: Date.now() - perfStart, chars: fullPrompt.length, contextMessages: contextLines.length, resumed: !!resumeSessionId };
 
   const modelName = modelCfg?.model ? String(modelCfg.model) : '';
   const selectedModel = fullCfg._selectedLibraryModel || null;
@@ -193,6 +223,7 @@ async function* hermesStream(prompt, history, modelCfg, fullCfg = {}) {
     ? hermesProviderName(selectedModel, fullCfg._activeProvider)
     : providerArg(fullCfg._activeProvider || '');
   syncHermesProviderConfig(providerName, selectedModel);
+  yield { type: 'perf', stage: 'provider-config-ready', ms: Date.now() - perfStart, provider: providerName || '', model: modelName || '', selected: !!selectedModel };
   let child;
   let tmpFile = null;
   let wslConfigFile = null;
@@ -240,8 +271,8 @@ async function* hermesStream(prompt, history, modelCfg, fullCfg = {}) {
       wslConfigFile = syncWslHermesProviderConfig(providerName, selectedModel);
       let cmd;
       const syncConfigCmd = wslConfigFile
-        ? `mkdir -p ~/.hermes && cp ${shQuote(wslPathForWindowsFile(wslConfigFile))} ~/.hermes/config.yaml && `
-        : '';
+        ? `export PATH="$HOME/.local/bin:$HOME/bin:/usr/local/bin:/usr/bin:/bin:$PATH"; mkdir -p ~/.hermes && cp ${shQuote(wslPathForWindowsFile(wslConfigFile))} ~/.hermes/config.yaml && `
+        : 'export PATH="$HOME/.local/bin:$HOME/bin:/usr/local/bin:/usr/bin:/bin:$PATH"; ';
       if (tmpFile) {
         const posixPath = '.claude/' + path.basename(tmpFile);
         cmd = `${syncConfigCmd}hermes chat -q "$(< ${posixPath})" -Q`;
@@ -250,16 +281,19 @@ async function* hermesStream(prompt, history, modelCfg, fullCfg = {}) {
       }
       if (providerName) cmd += ` --provider ${shQuote(providerName)}`;
       if (modelName) cmd += ` -m ${shQuote(modelName)}`;
+      if (resumeSessionId) cmd += ` --resume ${shQuote(resumeSessionId)}`;
       child = spawn('wsl', ['-e', 'bash', '-lc', cmd], {
         stdio: ['ignore', 'pipe', 'pipe'],
         timeout: 180000,
         windowsHide: true,
         env: customEnv,
       });
+      yield { type: 'perf', stage: 'cli-spawned', ms: Date.now() - perfStart, command: 'wsl', promptFile: !!tmpFile };
     } else {
       const args = ['chat', '-q', fullPrompt, '-Q'];
       if (providerName) args.push('--provider', providerName);
       if (modelName) args.push('-m', modelName);
+      if (resumeSessionId) args.push('--resume', resumeSessionId);
       child = spawn('hermes', args, {
         stdio: ['ignore', 'pipe', 'pipe'],
         timeout: 180000,
@@ -267,15 +301,33 @@ async function* hermesStream(prompt, history, modelCfg, fullCfg = {}) {
         env: customEnv,
         shell: true,
       });
+      yield { type: 'perf', stage: 'cli-spawned', ms: Date.now() - perfStart, command: 'native', promptFile: !!tmpFile };
     }
 
     let stdoutBuffer = '';
     let stderr = '';
+    let firstStdout = false;
+    let stderrBuffer = '';
+    const stderrEvents = [];
     child.stderr.on('data', chunk => {
-      stderr += chunk.toString('utf8');
+      const text = chunk.toString('utf8');
+      stderr += text;
+      stderrBuffer += text;
+      let idx;
+      while ((idx = stderrBuffer.indexOf('\n')) >= 0) {
+        const line = stderrBuffer.slice(0, idx);
+        stderrBuffer = stderrBuffer.slice(idx + 1);
+        const event = parseAgentLine(line);
+        if (event && event.type === 'session') stderrEvents.push(event);
+      }
     });
 
     for await (const chunk of child.stdout) {
+      while (stderrEvents.length) yield stderrEvents.shift();
+      if (!firstStdout) {
+        firstStdout = true;
+        yield { type: 'perf', stage: 'first-cli-stdout', ms: Date.now() - perfStart, bytes: chunk.length || 0 };
+      }
       stdoutBuffer += chunk.toString('utf8');
       let idx;
       while ((idx = stdoutBuffer.indexOf('\n')) >= 0) {
@@ -290,6 +342,7 @@ async function* hermesStream(prompt, history, modelCfg, fullCfg = {}) {
       const event = parseAgentLine(stdoutBuffer);
       if (event) yield event;
     }
+    while (stderrEvents.length) yield stderrEvents.shift();
 
     const exitCode = await new Promise(resolve => child.on('close', resolve));
     if (exitCode && stderr.trim()) {

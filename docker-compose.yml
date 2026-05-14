@@ -1,0 +1,19 @@
+services:
+  hermes-webui:
+    build: .
+    container_name: hermes-agent-webui
+    environment:
+      PORT: ${PORT:-8787}
+      NODE_ENV: ${NODE_ENV:-production}
+    ports:
+      - "${PORT:-8787}:${PORT:-8787}"
+    volumes:
+      - ./backend/data:/app/backend/data
+      - ./logs:/app/logs
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:'+(process.env.PORT||8787)+'/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 10s

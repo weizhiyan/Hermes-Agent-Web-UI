@@ -160,11 +160,34 @@ router.put('/:id', (req, res) => {
   res.ok(sanitizeChat(chat));
 });
 
+router.post('/:id/messages/feedback', (req, res) => {
+  const list = loadAll();
+  const chat = list.find(c => c.id === req.params.id);
+  if (!chat) return res.fail('chat not found', 404, 404);
+
+  const msgId = String(req.body.msgId || '');
+  const feedback = req.body.feedback === 'like' ? 'like' : req.body.feedback === 'dislike' ? 'dislike' : '';
+  if (!msgId || !feedback) return res.fail('invalid feedback', 400, 400);
+
+  const message = (chat.messages || []).find(m => m && m.role === 'assistant' && String(m._msgId || m.ts || '') === msgId);
+  if (!message) return res.fail('message not found', 404, 404);
+
+  message.feedback = { value: feedback, updatedAt: Date.now() };
+  chat.updatedAt = Date.now();
+  saveAll(list);
+  res.ok({ feedback: message.feedback });
+});
+
 function sseWrite(res, event, data) {
   res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
 }
 
+function perfMark(res, start, stage, extra = {}) {
+  sseWrite(res, 'perf', { stage, ms: Date.now() - start, ...extra });
+}
+
 router.post('/:id/messages', async (req, res) => {
+  const perfStart = Date.now();
   const list = loadAll();
   const chat = list.find(c => c.id === req.params.id);
   if (!chat) return res.fail('chat not found', 404, 404);
@@ -200,16 +223,32 @@ router.post('/:id/messages', async (req, res) => {
     'X-Accel-Buffering': 'no',
   });
   res.flushHeaders();
+  perfMark(res, perfStart, 'sse-flushed', {
+    historyMessages: recentMessages.length,
+    systemChars: systemPrompt.length,
+  });
 
   const cfg = store.read('models', {});
   cfg._scene = req.body.scene || 'chat';
   if (req.body.model && req.body.model !== 'auto') cfg._requestedModel = req.body.model;
+  const lastAssistant = [...chat.messages].reverse().find(m => m && m.role === 'assistant' && String(m.hermesSessionId || '').trim());
+  if (lastAssistant?.hermesSessionId) cfg._resumeSessionId = String(lastAssistant.hermesSessionId).trim();
   let full = '';
   let reasoningFull = '';
   const toolCalls = [];
+  let firstContentEventSeen = false;
+  let sessionIdFromDone = cfg._resumeSessionId || '';
 
   try {
     for await (const event of chatStream(cfg, contextMessages)) {
+      if (event.type === 'perf') {
+        sseWrite(res, 'perf', event);
+        continue;
+      }
+      if (!firstContentEventSeen) {
+        firstContentEventSeen = true;
+        perfMark(res, perfStart, 'first-hermes-event', { eventType: event.type });
+      }
       switch (event.type) {
         case 'token':
           {
@@ -260,8 +299,17 @@ router.post('/:id/messages', async (req, res) => {
           if (event.title) chat.title = event.title;
           break;
 
+        case 'session':
+          if (event.sessionId) sessionIdFromDone = String(event.sessionId);
+          sseWrite(res, 'perf', { stage: 'hermes-session', sessionId: sessionIdFromDone });
+          break;
+
         case 'error':
           sseWrite(res, 'error', { msg: redactSecrets(event.text) });
+          break;
+
+        case 'done':
+          if (event.session_id || event.sessionId) sessionIdFromDone = String(event.session_id || event.sessionId);
           break;
       }
     }
@@ -269,6 +317,7 @@ router.post('/:id/messages', async (req, res) => {
     chat.messages.push({ role: 'assistant', content: redactSecrets(full), ts: Date.now() });
     if (reasoningFull) chat.messages[chat.messages.length - 1].reasoning = reasoningFull;
     if (toolCalls.length) chat.messages[chat.messages.length - 1].tool_calls = toolCalls;
+    if (sessionIdFromDone) chat.messages[chat.messages.length - 1].hermesSessionId = sessionIdFromDone;
     chat.updatedAt = Date.now();
     if (chat.title === '新建对话' && userMsg.content) chat.title = userMsg.content.slice(0, 24);
     saveAll(list);
@@ -277,6 +326,7 @@ router.post('/:id/messages', async (req, res) => {
     sseWrite(res, 'done', {
       session_id: chat.id,
       usage: { input_tokens: 0, output_tokens: 0 },
+      perf: { total_ms: Date.now() - perfStart, output_chars: full.length },
     });
   } catch (e) {
     sseWrite(res, 'error', { msg: e.message });
