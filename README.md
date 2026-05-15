@@ -3,6 +3,11 @@
 Hermes Agent WebUI 是一个本地优先的 AI WebUI，重点围绕 **聊天、预览、记忆、技能、分身和模型管理** 来设计。
 <img width="1918" height="924" alt="image" src="https://github.com/user-attachments/assets/a5dd440e-4eec-497f-a303-8638db7bd47d" />
 <img width="1918" height="921" alt="image" src="https://github.com/user-attachments/assets/9efa00c4-251b-4bf9-ad24-95a9d0f9835e" />
+<img width="1916" height="917" alt="image" src="https://github.com/user-attachments/assets/d206fbcc-38c9-4a07-ba57-c2b355e52e7f" />
+<img width="1915" height="910" alt="QQ20260515-134906" src="https://github.com/user-attachments/assets/ab5ab8cf-f9da-4e47-b881-60c1a4749581" />
+<img width="1921" height="920" alt="QQ20260515-135609" src="https://github.com/user-attachments/assets/e1eb3eb0-cbe2-48b4-ac3e-b8a740c7557f" />
+<img width="1917" height="912" alt="QQ20260515-140153" src="https://github.com/user-attachments/assets/63fd03c9-f71e-4541-aa4b-ac71afeb5faa" />
+
 
 
 
