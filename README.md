@@ -10,6 +10,15 @@ http://127.0.0.1:3381/
 
 > 隐私说明：项目文档只使用通用示例路径，不包含个人电脑路径、账号、密钥或私有数据。建议把记忆、图片和输出文件放在项目目录外部，便于更新、备份和迁移。
 
+<p align="center">
+  <img width="1918" height="924" alt="Hermes Agent WebUI screenshot" src="https://github.com/user-attachments/assets/a5dd440e-4eec-497f-a303-8638db7bd47d" />
+  <img width="1918" height="921" alt="Hermes Agent WebUI screenshot" src="https://github.com/user-attachments/assets/9efa00c4-251b-4bf9-ad24-95a9d0f9835e" />
+  <img width="1916" height="917" alt="Hermes Agent WebUI screenshot" src="https://github.com/user-attachments/assets/d206fbcc-38c9-4a07-ba57-c2b355e52e7f" />
+  <img width="1915" height="910" alt="Hermes Agent WebUI screenshot" src="https://github.com/user-attachments/assets/ab5ab8cf-f9da-4e47-b881-60c1a4749581" />
+  <img width="1921" height="920" alt="Hermes Agent WebUI screenshot" src="https://github.com/user-attachments/assets/e1eb3eb0-cbe2-48b4-ac3e-b8a740c7557f" />
+  <img width="1917" height="912" alt="Hermes Agent WebUI screenshot" src="https://github.com/user-attachments/assets/63fd03c9-f71e-4541-aa4b-ac71afeb5faa" />
+</p>
+
 ## 主要能力
 
 - **流式对话**：支持实时输出、执行过程展示和首包耗时观察。
