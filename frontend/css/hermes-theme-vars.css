@@ -1,0 +1,215 @@
+﻿/*
+  Hermes Agent 颜色规范
+  只改这个文件即可调整界面 UI 与 Markdown 预览颜色。
+  查找方式：先看「界面 UI 颜色」，再看「Markdown / MD 颜色」。
+*/
+
+[data-theme="light"]{
+  /* ===== 界面 UI 颜色 ===== */
+  --c-primary:#000000; /* UI：主按钮、发送按钮、主头像、强强调元素背景 */
+  --c-on-primary:#ffffff; /* UI：主按钮、发送按钮上的文字和图标 */
+  --c-ink:#000000; /* UI：全局主文字、标题、正文 */
+  --c-ink-muted:#666666; /* UI：次级文字、说明、时间、占位提示 */
+  --c-canvas:#ffffff; /* UI：页面最底层背景、主画布背景 */
+  --c-surface1:#f7f7f5; /* UI：侧边栏、卡片、弹窗、普通消息气泡背景 */
+  --c-surface2:#f1f1f1; /* UI：悬浮块、次级按钮、输入辅助块、代码行内背景 */
+  --c-hairline:#e6e6e6; /* UI：主要描边、分割线、输入框边框 */
+  --c-hairline-soft:#f1f1f1; /* UI：弱描边、消息气泡边框、轻分割线 */
+  --c-accent:#000000; /* UI：选中状态、链接、强调文字、激活下划线 */
+  --c-accent-soft:rgba(0,0,0,0.06); /* UI：悬停背景、浅选中背景、轻强调底色 */
+  --c-accent-muted:rgba(0,0,0,0.12); /* UI：激活边框、强调描边、弱高亮 */
+  --c-success:#1ea64a; /* UI：成功状态、在线状态、成功提示 */
+  --c-error:#e53935; /* UI：错误状态、失败提示、危险反馈 */
+  --c-warning:#f9a825; /* UI：警告状态、提醒标记 */
+  --c-overlay:rgba(0,0,0,0.6); /* UI：弹窗遮罩、图片预览遮罩 */
+  --c-scrollbar:#d0d0d0; /* UI：滚动条默认颜色 */
+  --c-scrollbar-hover:#b0b0b0; /* UI：滚动条悬停颜色 */
+  --c-terminal-bg:#1a1a1a; /* UI：终端区域背景 */
+  --c-terminal-ink:#e0e0e0; /* UI：终端区域文字 */
+  --c-input-bg:#ffffff; /* UI：聊天输入框、右侧面板、工具栏背景 */
+  --c-input-shadow:0 8px 32px rgba(0,0,0,0.10),0 2px 8px rgba(0,0,0,0.06); /* UI：聊天输入框阴影 */
+  --c-agent-panel-bg:#ffffff; /* UI：Agent 选择面板背景 */
+  --c-agent-option-bg:linear-gradient(135deg,#ffffff 0%,#f7f7f5 100%); /* UI：Agent 选项默认背景 */
+  --c-agent-option-selected-bg:linear-gradient(135deg,#f7f7f5 0%,#ffffff 100%); /* UI：Agent 选项选中背景 */
+  --c-block-lime:#dceeb1; /* UI：头像/标签候选色，浅绿色块 */
+  --c-block-lilac:#c5b0f4; /* UI：头像/标签候选色，浅紫色块 */
+  --c-block-cream:#f4ecd6; /* UI：头像/标签候选色，奶油色块 */
+  --c-block-pink:#efd4d4; /* UI：头像/标签候选色，浅粉色块 */
+  --c-block-mint:#c8e6cd; /* UI：头像/标签候选色，薄荷色块 */
+  --c-block-coral:#f3c9b6; /* UI：头像/标签候选色，珊瑚色块 */
+  --c-block-navy:#1f1d3d; /* UI：头像/标签候选色，深蓝色块 */
+  --c-magenta:#ff3d8b; /* UI：特殊强调色、备用高亮色 */
+
+  /* ===== 沉浸式对话颜色 ===== */
+  --chat-page-bg:#ffffff; /* Chat：对话页面背景 */
+  --chat-ink:#0d0d0d; /* Chat：AI 回复主文字 */
+  --chat-ink-secondary:#374151; /* Chat：AI 回复次级文字 */
+  --chat-ink-muted:#6b7280; /* Chat：AI 回复辅助文字、操作图标 */
+  --chat-disabled:#9ca3af; /* Chat：禁用/占位文字 */
+  --chat-user-bg:#f7f7f5; /* Chat：用户气泡背景 */
+  --chat-user-ink:#0d0d0d; /* Chat：用户气泡文字 */
+  --chat-code-bg:#f7f7f7; /* Chat：代码块背景 */
+  --chat-code-border:rgba(0,0,0,0.08); /* Chat：代码块边框 */
+  --chat-divider:rgba(0,0,0,0.08); /* Chat：轮次分割线 */
+  --chat-quote-bg:rgba(0,0,0,0.02); /* Chat：引用背景 */
+  --chat-quote-border:#d0d7de; /* Chat：引用左边框 */
+  --chat-link:#2563eb; /* Chat：链接 / 聚焦色 */
+  --chat-input-bg:#f4f4f5; /* Chat：输入框背景 */
+  --chat-input-border:rgba(0,0,0,0.12); /* Chat：输入框边框 */
+  --image-loading-card-size:260px; /* Image：生图加载卡片尺寸，保持 1:1 */
+  --image-loading-card-bg:#f3f3f1; /* Image：生图加载卡片浅色背景起始色 */
+  --image-loading-card-bg-strong:#eeeeeb; /* Image：生图加载卡片浅色背景结束色 */
+  --image-loading-card-border:rgba(0,0,0,0.05); /* Image：生图加载卡片边框 */
+  --image-loading-ink:var(--c-ink-muted); /* Image：生图加载 SVG 与提示文字颜色 */
+  --image-loading-svg-ink:#9a9a9a; /* Image：生图加载中间 SVG 线条颜色，独立于文字 */
+
+  /* ===== Markdown / MD 颜色 ===== */
+  --c-code-bg:var(--chat-code-bg); /* MD/Chat：统一代码块背景 */
+  --c-preview-border:rgba(0,0,0,0.06); /* MD：右侧预览面板边框、工具栏分割线 */
+  --c-preview-resizer-hover:rgba(0,0,0,0.035); /* MD：右侧预览拖拽区域悬停背景 */
+  --c-preview-resizer-line:rgba(0,0,0,0.3); /* MD：右侧预览拖拽参考线 */
+  --md-bg:transparent; /* MD：预览正文区域背景，透明表示继承面板背景 */
+  --md-ink:var(--c-ink); /* MD：Markdown 正文文字颜色 */
+  --md-muted:var(--c-ink-muted); /* MD：Markdown 辅助文字、引用说明颜色 */
+  --md-heading:var(--c-ink); /* MD：h1-h6 标题颜色 */
+  --md-link:var(--c-accent); /* MD：链接文字颜色 */
+  --md-border:color-mix(in srgb,var(--c-ink) 20%,transparent); /* MD：表格、分割线、引用边框颜色 */
+  --md-table-head-bg:color-mix(in srgb,var(--c-ink) 8%,transparent); /* MD：表格表头背景 */
+  --md-table-row-alt:color-mix(in srgb,var(--c-ink) 3%,transparent); /* MD：表格隔行背景 */
+  --md-inline-code-bg:color-mix(in srgb,var(--c-ink) 6%,transparent); /* MD/Chat：统一行内代码背景 */
+  --md-code-bg:var(--c-code-bg); /* MD：代码块背景 */
+  --md-code-border:rgba(0,0,0,0.06); /* MD/Chat：统一代码块弱描边 */
+  --md-card-bg:transparent; /* MD：对话中的 MD artifact 卡片背景 */
+  --md-card-border:var(--c-hairline-soft); /* MD：对话中的 MD artifact 卡片描边 */
+  --md-card-icon-bg:var(--c-accent-soft); /* MD：对话中的 MD artifact 图标背景 */
+  --md-card-icon-ink:var(--c-accent); /* MD：对话中的 MD artifact 图标文字 */
+  --md-page-bg:#ffffff; /* MD：文档页面背景 */
+  --md-toolbar-bg:var(--c-input-bg); /* MD：顶部工具栏背景 */
+  --md-toolbar-border:var(--c-preview-border); /* MD：顶部工具栏分割线 */
+  --md-toolbar-ink:var(--c-ink); /* MD：顶部工具栏主文字 */
+  --md-toolbar-muted:var(--c-ink-muted); /* MD：顶部工具栏次级文字 */
+  --md-control-bg:#f1f1f1; /* MD：预览/代码切换底色 */
+  --md-control-border:var(--c-hairline-soft); /* MD：工具按钮边框 */
+  --md-control-hover-bg:rgba(0,0,0,0.05); /* MD：工具按钮悬停底色 */
+  --md-control-active-bg:#ffffff; /* MD：预览/代码选中底色 */
+  --md-menu-bg:#ffffff; /* MD：下拉菜单背景 */
+  --md-menu-border:var(--c-hairline); /* MD：下拉菜单边框 */
+  --md-menu-shadow:0 12px 32px rgba(0,0,0,0.08); /* MD：下拉菜单阴影 */
+  --md-content-max:760px; /* MD：正文最大宽度 */
+  --md-content-pad-x:40px; /* MD：正文横向内边距 */
+  --md-content-pad-y:28px; /* MD：正文顶部留白 */
+  --md-body-size:15px; /* MD：正文基础字号 */
+  --md-body-line:1.75; /* MD：正文基础行高 */
+  --md-h1-size:30px; /* MD：H1 标题字号 */
+  --md-h2-size:24px; /* MD：H2 标题字号 */
+  --md-h3-size:20px; /* MD：H3 标题字号 */
+  --md-h4-size:16px; /* MD：H4 标题字号 */
+  --md-heading-weight:600; /* MD：标题字重 */
+  --md-code-size:13px; /* MD：代码字号 */
+  --md-code-radius:6px; /* MD/Chat：统一代码块圆角 */
+}
+
+[data-theme="dark"]{
+  /* ===== 界面 UI 颜色 ===== */
+  --c-primary:#ffffff; /* UI：主按钮、发送按钮、主头像、强强调元素背景 */
+  --c-on-primary:#000000; /* UI：主按钮、发送按钮上的文字和图标 */
+  --c-ink:#ffffff; /* UI：全局主文字、标题、正文 */
+  --c-ink-muted:#888888; /* UI：次级文字、说明、时间、占位提示 */
+  --c-canvas:#0a0a0a; /* UI：页面最底层背景、主画布背景 */
+  --c-surface1:#141414; /* UI：侧边栏、卡片、弹窗、普通消息气泡背景 */
+  --c-surface2:#1c1c1c; /* UI：悬浮块、次级按钮、输入辅助块、代码行内背景 */
+  --c-hairline:#262626; /* UI：主要描边、分割线、输入框边框 */
+  --c-hairline-soft:#1a1a1a; /* UI：弱描边、消息气泡边框、轻分割线 */
+  --c-accent:#ffffff; /* UI：选中状态、链接、强调文字、激活下划线 */
+  --c-accent-soft:rgba(255,255,255,0.06); /* UI：悬停背景、浅选中背景、轻强调底色 */
+  --c-accent-muted:rgba(255,255,255,0.12); /* UI：激活边框、强调描边、弱高亮 */
+  --c-success:#22c55e; /* UI：成功状态、在线状态、成功提示 */
+  --c-error:#ef5350; /* UI：错误状态、失败提示、危险反馈 */
+  --c-warning:#ffb74d; /* UI：警告状态、提醒标记 */
+  --c-overlay:rgba(0,0,0,0.7); /* UI：弹窗遮罩、图片预览遮罩 */
+  --c-scrollbar:#333333; /* UI：滚动条默认颜色 */
+  --c-scrollbar-hover:#444444; /* UI：滚动条悬停颜色 */
+  --c-terminal-bg:#0d0d0d; /* UI：终端区域背景 */
+  --c-terminal-ink:#e0e0e0; /* UI：终端区域文字 */
+  --c-input-bg:var(--c-surface1); /* UI：聊天输入框、右侧面板、工具栏背景 */
+  --c-input-shadow:0 8px 32px rgba(0,0,0,0.45),0 2px 8px rgba(0,0,0,0.25); /* UI：聊天输入框阴影 */
+  --c-agent-panel-bg:var(--c-surface1); /* UI：Agent 选择面板背景 */
+  --c-agent-option-bg:linear-gradient(135deg,var(--c-surface2) 0%,var(--c-canvas) 100%); /* UI：Agent 选项默认背景 */
+  --c-agent-option-selected-bg:linear-gradient(135deg,var(--c-surface2) 0%,color-mix(in srgb,var(--c-ink) 8%,var(--c-canvas)) 100%); /* UI：Agent 选项选中背景 */
+  --c-block-lime:#2a3a1a; /* UI：头像/标签候选色，深绿色块 */
+  --c-block-lilac:#2a1f4a; /* UI：头像/标签候选色，深紫色块 */
+  --c-block-cream:#3a3420; /* UI：头像/标签候选色，深奶油色块 */
+  --c-block-pink:#3a2020; /* UI：头像/标签候选色，深粉色块 */
+  --c-block-mint:#1a3a22; /* UI：头像/标签候选色，深薄荷色块 */
+  --c-block-coral:#3a2a1a; /* UI：头像/标签候选色，深珊瑚色块 */
+  --c-block-navy:#1f1d3d; /* UI：头像/标签候选色，深蓝色块 */
+  --c-magenta:#ff3d8b; /* UI：特殊强调色、备用高亮色 */
+
+  /* ===== 沉浸式对话颜色 ===== */
+  --chat-page-bg:#0a0a0a; /* Chat：对话页面背景 */
+  --chat-ink:#f5f5f5; /* Chat：AI 回复主文字 */
+  --chat-ink-secondary:#d1d5db; /* Chat：AI 回复次级文字 */
+  --chat-ink-muted:#9ca3af; /* Chat：AI 回复辅助文字、操作图标 */
+  --chat-disabled:#6b7280; /* Chat：禁用/占位文字 */
+  --chat-user-bg:#141414; /* Chat：用户气泡背景 */
+  --chat-user-ink:#f5f5f5; /* Chat：用户气泡文字 */
+  --chat-code-bg:#151515; /* Chat：代码块背景 */
+  --chat-code-border:rgba(255,255,255,0.10); /* Chat：代码块边框 */
+  --chat-divider:rgba(255,255,255,0.10); /* Chat：轮次分割线 */
+  --chat-quote-bg:rgba(255,255,255,0.035); /* Chat：引用背景 */
+  --chat-quote-border:#3f3f46; /* Chat：引用左边框 */
+  --chat-link:#93c5fd; /* Chat：链接 / 聚焦色 */
+  --chat-input-bg:#18181b; /* Chat：输入框背景 */
+  --chat-input-border:rgba(255,255,255,0.14); /* Chat：输入框边框 */
+  --image-loading-card-size:260px; /* Image：生图加载卡片尺寸，保持 1:1 */
+  --image-loading-card-bg:#181818; /* Image：生图加载卡片深色背景起始色 */
+  --image-loading-card-bg-strong:#202020; /* Image：生图加载卡片深色背景结束色 */
+  --image-loading-card-border:rgba(255,255,255,0.08); /* Image：生图加载卡片边框 */
+  --image-loading-ink:var(--c-ink-muted); /* Image：生图加载 SVG 与提示文字颜色 */
+  --image-loading-svg-ink:#7a7a7a; /* Image：生图加载中间 SVG 线条颜色，独立于文字 */
+
+  /* ===== Markdown / MD 颜色 ===== */
+  --c-code-bg:var(--chat-code-bg); /* MD/Chat：统一代码块背景 */
+  --c-preview-border:rgba(255,255,255,0.06); /* MD：右侧预览面板边框、工具栏分割线 */
+  --c-preview-resizer-hover:rgba(255,255,255,0.035); /* MD：右侧预览拖拽区域悬停背景 */
+  --c-preview-resizer-line:rgba(255,255,255,0.18); /* MD：右侧预览拖拽参考线 */
+  --md-bg:transparent; /* MD：预览正文区域背景，透明表示继承面板背景 */
+  --md-ink:var(--c-ink); /* MD：Markdown 正文文字颜色 */
+  --md-muted:var(--c-ink-muted); /* MD：Markdown 辅助文字、引用说明颜色 */
+  --md-heading:var(--c-ink); /* MD：h1-h6 标题颜色 */
+  --md-link:var(--c-accent); /* MD：链接文字颜色 */
+  --md-border:color-mix(in srgb,var(--c-ink) 20%,transparent); /* MD：表格、分割线、引用边框颜色 */
+  --md-table-head-bg:color-mix(in srgb,var(--c-ink) 8%,transparent); /* MD：表格表头背景 */
+  --md-table-row-alt:color-mix(in srgb,var(--c-ink) 3%,transparent); /* MD：表格隔行背景 */
+  --md-inline-code-bg:color-mix(in srgb,var(--c-ink) 6%,transparent); /* MD/Chat：统一行内代码背景 */
+  --md-code-bg:var(--c-code-bg); /* MD：代码块背景 */
+  --md-code-border:rgba(255,255,255,0.08); /* MD/Chat：统一代码块弱描边 */
+  --md-card-bg:transparent; /* MD：对话中的 MD artifact 卡片背景 */
+  --md-card-border:var(--c-hairline-soft); /* MD：对话中的 MD artifact 卡片描边 */
+  --md-card-icon-bg:var(--c-accent-soft); /* MD：对话中的 MD artifact 图标背景 */
+  --md-card-icon-ink:var(--c-accent); /* MD：对话中的 MD artifact 图标文字 */
+  --md-page-bg:#0f1012; /* MD：文档页面背景 */
+  --md-toolbar-bg:var(--c-input-bg); /* MD：顶部工具栏背景 */
+  --md-toolbar-border:var(--c-preview-border); /* MD：顶部工具栏分割线 */
+  --md-toolbar-ink:var(--c-ink); /* MD：顶部工具栏主文字 */
+  --md-toolbar-muted:var(--c-ink-muted); /* MD：顶部工具栏次级文字 */
+  --md-control-bg:var(--c-surface2); /* MD：工具按钮默认背景 */
+  --md-control-border:var(--c-hairline-soft); /* MD：工具按钮边框 */
+  --md-control-hover-bg:rgba(255,255,255,0.08); /* MD：工具按钮悬停底色 */
+  --md-control-active-bg:var(--c-surface1); /* MD：工具按钮激活底色 */
+  --md-menu-bg:var(--c-surface1); /* MD：下拉菜单背景 */
+  --md-menu-border:var(--c-hairline); /* MD：下拉菜单边框 */
+  --md-menu-shadow:0 12px 32px rgba(0,0,0,0.34); /* MD：下拉菜单阴影 */
+  --md-content-max:760px; /* MD：正文最大宽度 */
+  --md-content-pad-x:40px; /* MD：正文横向内边距 */
+  --md-content-pad-y:28px; /* MD：正文顶部留白 */
+  --md-body-size:15px; /* MD：正文基础字号 */
+  --md-body-line:1.75; /* MD：正文基础行高 */
+  --md-h1-size:30px; /* MD：H1 标题字号 */
+  --md-h2-size:24px; /* MD：H2 标题字号 */
+  --md-h3-size:20px; /* MD：H3 标题字号 */
+  --md-h4-size:16px; /* MD：H4 标题字号 */
+  --md-heading-weight:600; /* MD：标题字重 */
+  --md-code-size:13px; /* MD：代码字号 */
+  --md-code-radius:6px; /* MD/Chat：统一代码块圆角 */
+}
