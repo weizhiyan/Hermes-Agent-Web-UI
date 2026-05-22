@@ -2,15 +2,6 @@
 
 Hermes Agent WebUI 是一个 **本地优先、浏览器操作、Node.js 驱动** 的 AI 工作台。它把日常 AI 对话、模型配置、Agent Profile、Skill、记忆、图片工作流、Markdown/Artifact 输出、本地命令审批和 WebUI 设置集中到一个界面里，让用户可以像使用普通聊天工具一样使用 AI，同时保留 Agent 执行复杂任务的能力。
 
-默认访问地址：
-
-```text
-http://127.0.0.1:3381/
-```
-
-`127.0.0.1` 是本机回环地址，只能从当前电脑访问，不会因为 README 里写了这个地址就暴露你的真实电脑位置。除非你主动配置公网穿透、端口映射、反向代理或云服务器部署，否则别人无法通过这个地址访问你的本地 WebUI。
-
-> 隐私说明：本文档只使用通用示例路径，不包含个人电脑路径、账号、邮箱、密钥或私有数据。建议把记忆、图片和输出文件放在项目目录外部，例如 `D:\HermesData`，这样更新代码、备份数据、迁移电脑时更安全。
 
 <p align="center">
   <img width="1918" height="924" alt="Hermes Agent WebUI screenshot" src="https://github.com/user-attachments/assets/a5dd440e-4eec-497f-a303-8638db7bd47d" />
