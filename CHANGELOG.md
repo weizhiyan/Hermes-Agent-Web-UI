@@ -1,5 +1,11 @@
 ﻿# Changelog
 
+## v1.2.0
+- 设置页新增 Agent 路由策略：自动、始终直连、始终 Hermes Agent。
+- 设置页预留 Hermes API Server 地址和 API Key 配置入口。
+- 后端记录每次聊天任务日志：路由、原因、耗时、输出长度和错误信息。
+- 日志页升级为任务日志视图，优先展示最新任务和执行摘要。
+- 保持普通聊天直连模型，复杂任务自动回退 Hermes Agent 的默认策略。
 ## v1.1.0
 - 默认端口统一为 `3381`。
 - 新增自动路由：普通聊天直连模型 API，复杂文件/命令/代码任务自动切换 Hermes Agent。
@@ -19,5 +25,6 @@
 - 改进思考块与工具调用块的展示方式，更接近 Claude / Codex 的轻量结构。
 - 补充跨电脑安装支持：`start.ps1`、`start.sh`、`docker-compose.yml`、`Dockerfile`、`.env.example`。
 - 让后端读取根目录 `.env`，便于本地和其他机器部署。
+
 
 

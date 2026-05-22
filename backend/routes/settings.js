@@ -17,6 +17,8 @@ const DEFAULTS = {
   hermesPath: '',
   quickMode: false,
   routingMode: 'auto',
+  hermesApiServerUrl: '',
+  hermesApiServerKey: '',
   dataRootDir: '',
   memoryDir: '',
   imageDir: '',

@@ -5707,6 +5707,22 @@ function renderSettings(){
         </div>
       </div>
       <div class="settings-section">
+        <div class="settings-section-title">Agent 路由策略</div>
+        <div class="settings-item"><div><div class="settings-label">路由模式</div><div class="settings-desc">自动：普通聊天直连模型，复杂文件/命令/代码任务走 Hermes Agent。</div></div>
+          <select id="sRoutingMode" style="width:180px">
+            <option value="auto" ${(state.settings.routingMode||'auto')==='auto'?'selected':''}>自动</option>
+            <option value="direct" ${(state.settings.routingMode||'auto')==='direct'?'selected':''}>始终直连</option>
+            <option value="hermes" ${(state.settings.routingMode||'auto')==='hermes'?'selected':''}>始终 Hermes Agent</option>
+          </select>
+        </div>
+        <div class="settings-item"><div><div class="settings-label">Hermes API Server 地址</div><div class="settings-desc">预留给官方 Hermes API Server；留空继续使用当前 CLI/直连策略。</div></div>
+          <input id="sHermesApiServerUrl" value="${esc(state.settings.hermesApiServerUrl||'')}" placeholder="例如 http://127.0.0.1:8000" style="width:320px">
+        </div>
+        <div class="settings-item"><div><div class="settings-label">Hermes API Key</div><div class="settings-desc">如 API Server 启用鉴权，在这里填写；本地空值即可。</div></div>
+          <input id="sHermesApiServerKey" type="password" value="${esc(state.settings.hermesApiServerKey||'')}" placeholder="可选" style="width:320px">
+        </div>
+      </div>
+      <div class="settings-section">
         <div class="settings-section-title">模型策略状态</div>
         <div class="settings-item"><div><div class="settings-label">普通对话模型</div><div class="settings-desc">用于默认聊天和 Agent 自动模式。</div></div><span style="font-size:12px;color:var(--c-ink-muted)">${esc(scenarioModel('chat')||'未配置')}</span></div>
         <div class="settings-item"><div><div class="settings-label">深度推理模型</div><div class="settings-desc">用于分身、代码、研究等推理场景。</div></div><span style="font-size:12px;color:var(--c-ink-muted)">${esc(scenarioModel('reasoning')||'未配置')}</span></div>
@@ -5888,13 +5904,16 @@ function showCliInstallGuide(){
 function saveSettings(){
   const promptToggles={};
   ['webuiRules','coreMemory','agentRules','userSystemPrompt','profilePrompt','skills','knowledgeSearch'].forEach(id=>promptToggles[id]=$(`#pt_${id}`)?.checked!==false);
-  state.settings={lang:$('#sLang').value,stream:$('#sStream').checked,debugPerf:$('#sDebugPerf').checked,quickMode:$('#sQuick').checked,history:parseInt($('#sHistory').value)||20,systemPrompt:$('#sSys').value,api:$('#sApi').value.trim(),style:$('#sStyle')?.value||'minimal',dataRootDir:$('#sDataRootDir')?.value?.trim()||'',memoryDir:$('#sMemoryDir')?.value?.trim()||'',imageDir:$('#sImageDir')?.value?.trim()||'',historyDir:$('#sHistoryDir')?.value?.trim()||'',mdLibraryDir:$('#sMdLibraryDir')?.value?.trim()||'',promptToggles,knowledgeSearchLimit:Math.max(0,Math.min(parseInt($('#sKnowledgeSearchLimit')?.value)||0,8))};
+  state.settings={lang:$('#sLang').value,stream:$('#sStream').checked,debugPerf:$('#sDebugPerf').checked,quickMode:$('#sQuick').checked,routingMode:$('#sRoutingMode')?.value||'auto',hermesApiServerUrl:$('#sHermesApiServerUrl')?.value?.trim()||'',hermesApiServerKey:$('#sHermesApiServerKey')?.value?.trim()||'',history:parseInt($('#sHistory').value)||20,systemPrompt:$('#sSys').value,api:$('#sApi').value.trim(),style:$('#sStyle')?.value||'minimal',dataRootDir:$('#sDataRootDir')?.value?.trim()||'',memoryDir:$('#sMemoryDir')?.value?.trim()||'',imageDir:$('#sImageDir')?.value?.trim()||'',historyDir:$('#sHistoryDir')?.value?.trim()||'',mdLibraryDir:$('#sMdLibraryDir')?.value?.trim()||'',promptToggles,knowledgeSearchLimit:Math.max(0,Math.min(parseInt($('#sKnowledgeSearchLimit')?.value)||0,8))};
   save();
   apiPut('/api/settings', {
     lang: state.settings.lang,
     stream: state.settings.stream,
     debugPerf: state.settings.debugPerf,
     quickMode: state.settings.quickMode,
+    routingMode: state.settings.routingMode || 'auto',
+    hermesApiServerUrl: state.settings.hermesApiServerUrl || '',
+    hermesApiServerKey: state.settings.hermesApiServerKey || '',
     history: state.settings.history,
     systemPrompt: state.settings.systemPrompt,
     style: state.settings.style,
@@ -6140,7 +6159,7 @@ function renderLogs(){
     _logsCache=[];
   }
   return `<div class="logs-view">
-    <div class="page-header"><h2>日志</h2>
+    <div class="page-header"><h2>任务日志</h2>
       <div class="header-actions"><button class="btn btn-xs btn-ghost" onclick="_logsCache=null;renderPage()">刷新</button></div>
     </div>
     <div class="log-container" id="logsContainer">${buildLogsHtml(_logsCache)}</div>
@@ -6148,11 +6167,16 @@ function renderLogs(){
 }
 function buildLogsHtml(logs){
   if(!logs||!logs.length) return '<div class="empty-state"><span>暂无日志记录</span></div>';
-  return logs.map(l=>{
-    const ts=l.ts?new Date(l.ts).toLocaleTimeString('zh-CN'):'--:--:--';
+  return logs.slice().reverse().map(l=>{
+    const ts=l.ts?new Date(l.ts).toLocaleString('zh-CN'):'--:--:--';
     const level=l.level||'info';
-    const msg=esc(l.msg||'');
-    return `<div class="log-line log-${level}"><span class="log-ts">${ts}</span><span class="log-level">${level}</span><span class="log-msg">${msg}</span></div>`;
+    const route=l.route?` · ${esc(l.route)}`:'';
+    const reason=l.reason?` / ${esc(l.reason)}`:'';
+    const duration=l.durationMs?` · ${Number(l.durationMs)}ms`:'';
+    const chars=l.outputChars?` · ${Number(l.outputChars)}字`:'';
+    const title=l.title?esc(l.title):esc(l.msg||'');
+    const err=l.error?`<div style="margin-top:4px;color:var(--c-danger)">${esc(l.error)}</div>`:'';
+    return `<div class="log-line log-${level}"><span class="log-ts">${ts}</span><span class="log-level">${level}</span><span class="log-msg"><strong>${title}</strong><span style="color:var(--c-ink-muted)">${route}${reason}${duration}${chars}</span>${err}</span></div>`;
   }).join('');
 }
 
@@ -6942,6 +6966,9 @@ async function initApp() {
     const localApi = state.settings.api;
     state.settings = { ...state.settings, ...settings };
     if (settings.quickMode !== undefined) state.settings.quickMode = !!settings.quickMode;
+    if (settings.routingMode !== undefined) state.settings.routingMode = settings.routingMode || 'auto';
+    if (settings.hermesApiServerUrl !== undefined) state.settings.hermesApiServerUrl = settings.hermesApiServerUrl || '';
+    if (settings.hermesApiServerKey !== undefined) state.settings.hermesApiServerKey = settings.hermesApiServerKey || '';
     if (settings.dataRootDir !== undefined) state.settings.dataRootDir = settings.dataRootDir || '';
     if (settings.memoryDir !== undefined) state.settings.memoryDir = settings.memoryDir || '';
     if (settings.imageDir !== undefined) state.settings.imageDir = settings.imageDir || '';

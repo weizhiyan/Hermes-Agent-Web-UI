@@ -311,6 +311,16 @@ function sseWrite(res, event, data) {
   res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
 }
 
+function appendSystemLog(entry = {}) {
+  try {
+    const logs = store.read('logs', []);
+    logs.push({ ts: Date.now(), source: 'chat', ...entry });
+    if (logs.length > 1000) logs.splice(0, logs.length - 1000);
+    store.write('logs', logs);
+  } catch (_) {}
+}
+
+
 function perfMark(res, start, stage, extra = {}) {
   sseWrite(res, 'perf', { stage, ms: Date.now() - start, ...extra });
 }
@@ -443,11 +453,17 @@ router.post('/:id/messages', async (req, res) => {
   const toolCalls = [];
   let firstContentEventSeen = false;
   let sessionIdFromDone = cfg._resumeSessionId || '';
+  let selectedRoute = '';
+  let selectedRouteReason = '';
 
   try {
     for await (const event of chatStream(cfg, contextMessages)) {
       if (abortController.signal.aborted) break;
       if (event.type === 'perf') {
+        if (event.stage === 'route-selected') {
+          selectedRoute = event.route || '';
+          selectedRouteReason = event.reason || '';
+        }
         sseWrite(res, 'perf', event);
         continue;
       }
@@ -546,6 +562,18 @@ router.post('/:id/messages', async (req, res) => {
     if ((chat.title === '新建对话' || chat.title === '鏂板缓瀵硅瘽') && userMsg.content) chat.title = userMsg.content.slice(0, 24);
     saveAll(list);
     try { writeMarkdown(chat); } catch {}
+    appendSystemLog({
+      type: 'task',
+      level: errorFull ? 'error' : 'info',
+      msg: `${chat.title || '新建对话'} · ${selectedRoute || 'unknown'} · ${Date.now() - perfStart}ms`,
+      chatId: chat.id,
+      title: chat.title || '',
+      route: selectedRoute || '',
+      reason: selectedRouteReason || '',
+      durationMs: Date.now() - perfStart,
+      outputChars: full.length,
+      error: errorFull || '',
+    });
 
     sseWrite(res, 'done', {
       session_id: chat.id,
@@ -559,6 +587,7 @@ router.post('/:id/messages', async (req, res) => {
     try {
       chat.messages.push({ role: 'assistant', content: `⚠️ ${safeText}`, ts: Date.now(), error: true });
       chat.updatedAt = Date.now();
+      appendSystemLog({ type: 'task', level: 'error', msg: `${chat.title || '新建对话'} · error · ${Date.now() - perfStart}ms`, chatId: chat.id, title: chat.title || '', route: selectedRoute || '', reason: selectedRouteReason || '', durationMs: Date.now() - perfStart, outputChars: full.length, error: safeText });
       saveAll(list);
       writeMarkdown(chat);
     } catch {}

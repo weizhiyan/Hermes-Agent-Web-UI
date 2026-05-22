@@ -1,4 +1,4 @@
-# Hermes Agent WebUI 使用说明
+﻿# Hermes Agent WebUI 使用说明
 
 这份文档用于说明当前 Hermes Agent WebUI 的定位、运行方式、核心逻辑、记忆机制、Skill 机制、更新方式和常见问题。它面向日常使用者，也方便后续 AI 或开发者接手维护。
 
@@ -488,3 +488,7 @@ Markdown、图片、历史记录建议统一放到外部记忆目录。
 ```text
 用 update.bat 或 git pull --ff-only，再重启。
 ```
+## 21. 任务日志与路由设置
+
+设置页现在可以选择路由模式：自动、始终直连、始终 Hermes Agent。日志页会记录每次聊天任务的路由、原因、耗时、输出长度和错误信息，方便判断慢在哪里。Hermes API Server 地址和 API Key 已预留，后续可接官方 Hermes API Server。
+

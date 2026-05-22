@@ -101,6 +101,14 @@ router.post('/logs', (req, res) => {
     level: req.body.level || 'info',
     msg: req.body.msg || '',
     source: req.body.source || 'system',
+    type: req.body.type || '',
+    route: req.body.route || '',
+    reason: req.body.reason || '',
+    chatId: req.body.chatId || '',
+    title: req.body.title || '',
+    durationMs: Number(req.body.durationMs || 0),
+    outputChars: Number(req.body.outputChars || 0),
+    error: req.body.error || '',
   };
   logs.push(entry);
   if (logs.length > 1000) logs.splice(0, logs.length - 1000);
