@@ -1,4 +1,4 @@
-﻿# Hermes Agent WebUI 使用说明
+# Hermes Agent WebUI 使用说明
 
 这份文档用于说明当前 Hermes Agent WebUI 的定位、运行方式、核心逻辑、记忆机制、Skill 机制、更新方式和常见问题。它面向日常使用者，也方便后续 AI 或开发者接手维护。
 
@@ -155,17 +155,17 @@ WebUI 后端读取记忆、历史、设置、相关 Skill
 默认建议记忆目录：
 
 ```text
-F:\AI\Hermes Agent\记忆
+D:\HermesData
 ```
 
 常见子目录：
 
 ```text
-F:\AI\Hermes Agent\记忆\core
-F:\AI\Hermes Agent\记忆\skill
-F:\AI\Hermes Agent\记忆\output-md
-F:\AI\Hermes Agent\记忆\images
-F:\AI\Hermes Agent\记忆\history-md
+D:\HermesData\core
+D:\HermesData\skill
+D:\HermesData\output-md
+D:\HermesData\images
+D:\HermesData\history-md
 ```
 
 设置页可以修改：
@@ -209,7 +209,7 @@ Agent 规则
 Skill 存放在记忆目录下，例如：
 
 ```text
-F:\AI\Hermes Agent\记忆\skill
+D:\HermesData\skill
 ```
 
 每个第一层文件夹代表一个 Skill。
@@ -285,8 +285,8 @@ WebUI 的“执行过程”不是伪造思考，而是展示真实链路事件�
 推荐：
 
 ```text
-F:\AI\Hermes Agent\记忆\images
-F:\AI\Hermes Agent\记忆\output-md
+D:\HermesData\images
+D:\HermesData\output-md
 ```
 
 好处：
@@ -397,7 +397,7 @@ npm install
 复制或同步记忆目录：
 
 ```text
-F:\AI\Hermes Agent\记忆
+D:\HermesData
 ```
 
 然后在设置页把记忆路径、图片路径、输出路径改到新电脑对应位置。
@@ -410,7 +410,7 @@ F:\AI\Hermes Agent\记忆
 
 ```text
 Base URL: https://api.deepseek.com
-API Key: sk-xxxx
+API Key: your-api-key
 Model: deepseek-v4-flash
 API Format: openai-chat
 ```

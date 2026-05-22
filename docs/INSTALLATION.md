@@ -1,13 +1,13 @@
 # Hermes Agent WebUI 安装与更新
 
-这份文档说明如何在本地安装、启动、更新和迁移 Hermes Agent WebUI。当前默认端口统一为 `3381`。
+这份文档说明如何安装、启动、更新、切换版本和迁移 Hermes Agent WebUI。当前默认端口为 `3381`。
 
 ## 1. 环境要求
 
-- Windows 10/11，或支持 Node.js 的 Linux/macOS。
-- Node.js 18+。
+- Node.js 18 或更高版本。
+- Windows 10/11、Linux 或 macOS。
 - 如果需要通过 GitHub 更新，建议安装 Git。
-- 如果需要复杂 Agent 执行能力，按你的 Hermes Agent 环境准备 CLI、WSL 或相关运行时。
+- 如果需要复杂 Agent 执行能力，请准备 Hermes Agent CLI、WSL 或对应运行环境。
 
 ## 2. 默认访问地址
 
@@ -15,29 +15,29 @@
 http://127.0.0.1:3381
 ```
 
-健康检查地址：
+健康检查：
 
 ```text
 http://127.0.0.1:3381/api/health
 ```
 
-返回 `ok` 表示后端正常。
+返回正常响应表示后端已启动。
 
 ## 3. Windows 快速启动
 
-推荐直接双击：
+推荐双击：
 
 ```bat
 start.bat
 ```
 
-或者使用 PowerShell：
+也可以使用 PowerShell：
 
 ```powershell
 .\start.ps1
 ```
 
-首次运行如果缺少依赖，可以手动执行：
+如果依赖缺失，先执行：
 
 ```powershell
 npm install
@@ -53,21 +53,23 @@ npm install
 npm start
 ```
 
-启动后打开：
+启动后访问：
 
 ```text
 http://127.0.0.1:3381
 ```
 
+如果不熟悉 Git，也可以在 GitHub 页面点击 `Code → Download ZIP` 下载当前最新版。
+
 ## 5. 更新 WebUI
 
-如果你已经从 GitHub 克隆了项目，可以双击：
+如果你是从 GitHub 克隆的项目，可以双击：
 
 ```bat
 update.bat
 ```
 
-它会执行：
+它会执行类似逻辑：
 
 ```text
 git pull --ff-only
@@ -83,9 +85,19 @@ npm install
 
 更新后重启 WebUI。
 
-## 6. 版本切换
+WebUI 设置页提供“更新中心”：
 
-如果 GitHub 上已经发布了版本标签，例如 `v1.2.0`、`v1.3.0`，可以这样切换：
+- 刷新状态：读取本地分支、提交、标签和本地改动数量。
+- 检查远端：执行安全的 `git fetch --tags --prune`，判断 GitHub 是否有新版本。
+- 查看方法：显示手动更新流程。
+
+更新中心不会自动执行 `git pull`，也不会自动覆盖本地文件。
+
+## 6. 下载历史版本
+
+GitHub 仓库主页默认是最新版。如果要下载历史版本，请打开 `Tags` 或 `Releases`，选择对应版本标签。
+
+Git 切换旧版本：
 
 ```powershell
 git fetch --tags
@@ -93,7 +105,7 @@ git checkout v1.2.0
 npm install
 ```
 
-如果想回到最新版主分支：
+回到最新版：
 
 ```powershell
 git checkout main
@@ -101,69 +113,68 @@ git pull --ff-only
 npm install
 ```
 
-注意：切换版本前，建议先确认本地没有未保存的代码改动。
+注意：切换版本前，建议确认本地没有未保存的代码改动。
 
 ## 7. 数据目录建议
 
-建议把记忆、图片、历史和输出 Markdown 放到项目外部，例如：
+建议把长期数据放在项目目录外部，例如：
 
 ```text
-F:\AI\Hermes Agent\记忆
+D:\HermesData
 ```
 
 推荐结构：
 
 ```text
-F:\AI\Hermes Agent\记忆\core
-F:\AI\Hermes Agent\记忆\skill
-F:\AI\Hermes Agent\记忆\images
-F:\AI\Hermes Agent\记忆\history-md
-F:\AI\Hermes Agent\记忆\output-md
+D:\HermesData\memory
+D:\HermesData\skill
+D:\HermesData\images
+D:\HermesData\history-md
+D:\HermesData\output-md
+D:\HermesData\backups
 ```
 
-这样更新 WebUI 代码、删除旧版本文件或迁移到新电脑时，不会影响长期记忆和输出内容。
+这样更新代码、删除旧版本或迁移到新电脑时，不会影响长期记忆、图片和输出内容。
 
-## 8. 多电脑迁移
+## 8. 迁移到新电脑
 
-新电脑操作流程：
+推荐流程：
 
-```powershell
-git clone https://github.com/weizhiyan/Hermes-Agent-Web-UI.git
-cd Hermes-Agent-Web-UI
-npm install
-npm start
-```
+1. 在旧电脑设置页执行“一键备份导出”。
+2. 复制外部数据目录到新电脑。
+3. 在新电脑安装 WebUI。
+4. 在设置页重新配置数据根目录、记忆目录、图片目录和输出目录。
+5. 重启 WebUI。
 
-然后把外部记忆目录复制到新电脑，在 WebUI 设置页重新配置：
+## 9. 备份导出
 
-- 数据根目录
-- 记忆目录
-- 图片目录
-- 历史 Markdown 目录
-- 输出 Markdown 目录
+设置页提供“一键备份导出”。备份文件会保存到数据目录的 `backups` 子目录。
 
-只要路径配置正确，WebUI 会自动读取新位置的数据。
+备份包含：
 
-## 9. 常见问题
+- 设置
+- 模型配置
+- Skill 配置
+- 聊天索引
+- 网关配置
+- 数据目录文件清单
 
-### 端口被占用
+备份会自动脱敏 API Key、Token、密码等字段。
 
-检查 `3381`：
+## 10. 常见问题
 
-```powershell
-Get-NetTCPConnection -LocalPort 3381 -State Listen
-```
-
-如需结束占用进程，先确认进程来源，再停止对应 PID。
-
-### 普通聊天为什么更快
-
-当前默认是自动路由：普通聊天直连模型 API，复杂文件/命令/代码任务才切换到 Hermes Agent。这样减少了 CLI、WSL 和 Agent 启动开销。
-
-### 什么时候需要 Hermes CLI / WSL
-
-只有需要真实执行能力时才需要，例如运行命令、修改文件、代码维护、项目扫描、批量处理文件等。
-
-### 更新会不会覆盖记忆
+### 更新会不会覆盖记忆？
 
 不会，只要你把记忆和输出目录放在项目外部，并在设置页配置路径。更新代码只影响 WebUI 程序文件。
+
+### 直接下载 ZIP 是最新版吗？
+
+是。GitHub 仓库页面 `Code → Download ZIP` 下载的是当前 `main` 分支最新版。
+
+### 怎么下载旧版本？
+
+进入 GitHub 的 `Tags` 或 `Releases`，选择 `v1.0.0`、`v1.1.0`、`v1.2.0`、`v1.3.0` 等标签下载源码包。
+
+### 可以把个人路径写进文档吗？
+
+不建议。公开文档应只使用通用示例路径，例如 `D:\HermesData`，不要暴露真实用户名、磁盘结构、密钥或私有目录。
