@@ -29,8 +29,8 @@
   --c-input-bg:#ffffff; /* UI：聊天输入框、右侧面板、工具栏背景 */
   --c-input-shadow:0 8px 32px rgba(0,0,0,0.10),0 2px 8px rgba(0,0,0,0.06); /* UI：聊天输入框阴影 */
   --c-agent-panel-bg:#ffffff; /* UI：Agent 选择面板背景 */
-  --c-agent-option-bg:linear-gradient(135deg,#ffffff 0%,#f7f7f5 100%); /* UI：Agent 选项默认背景 */
-  --c-agent-option-selected-bg:linear-gradient(135deg,#f7f7f5 0%,#ffffff 100%); /* UI：Agent 选项选中背景 */
+  --c-agent-option-bg:transparent; /* UI：Agent 选项默认背景 */
+  --c-agent-option-selected-bg:var(--c-accent-soft); /* UI：Agent 选项选中背景 */
   --c-block-lime:#dceeb1; /* UI：头像/标签候选色，浅绿色块 */
   --c-block-lilac:#c5b0f4; /* UI：头像/标签候选色，浅紫色块 */
   --c-block-cream:#f4ecd6; /* UI：头像/标签候选色，奶油色块 */
@@ -134,8 +134,8 @@
   --c-input-bg:var(--c-surface1); /* UI：聊天输入框、右侧面板、工具栏背景 */
   --c-input-shadow:0 8px 32px rgba(0,0,0,0.45),0 2px 8px rgba(0,0,0,0.25); /* UI：聊天输入框阴影 */
   --c-agent-panel-bg:var(--c-surface1); /* UI：Agent 选择面板背景 */
-  --c-agent-option-bg:linear-gradient(135deg,var(--c-surface2) 0%,var(--c-canvas) 100%); /* UI：Agent 选项默认背景 */
-  --c-agent-option-selected-bg:linear-gradient(135deg,var(--c-surface2) 0%,color-mix(in srgb,var(--c-ink) 8%,var(--c-canvas)) 100%); /* UI：Agent 选项选中背景 */
+  --c-agent-option-bg:transparent; /* UI：Agent 选项默认背景 */
+  --c-agent-option-selected-bg:var(--c-accent-soft); /* UI：Agent 选项选中背景 */
   --c-block-lime:#2a3a1a; /* UI：头像/标签候选色，深绿色块 */
   --c-block-lilac:#2a1f4a; /* UI：头像/标签候选色，深紫色块 */
   --c-block-cream:#3a3420; /* UI：头像/标签候选色，深奶油色块 */

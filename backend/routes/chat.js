@@ -8,11 +8,39 @@ const { chatStream } = require('../services/llm');
 const { readCoreMemoryPrompt, readAgentRulesPrompt } = require('../services/memory');
 const { redactSecrets, sanitizeAny, sanitizeChat } = require('../services/security');
 const { discoverExternalSkills, samePath, normalizeFsPath } = require('../services/skillDiscovery');
+const modalBus = require('./modal');
 
 const router = express.Router();
 const KEY = 'chats';
 const DEFAULT_SKILL_PROMPT_LIMIT = Math.max(1000, Number(process.env.HERMES_SKILL_PROMPT_LIMIT || 6000));
 const DEFAULT_KNOWLEDGE_SEARCH_LIMIT = Math.max(0, Math.min(Number(process.env.HERMES_KNOWLEDGE_SEARCH_LIMIT || 3), 8));
+const WEBUI_ASK_BRIDGE_PROMPT = [
+  '【WebUI 反问弹窗协议】',
+  '当你需要向用户确认信息、让用户在多个方案中选择、确认路径/范围/风险，或需要用户授权后才能继续时，请不要直接输出普通问题。',
+  '请输出且只输出一个 WEBUI_ASK_JSON 代码块，WebUI 后端会自动弹窗询问用户并把答案带回给你。',
+  '',
+  '```WEBUI_ASK_JSON',
+  '{',
+  '  "title": "Agent 需要确认",',
+  '  "message": "我需要你确认下一步操作，然后继续执行。",',
+  '  "questions": [',
+  '    {',
+  '      "id": "action",',
+  '      "label": "下一步怎么做？",',
+  '      "type": "single",',
+  '      "options": [',
+  '        { "label": "继续执行", "description": "按当前方案继续" },',
+  '        { "label": "先暂停", "description": "停止当前任务，等待进一步说明" }',
+  '      ],',
+  '      "placeholder": "也可以补充其他要求"',
+  '    }',
+  '  ],',
+  '  "timeoutMs": 600000',
+  '}',
+  '```',
+  '',
+  '不要在 WEBUI_ASK_JSON 代码块前后输出其他解释。'
+].join('\n');
 const WEBUI_SELF_PROTECTION_PROMPT = `【WebUI 对话执行规则】
 当前请求来自 Hermes WebUI 对话页。除非用户明确说明“现在不是 WebUI 对话，而是在 CLI/代码维护模式中修改项目”，否则你应把自己当作正在 WebUI 中服务用户的 Agent。
 
@@ -64,6 +92,31 @@ function writeMarkdown(chat) {
   return { content, path: filePath, folder: targetDir };
 }
 
+function extractWebuiAskRequest(text = '') {
+  const match = String(text || '').match(/```WEBUI_ASK_JSON\s*([\s\S]*?)```/i);
+  if (!match) return null;
+  try {
+    const data = JSON.parse(match[1].trim());
+    if (!data || !Array.isArray(data.questions) || !data.questions.length) return null;
+    return {
+      title: String(data.title || 'Agent 需要确认'),
+      message: String(data.message || '请确认后继续。'),
+      questions: data.questions,
+      timeoutMs: Math.max(10000, Math.min(Number(data.timeoutMs || 600000), 30 * 60 * 1000)),
+    };
+  } catch (_) {
+    return null;
+  }
+}
+
+function formatAskAnswersForModel(result) {
+  if (!result || !result.ok || !Array.isArray(result.answers)) return '用户未完成弹窗确认，请在聊天中直接追问。';
+  return result.answers.map(item => {
+    const selected = Array.isArray(item.selected) ? item.selected.filter(Boolean).join('、') : '';
+    const custom = String(item.custom || '').trim();
+    return `- ${item.label || item.id}: ${selected || '未选择'}${custom ? `；补充：${custom}` : ''}`;
+  }).join('\n') || '用户已确认，但没有具体答案。';
+}
 function needsKnowledgeBaseRules(text = '') {
   return /文档|markdown|md\b|知识库|教程|笔记|总结|规范|方案|验收|交接|复盘|报告|分享|归档|保存|frontmatter|artifact/i.test(String(text || ''));
 }
@@ -72,13 +125,18 @@ function isAgentTaskIntent(text = '') {
   return /\b(改代码|修改代码|写入文件|保存文件|创建文件|删除文件|移动文件|重命名文件|运行命令|执行命令|终端|shell|powershell|cmd|git\s|npm\s|pnpm\s|yarn\s|docker\s|测试|构建|部署|安装依赖|批量处理|扫描项目|读取目录|分析代码库|修复bug|修 bug|提交|commit|push)\b|帮我(改|修|写|创建|删除|运行|执行|安装|部署)|打开.*文件|操作.*文件|工具调用|agent\s*模式|hermes\s*模式/i.test(String(text || ''));
 }
 
-function skillMatchesMessage(skill = {}, text = '') {
-  const haystack = String((skill.name || '') + ' ' + (skill.description || skill.desc || '') + ' ' + (skill.prompt || '')).toLowerCase();
+function skillMatchInfo(skill = {}, text = '') {
+  const triggerText = Array.isArray(skill.triggers) ? skill.triggers.join(' ') : String(skill.triggers || '');
+  const haystack = String((skill.name || '') + ' ' + (skill.description || skill.desc || '') + ' ' + triggerText + ' ' + (skill.prompt || '')).toLowerCase();
   const message = String(text || '').toLowerCase();
+  const triggers = Array.isArray(skill.triggers) ? skill.triggers : String(skill.triggers || '').split(/[，,、\s]+/);
+  const trigger = triggers.find(token => token && message.includes(String(token).toLowerCase()));
+  if (trigger) return { matched: true, reason: 'trigger', trigger: String(trigger) };
   const keywords = tokenizeForSearch((skill.name || '') + ' ' + (skill.description || skill.desc || '')).slice(0, 12);
-  if (keywords.some(token => token && message.includes(token))) return true;
+  const keyword = keywords.find(token => token && message.includes(token));
+  if (keyword) return { matched: true, reason: 'keyword', trigger: keyword };
   const pairs = [
-    [/图|图片|画|生成图|出图|海报|插画|logo|视觉|参考图|改图|修图|image/i, /图|图片|image|视觉|海报|插画|logo|生成/i],
+    [/图片|生成图|生图|出图|海报|插画|logo|视觉|参考图|改图|修图|image/i, /图片|image|视觉|海报|插画|logo|生成/i],
     [/代码|bug|报错|重构|审查|项目|函数|接口|前端|后端|node|js|css|html/i, /代码|审查|重构|bug|开发|编程/i],
     [/文件|保存|写入|读取|目录|路径|md|markdown|文档/i, /文件|目录|markdown|文档|写入|读取/i],
     [/联网|搜索|查一下|资料|官网|最新|新闻/i, /联网|搜索|浏览|资料|网页/i],
@@ -86,12 +144,18 @@ function skillMatchesMessage(skill = {}, text = '') {
     [/更新|安装|升级|github|版本|webui/i, /更新|安装|升级|webui|github/i],
     [/润色|表达|文案|改写|标题|方案|设计/i, /润色|表达|写作|文案|design|polish/i],
   ];
-  return pairs.some(([intent, skillRe]) => intent.test(message) && skillRe.test(haystack));
+  const pairIndex = pairs.findIndex(([intent, skillRe]) => intent.test(message) && skillRe.test(haystack));
+  if (pairIndex >= 0) return { matched: true, reason: 'intent', trigger: 'intent:' + (pairIndex + 1) };
+  return { matched: false, reason: '', trigger: '' };
 }
 
+function skillMatchesMessage(skill = {}, text = '') {
+  return skillMatchInfo(skill, text).matched;
+}
 function selectRelevantSkills(skills = [], message = '', { forceAll = false, limit = 4 } = {}) {
-  if (forceAll) return skills;
-  const matched = skills.filter(skill => skillMatchesMessage(skill, message));
+  const sorted = [...skills].sort((a, b) => Number(b.priority || 0) - Number(a.priority || 0));
+  if (forceAll) return sorted;
+  const matched = sorted.filter(skill => skillMatchesMessage(skill, message));
   return matched.slice(0, Math.max(0, limit));
 }
 
@@ -387,6 +451,7 @@ router.post('/:id/messages', async (req, res) => {
     });
   }
   if (toggles.webuiRules) addSystemPart('WebUI 自保护规则', WEBUI_SELF_PROTECTION_PROMPT, { source: 'builtin' });
+  if (toggles.webuiRules) addSystemPart('WebUI 反问弹窗协议', WEBUI_ASK_BRIDGE_PROMPT, { source: 'builtin' });
   const memoryPrompt = readCoreMemoryPrompt();
   if (toggles.coreMemory) addSystemPart('核心记忆', memoryPrompt, { source: 'memory' });
   const agentRulesPrompt = readAgentRulesPrompt({ includeKnowledgeBase: needsKnowledgeBaseRules(userMsg.content) });
@@ -439,6 +504,7 @@ router.post('/:id/messages', async (req, res) => {
     systemChars: systemPrompt.length,
     promptDebug,
     promptTotalApproxTokens: Math.ceil(systemPrompt.length / 4),
+    matchedSkills: skills.map(s => ({ id: s.id || '', name: s.name || '', category: s.category || (Array.isArray(s.tags) ? s.tags[0] : ''), priority: Number(s.priority || 0), match: skillMatchInfo(s, userMsg.content) })),
   });
 
   const cfg = store.read('models', {});
@@ -455,6 +521,7 @@ router.post('/:id/messages', async (req, res) => {
   let sessionIdFromDone = cfg._resumeSessionId || '';
   let selectedRoute = '';
   let selectedRouteReason = '';
+  let suppressAskJsonStream = false;
 
   try {
     for await (const event of chatStream(cfg, contextMessages)) {
@@ -476,7 +543,8 @@ router.post('/:id/messages', async (req, res) => {
           {
             const safeText = redactSecrets(event.text);
             full += safeText;
-            sseWrite(res, 'token', { text: safeText });
+            if (full.toUpperCase().includes('WEBUI_ASK_JSON')) suppressAskJsonStream = true;
+            if (!suppressAskJsonStream) sseWrite(res, 'token', { text: safeText });
           }
           break;
 
@@ -543,6 +611,46 @@ router.post('/:id/messages', async (req, res) => {
     if (abortController.signal.aborted) {
       perfMark(res, perfStart, 'client-aborted', { output_chars: full.length });
       return;
+    }
+
+    const askPayload = extractWebuiAskRequest(full);
+    if (askPayload) {
+      sseWrite(res, 'perf', { stage: 'agent-ask', title: askPayload.title });
+      sseWrite(res, 'token', { text: '\n\n⏸️ Agent 正在等待你的确认...\n' });
+      const askResult = await modalBus.createAsk(askPayload, { wait: true }).catch(error => ({ ok: false, status: error.status || 'error', error: error.message, answers: null }));
+      sseWrite(res, 'perf', { stage: 'agent-ask-result', status: askResult.status || (askResult.ok ? 'answered' : 'failed') });
+      const answerText = formatAskAnswersForModel(askResult);
+      full = '';
+      const followupMessages = [
+        ...contextMessages,
+        { role: 'assistant', content: '[WebUI 已弹窗向用户确认，等待用户回答。]' },
+        { role: 'user', content: `用户通过 WebUI 弹窗回答如下：\n${answerText}\n\n请根据用户回答继续完成原任务。不要再输出 WEBUI_ASK_JSON，除非仍然缺少关键信息。` },
+      ];
+      for await (const followEvent of chatStream(cfg, followupMessages)) {
+        if (abortController.signal.aborted) break;
+        if (followEvent.type === 'token') {
+          const safeText = redactSecrets(followEvent.text);
+          full += safeText;
+          sseWrite(res, 'token', { text: safeText });
+        } else if (followEvent.type === 'reasoning') {
+          const safeText = redactSecrets(followEvent.text);
+          reasoningFull += safeText;
+          sseWrite(res, 'reasoning', { text: safeText });
+        } else if (followEvent.type === 'tool') {
+          toolCalls.push({ ...sanitizeAny(followEvent), done: false });
+          sseWrite(res, 'tool', { event_type: followEvent.event_type, name: followEvent.name, preview: redactSecrets(followEvent.preview), args: sanitizeAny(followEvent.args) });
+        } else if (followEvent.type === 'tool_complete') {
+          sseWrite(res, 'tool_complete', { event_type: followEvent.event_type, name: followEvent.name, preview: redactSecrets(followEvent.preview), is_error: followEvent.is_error, duration: followEvent.duration });
+        } else if (followEvent.type === 'session') {
+          if (followEvent.sessionId) sessionIdFromDone = String(followEvent.sessionId);
+        } else if (followEvent.type === 'error') {
+          const safeText = redactSecrets(followEvent.text || '未知错误');
+          errorFull += (errorFull ? '\n' : '') + safeText;
+          sseWrite(res, 'error', { msg: safeText });
+        } else if (followEvent.type === 'done') {
+          if (followEvent.session_id || followEvent.sessionId) sessionIdFromDone = String(followEvent.session_id || followEvent.sessionId);
+        }
+      }
     }
 
     const assistantContent = full || (errorFull ? `⚠️ ${errorFull}` : '');

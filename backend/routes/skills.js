@@ -130,9 +130,14 @@ router.post('/', (req, res) => {
     icon: req.body.icon || 'SK',
     name: req.body.name || '自定义技能',
     desc: req.body.desc || '',
+    description: req.body.description || req.body.desc || '',
     tags: req.body.tags || ['自定义'],
     source: req.body.source || 'custom',
     on: Boolean(req.body.on),
+    enabled: Boolean(req.body.enabled ?? req.body.on),
+    triggers: req.body.triggers || [],
+    priority: Number(req.body.priority || 0),
+    category: req.body.category || (Array.isArray(req.body.tags) ? req.body.tags[0] : ''),
     prompt: req.body.prompt || '',
   };
   item.path = writeSkillFile(item);
@@ -173,9 +178,14 @@ router.post('/import', (req, res) => {
     icon: req.body.icon || parsed.icon || 'SK',
     name: req.body.name || parsed.name || req.body.filename?.replace(/\.[^.]+$/, '') || '导入 Skill',
     desc: req.body.desc || parsed.desc || parsed.description || '',
+    description: req.body.description || req.body.desc || parsed.description || parsed.desc || '',
     tags: req.body.tags || parsed.tags || ['自定义'],
     source: 'custom',
     on: Boolean(req.body.on ?? parsed.on),
+    enabled: Boolean(req.body.enabled ?? req.body.on ?? parsed.enabled ?? parsed.on),
+    triggers: req.body.triggers || parsed.triggers || [],
+    priority: Number(req.body.priority ?? parsed.priority ?? 0),
+    category: req.body.category || parsed.category || (Array.isArray(req.body.tags || parsed.tags) ? (req.body.tags || parsed.tags)[0] : ''),
     prompt: req.body.prompt || parsed.prompt || req.body.content || '',
   };
   item.path = writeSkillFile(item);

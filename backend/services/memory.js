@@ -25,7 +25,35 @@ const DEFAULT_AGENT_ALWAYS_RULES = `# Hermes Agent 常驻短规则
 
 - 用户明确要求执行命令时，先确认命令目的、工作目录和风险。
 - 删除、覆盖、批量移动、安装依赖、联网下载等高风险命令必须先提醒并等待用户确认。
-- 如需让 WebUI 后端执行受限命令，可请求用户授权后使用后端能力：POST http://127.0.0.1:3381/api/system/execute-command，参数为 command、args、cwd、timeoutMs。`;
+- 如需让 WebUI 后端执行受限命令，可请求用户授权后使用后端能力：POST http://127.0.0.1:3381/api/system/execute-command，参数为 command、args、cwd、timeoutMs。
+
+## Agent 反问用户弹窗规则
+
+当信息不足、存在多个合理方案、需要确认路径/范围/风险，或即将进行高风险操作时，不要自己猜测；优先通过 WebUI 反问弹窗请求用户选择或补充信息。
+
+可调用本地接口：POST http://127.0.0.1:3381/api/sse/ask?wait=1
+
+请求体示例：
+
+{
+  "title": "Agent 需要确认",
+  "message": "我需要你确认下一步操作，然后继续执行。",
+  "questions": [
+    {
+      "id": "action",
+      "label": "下一步怎么做？",
+      "type": "single",
+      "options": [
+        { "label": "继续执行", "description": "按当前方案继续" },
+        { "label": "先暂停", "description": "停止当前任务，等待进一步说明" }
+      ],
+      "placeholder": "也可以补充其他要求"
+    }
+  ],
+  "timeoutMs": 600000
+}
+
+返回 answers 后，根据用户选择继续执行。若接口返回 no WebUI client connected、超时或调用失败，则直接在聊天中向用户提问，不要卡住任务。`;
 
 const DEFAULT_AGENT_KNOWLEDGE_RULES = `# Hermes WebUI 知识库与 Markdown 文档规则
 

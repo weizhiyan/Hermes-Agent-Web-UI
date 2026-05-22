@@ -163,6 +163,8 @@ function renderPromptDebugPanel(debug){
   const totalChars=Number(debug.totalChars||0);
   const totalTokens=Number(debug.totalApproxTokens||0);
   const historyMessages=Number(debug.historyMessages||0);
+  const matchedSkills=Array.isArray(debug.matchedSkills)?debug.matchedSkills:[];
+  const matchedSkillsHtml=matchedSkills.length?`<div style="margin-top:8px;padding:7px 8px;border-radius:8px;background:var(--c-surface1);color:var(--c-ink)">命中 Skill：${matchedSkills.map(s=>`${esc(s.name||'未命名')}${s.match?.trigger?` <span style="color:var(--c-ink-muted)">(${esc(s.match.trigger)})</span>`:''}`).join('、')}</div>`:'';
   const rows=parts.map(part=>{
     const truncated=part.truncated?` <em style="color:var(--c-warning,#b7791f);font-style:normal">已截断 ${Number(part.originalChars||0)}→${Number(part.chars||0)}</em>`:'';
     return `<div style="display:flex;gap:8px;justify-content:space-between;border-top:1px solid var(--c-hairline-soft);padding-top:5px;margin-top:5px">
@@ -172,6 +174,7 @@ function renderPromptDebugPanel(debug){
   }).join('');
   return `<details class="prompt-debug-panel" style="margin-top:10px;border:1px dashed var(--c-hairline);border-radius:10px;padding:8px 10px;color:var(--c-ink-muted);font-size:12px">
     <summary style="cursor:pointer;color:var(--c-ink)">Prompt 调试 · ${totalChars} 字 · ~${totalTokens} tok · 历史 ${historyMessages} 条</summary>
+    ${matchedSkillsHtml}
     <div style="margin-top:8px;display:flex;flex-direction:column;gap:2px">${rows||'<div>没有额外系统提示词。</div>'}</div>
   </details>`;
 }
@@ -271,7 +274,7 @@ const state={
   imageEditReference: LS.get('hermes.imageEditReference',null),
   cliSessionLimit: LS.get('hermes.cliSessionLimit',500),
   cliStatusCache: LS.get('hermes.cliStatusCache', null),
-  settings: LS.get('hermes.settings',{lang:'zh',stream:true,quickMode:false,history:16,systemPrompt:'',api:'',dataRootDir:'',memoryDir:'',imageDir:'',historyDir:'',mdLibraryDir:'',debugPerf:false,promptToggles:{webuiRules:true,coreMemory:true,agentRules:true,userSystemPrompt:true,profilePrompt:true,skills:true,knowledgeSearch:true},knowledgeSearchLimit:3}),
+  settings: LS.get('hermes.settings',{lang:'zh',stream:true,quickMode:false,history:16,systemPrompt:'',api:'',dataRootDir:'',memoryDir:'',imageDir:'',historyDir:'',mdLibraryDir:'',debugPerf:false,toolPermissions:{commandPolicy:'safe',logApprovals:true,requireApprovalForRisky:true},promptToggles:{webuiRules:true,coreMemory:true,agentRules:true,userSystemPrompt:true,profilePrompt:true,skills:true,knowledgeSearch:true},knowledgeSearchLimit:3}),
   skills: [],
   skillFilter: {source:null,search:'',category:null},
   selectedSkill: null,
@@ -397,7 +400,7 @@ function afterRender(){
   if(state.page==='chat') initChat();
   if(state.page==='terminal') initTerminal();
   if(state.page==='skill' && skillCenterTab==='memory' && !state.memory.data && !state.memory.loading && !state.memory.failed) loadMemoryStore();
-  if(state.page==='settingsPage') loadCliStatusCard();
+  if(state.page==='settingsPage') { loadCliStatusCard(); loadUpdateStatus(false); }
   if(AgentAsk.isOpen()) AgentAsk._render();
 
   enhanceMessageMarkdown(document.getElementById('mainContent'));
@@ -847,6 +850,7 @@ const HERMES_COMMANDS=[
   {cmd:'/clear',title:'清理上下文',desc:'请求整理当前上下文，减少无关信息干扰'},
 ];
 
+
 function renderCommandPopup(){
   return HERMES_COMMANDS.map(item=>`<button type="button" class="command-popup-item" onclick="insertHermesCommand('${esc(item.cmd)}')">
     <span class="command-popup-code">${esc(item.cmd)}</span>
@@ -1100,6 +1104,19 @@ function effectiveChatModelName(){
   const p=getActiveProfile();
   if(p?.modelId && p.modelId!=='auto') return getModelById(p.modelId)?.name || p.model || scenarioModel('chat');
   return scenarioModel('chat') || '未配置模型';
+}
+
+function benchmarkScore(model){
+  const b=model?.benchmark||{};
+  if(!b.ok) return Number.POSITIVE_INFINITY;
+  return Number(b.firstTokenMs||b.totalMs||999999) + Math.round(Number(b.totalMs||0)*0.15);
+}
+
+function fastestBenchmarkedChatModel(){
+  return getEnabledModels()
+    .filter(m=>m.apiFormat!=='openai-image' && !/image|vision|图像|图片/i.test([m.name,m.provider,...(m.tags||[])].join(' ')))
+    .filter(m=>m.benchmark&&m.benchmark.ok)
+    .sort((a,b)=>benchmarkScore(a)-benchmarkScore(b))[0]||null;
 }
 
 function insertSkill(name){
@@ -1448,7 +1465,13 @@ function processEventText(event){
   if(type==='queued') return '已发送请求，等待后端接收';
   if(type==='sse-flushed') return `后端已建立流式连接${suffix}`;
   if(type==='route-selected') return event?.route==='direct' ? '已选择直连模型通道' : '已选择 Hermes Agent 通道';
-  if(type==='route-fallback') return '直连不可用，已回退 Hermes Agent';
+  if(type==='model-fallback') return `主模型失败，切换备用模型${event?.to?`：${event.to}`:''}`;
+  if(type==='hermes-api-connect') return '正在连接 Hermes API Server';
+  if(type==='hermes-api-failed') return `Hermes API Server 不可用，准备回退 CLI${event?.reason?`：${event.reason}`:''}`;
+  if(type==='route-fallback') return event?.route==='hermes-cli' ? '已回退 Hermes CLI 通道' : '直连不可用，已回退 Hermes Agent';
+  if(type==='agent-ask') return `Agent 需要用户确认${event?.title?`：${event.title}`:''}`;
+  if(type==='agent-ask-result') return event?.status==='answered' ? '已收到用户确认，继续执行' : `用户确认未完成：${event?.status||'unknown'}`;
+  if(type==='skill-match') return event?.items?.length ? `命中 Skill：${event.items.map(item=>item.trigger?`${item.name}（${item.trigger}）`:item.name).join('、')}` : (event?.names?.length ? `命中 Skill：${event.names.join('、')}` : '本次未命中专用 Skill');
   if(type==='first-hermes-event') return `收到模型/Agent 首个事件${event?.eventType?`：${event.eventType}`:''}${suffix}`;
   if(type==='first-cli-stdout') return `Hermes CLI 开始输出${suffix}`;
   if(type==='first-token') return `收到首个回复 token${suffix}`;
@@ -2616,7 +2639,7 @@ async function sendMessage(){
     signal: streamController.signal,
     onPerf(data) {
       hermesPerfLog('backend', data);
-      if(data?.stage && ['sse-flushed','route-selected','route-fallback','first-hermes-event','first-cli-stdout','cli-spawned','direct-api-aborted','client-aborted'].includes(data.stage)){
+      if(data?.stage && ['sse-flushed','route-selected','route-fallback','model-fallback','hermes-api-connect','hermes-api-failed','first-hermes-event','first-cli-stdout','cli-spawned','direct-api-aborted','client-aborted'].includes(data.stage)){
         pushProcessEvent(data);
       }
       if(data?.stage==='sse-flushed' && Array.isArray(data.promptDebug)){
@@ -2625,7 +2648,10 @@ async function sendMessage(){
           totalChars:data.systemChars||0,
           totalApproxTokens:data.promptTotalApproxTokens||0,
           historyMessages:data.historyMessages||0,
+          matchedSkills:data.matchedSkills||[],
         };
+        const skillItems=(data.matchedSkills||[]).filter(s=>s.name).slice(0,6).map(s=>({name:s.name,trigger:s.match?.trigger||'',reason:s.match?.reason||''}));
+        pushProcessEvent({type:'skill-match',items:skillItems,names:skillItems.map(s=>s.name)});
         renderMsgUpdate(msgId, assistantMsg);
       }
     },
@@ -4116,6 +4142,7 @@ function renderSkills(){
   if(sel){
     const sourceLabel={builtin:'Hermes 内置',external:'我的 Skill',user:'自定义',custom:'自定义'}[sel.source]||sel.source;
     const files=(sel.files||[]).map(f=>typeof f==='string'?f:f.name).filter(Boolean);
+    const triggers=Array.isArray(sel.triggers)?sel.triggers:String(sel.triggers||'').split(/[，,、\s]+/).filter(Boolean);
     let filesHtml=files.map(f=>`<div class="skill-file-item" onclick="skViewFile('${sel.id}','${esc(f)}')">${SVG.file} <span title="${esc(f)}">${esc(f)}</span></div>`).join('');
     detailHtml=`
       <div class="skill-detail-breadcrumb"><span onclick="skSelect(null)">技能中心</span> / ${esc(sel.name)}</div>
@@ -4133,9 +4160,14 @@ function renderSkills(){
       <div class="skill-detail-desc">${esc(sel.description)}</div>
       <div class="skill-meta">
         <div class="skill-meta-item"><span class="sk-source-dot ${sel.source}" style="width:8px;height:8px"></span> ${sourceLabel}${sel.modified?' · 已修改':''}</div>
+        <div class="skill-meta-item">分类：${esc(sel.category||(sel.tags||[])[0]||'未分类')} · 优先级：${esc(sel.priority||0)}</div>
+        <div class="skill-meta-item">触发词：${triggers.length?triggers.map(t=>`<span class="tag">${esc(t)}</span>`).join(' '):'未设置'}</div>
         ${sel.root?`<div class="skill-meta-item" title="${esc(sel.root)}">路径：${esc(sel.root)}</div>`:''}
       </div>
       <div class="skill-detail-actions">
+        <button class="btn btn-secondary btn-sm" onclick="suggestSkillTriggers('${sel.id}')" title="根据名称和描述生成触发词">
+          生成触发词
+        </button>
         <button class="btn btn-secondary btn-sm" onclick="skOpenFolder('${sel.id}')" title="打开文件夹">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/></svg>
           文件夹
@@ -4237,6 +4269,7 @@ function syncSkillEnabledFlags(){
   (state.skills||[]).forEach(s=>{
     if(s.enabled===undefined) s.enabled=s.on!==false;
     if(s.on===undefined) s.on=!!s.enabled;
+    Object.assign(s, normalizeSkillMeta(s));
   });
 }
 
@@ -4257,6 +4290,50 @@ function skSearch(val){
   state.skillFilter.search=val;
   renderPage();
 }
+
+function splitSkillTriggers(value){
+  return String(value||'').split(/[，,、\s]+/).map(s=>s.trim()).filter(Boolean).slice(0,24);
+}
+
+function inferSkillTriggers(skill={}){
+  const text=String([skill.name,skill.description,skill.desc,skill.category,(skill.tags||[]).join(' '),skill.prompt].filter(Boolean).join(' ')).toLowerCase();
+  const groups=[
+    {keys:['图像','图片','生图','改图','image','logo','海报','插画'],triggers:['生成图片','图片','生图','改图','海报','插画','logo']},
+    {keys:['代码','bug','报错','重构','测试','开发','前端','后端','code'],triggers:['代码','bug','报错','重构','测试','接口','前端','后端']},
+    {keys:['文档','写作','markdown','md','教程','方案','总结'],triggers:['文档','方案','教程','总结','Markdown','MD']},
+    {keys:['设计','ui','视觉','交互','弹窗','卡片','按钮'],triggers:['设计','UI','视觉','交互','弹窗','卡片','按钮']},
+    {keys:['记忆','偏好','习惯','长期','remember'],triggers:['记忆','偏好','习惯','长期','remember']},
+    {keys:['搜索','联网','浏览','网页','资料','官网'],triggers:['搜索','联网','网页','资料','官网','最新']},
+    {keys:['更新','安装','github','版本','升级'],triggers:['更新','安装','GitHub','版本','升级']},
+  ];
+  const found=[];
+  groups.forEach(group=>{
+    if(group.keys.some(k=>text.includes(k.toLowerCase()))) found.push(...group.triggers);
+  });
+  String(skill.name||'').split(/[\s/｜|_-]+/).filter(x=>x.length>=2&&x.length<=12).forEach(x=>found.push(x));
+  return [...new Set(found)].slice(0,12);
+}
+
+function normalizeSkillMeta(skill={}){
+  const next={...skill};
+  if(!next.description && next.desc) next.description=next.desc;
+  if(!next.category) next.category=(Array.isArray(next.tags)&&next.tags[0])||'未分类';
+  if(next.priority===undefined || next.priority===null || next.priority==='') next.priority=0;
+  if(!Array.isArray(next.triggers)) next.triggers=splitSkillTriggers(next.triggers||'');
+  return next;
+}
+
+function suggestSkillTriggers(id){
+  const s=state.skills.find(x=>x.id===id);
+  if(!s) return;
+  const triggers=inferSkillTriggers(s);
+  if(!triggers.length){toast('暂时没有推断到合适触发词','info');return}
+  s.triggers=triggers;
+  s.modified=true;
+  apiPut('/api/skills/'+encodeURIComponent(id),{triggers:s.triggers,priority:Number(s.priority||0),category:s.category||((s.tags||[])[0])||'未分类'});
+  save();renderPage();toast('已生成触发词建议','success');
+}
+
 
 function skFilterSource(src){
   state.skillFilter.source=src||null;
@@ -4311,6 +4388,14 @@ function skAdd(){
           <label style="font-size:12px;color:var(--c-ink-muted);margin-bottom:4px;display:block">分类</label>
           <input id="skAddCat" style="width:100%;padding:8px 12px;border-radius:var(--r-md);border:1px solid var(--c-hairline);background:var(--c-canvas);color:var(--c-ink);font-size:14px" placeholder="例如：开发" value="自定义">
         </div>
+        <div>
+          <label style="font-size:12px;color:var(--c-ink-muted);margin-bottom:4px;display:block">触发词</label>
+          <input id="skAddTriggers" style="width:100%;padding:8px 12px;border-radius:var(--r-md);border:1px solid var(--c-hairline);background:var(--c-canvas);color:var(--c-ink);font-size:14px" placeholder="例如：代码、bug、重构">
+        </div>
+        <div>
+          <label style="font-size:12px;color:var(--c-ink-muted);margin-bottom:4px;display:block">优先级</label>
+          <input id="skAddPriority" type="number" min="0" max="100" value="50" style="width:120px;padding:8px 12px;border-radius:var(--r-md);border:1px solid var(--c-hairline);background:var(--c-canvas);color:var(--c-ink);font-size:14px">
+        </div>
         <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:8px">
           <button class="btn btn-secondary" onclick="closeModal()">取消</button>
           <button class="btn btn-primary" onclick="skDoAdd()">添加</button>
@@ -4324,6 +4409,8 @@ async function skDoAdd(){
   const name=$('#skAddName').value.trim();
   let desc=$('#skAddDesc').value.trim();
   const cat=$('#skAddCat').value.trim()||'自定义';
+  const triggers=splitSkillTriggers($('#skAddTriggers')?.value||'');
+  const priority=Number($('#skAddPriority')?.value||50)||0;
   const fileInput=$('#skFileInput');
   const file=fileInput?.files?.[0];
   if(!name){toast('请填写技能名称','error');return}
@@ -4344,13 +4431,13 @@ async function skDoAdd(){
     desc=name+'相关技能';
   }
   const fileName=file?file.name:'SKILL.md';
-  const body={name,desc,tags:[cat],source:'custom',on:true,prompt:fileContent||''};
+  const body={name,desc,tags:[cat],category:cat,triggers,priority,source:'custom',on:true,prompt:fileContent||''};
   if(fileContent) body.content=fileContent;
   const data=await apiPost('/api/skills/import',body);
   if(data){
-    state.skills.push({...data,category:cat,description:desc,enabled:true,modified:false,pinned:false,useCount:0,viewCount:0,patchCount:0,files:[fileName],tags:[cat]});
+    state.skills.push({...data,category:cat,description:desc,triggers,priority,enabled:true,modified:false,pinned:false,useCount:0,viewCount:0,patchCount:0,files:[fileName],tags:[cat]});
   }else{
-    state.skills.push({id:'sk_'+Date.now(),name,description:desc,category:cat,source:'local',enabled:true,modified:false,pinned:false,useCount:0,viewCount:0,patchCount:0,files:[fileName],tags:[cat]});
+    state.skills.push({id:'sk_'+Date.now(),name,description:desc,category:cat,triggers,priority,source:'local',enabled:true,modified:false,pinned:false,useCount:0,viewCount:0,patchCount:0,files:[fileName],tags:[cat]});
   }
   save();closeModal();renderPage();toast('技能已添加','success');
 }
@@ -4358,6 +4445,7 @@ async function skDoAdd(){
 function skEdit(id){
   const s=state.skills.find(x=>x.id===id);
   if(!s) return;
+  const triggers=Array.isArray(s.triggers)?s.triggers.join('、'):String(s.triggers||'');
   openModal(`
     <div style="padding:24px;min-width:380px">
       <h3 style="margin-bottom:16px;font-size:18px;font-weight:600">编辑技能</h3>
@@ -4374,6 +4462,14 @@ function skEdit(id){
           <label style="font-size:12px;color:var(--c-ink-muted);margin-bottom:4px;display:block">分类</label>
           <input id="skEditCat" style="width:100%;padding:8px 12px;border-radius:var(--r-md);border:1px solid var(--c-hairline);background:var(--c-canvas);color:var(--c-ink);font-size:14px" value="${esc(s.category)}">
         </div>
+        <div>
+          <label style="font-size:12px;color:var(--c-ink-muted);margin-bottom:4px;display:block">触发词</label>
+          <input id="skEditTriggers" style="width:100%;padding:8px 12px;border-radius:var(--r-md);border:1px solid var(--c-hairline);background:var(--c-canvas);color:var(--c-ink);font-size:14px" value="${esc(triggers)}" placeholder="例如：设计、UI、弹窗">
+        </div>
+        <div>
+          <label style="font-size:12px;color:var(--c-ink-muted);margin-bottom:4px;display:block">优先级</label>
+          <input id="skEditPriority" type="number" min="0" max="100" style="width:120px;padding:8px 12px;border-radius:var(--r-md);border:1px solid var(--c-hairline);background:var(--c-canvas);color:var(--c-ink);font-size:14px" value="${esc(s.priority||0)}">
+        </div>
         <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:8px">
           <button class="btn btn-secondary" onclick="closeModal()">取消</button>
           <button class="btn btn-primary" onclick="skDoEdit('${s.id}')">保存</button>
@@ -4389,8 +4485,10 @@ async function skDoEdit(id){
   s.name=$('#skEditName').value.trim()||s.name;
   s.description=$('#skEditDesc').value.trim()||s.description;
   s.category=$('#skEditCat').value.trim()||s.category;
+  s.triggers=splitSkillTriggers($('#skEditTriggers')?.value||'');
+  s.priority=Number($('#skEditPriority')?.value||0)||0;
   s.modified=true;
-  await apiPut('/api/skills/'+id,{name:s.name,desc:s.description,tags:[s.category]});
+  await apiPut('/api/skills/'+id,{name:s.name,desc:s.description,tags:[s.category],category:s.category,triggers:s.triggers,priority:s.priority});
   save();closeModal();renderPage();toast('技能已更新','info');
 }
 
@@ -4885,6 +4983,7 @@ function renderModelsV2Legacy(){
   const lib=Array.isArray(cfg.library)?cfg.library:[];
   const enabled=lib.filter(m=>m.enabled!==false);
   const scenarios=cfg.scenarios||{};
+  const fastestChat=fastestBenchmarkedChatModel();
   const scenarioFallback={chat:'普通对话',reasoning:'深度推理',image:'图像生成'};
   const optionHtml=(selected)=>`<option value="">未设置</option>`+enabled.map(m=>`<option value="${esc(m.id)}"${selected===m.id?' selected':''}>${esc(m.name)} · ${esc(m.provider)}</option>`).join('');
   const groups=lib.reduce((acc,m)=>{const k=m.provider||'custom';(acc[k]=acc[k]||[]).push(m);return acc},{});
@@ -4979,6 +5078,13 @@ async function setScenarioModel(scene,id){
   }
   toast('场景模型已更新','success');
   renderPage();
+}
+
+async function applyFastestChatModel(){
+  const model=fastestBenchmarkedChatModel();
+  if(!model){toast('请先给聊天模型测速','info');return}
+  await setScenarioModel('chat',model.id);
+  toast(`已切换普通对话为最快模型：${model.name}`,'success');
 }
 function toggleLibraryModel(id,on){
   const cfg=state.modelsConfig||{};
@@ -5190,6 +5296,7 @@ function renderModelsV3(){
     ['chat','普通对话','日常问答和轻量任务。对话页选择“自动”时优先使用这里。'],
     ['reasoning','深度推理','复杂操作、代码、规划、长链路任务和分身协作。'],
     ['image','图像生成','后续接入图像模型时，Agent 会优先调用这里。'],
+    ['fallback','失败回退','普通对话模型失败时可回退到这里。'],
   ];
   const optionHtml=(selected)=>`<option value="">未设置</option>`+enabled.map(m=>`<option value="${esc(m.id)}"${selected===m.id?' selected':''}>${esc(m.name)} · ${esc(m.provider||'custom')}</option>`).join('');
   const groups=lib.reduce((acc,m)=>{const k=m.provider||'custom';(acc[k]=acc[k]||[]).push(m);return acc},{});
@@ -5197,11 +5304,12 @@ function renderModelsV3(){
     <label class="model-check" title="启用模型"><input type="checkbox" ${m.enabled!==false?'checked':''} onchange="toggleLibraryModel('${esc(m.id)}',this.checked)"><span></span></label>
     <div class="model-lib-main">
       <div class="model-lib-name">${esc(m.name)}</div>
-      <div class="model-lib-meta">${esc(apiFormatLabel(m.apiFormat))} · ${esc(authTypeLabel(m.authType,m.authHeader))} · ${esc(m.base||'未填写 Base URL')}</div>
+      <div class="model-lib-meta">${esc(apiFormatLabel(m.apiFormat))} · ${esc(authTypeLabel(m.authType,m.authHeader))} · ${esc(m.base||'未填写 Base URL')}${m.benchmark?` · 首包 ${Number(m.benchmark.firstTokenMs||0)}ms · 总耗时 ${Number(m.benchmark.totalMs||0)}ms`:''}</div>
     </div>
     <div class="model-lib-tags">${(m.tags||[]).map(t=>`<span>${esc(t)}</span>`).join('')}</div>
     <button class="btn btn-xs btn-secondary" onclick="editLibraryModel('${esc(m.id)}')">编辑</button>
     <button class="btn btn-xs btn-secondary" id="modelTestBtn_${domId(m.id)}" onclick="testLibraryModel('${esc(m.id)}')">测试</button>
+    <button class="btn btn-xs btn-secondary" id="modelBenchBtn_${domId(m.id)}" onclick="benchmarkLibraryModel('${esc(m.id)}')">测速</button>
     <button class="btn btn-xs btn-ghost" style="color:var(--c-error)" onclick="deleteLibraryModel('${esc(m.id)}')">删除</button>
   </div>`;
   const groupHtml=Object.entries(groups).sort(([a],[b])=>a.localeCompare(b)).map(([provider,items])=>`
@@ -5220,6 +5328,10 @@ function renderModelsV3(){
         <h3>当前生效</h3>
         <p>这里展示真实后端配置，不再内置演示模型。没有配置时，对话会走 Hermes CLI 或提示你先添加模型。</p>
         <div class="model-effective-grid">${currentCards}</div>
+        <div style="display:flex;align-items:center;gap:10px;margin-top:12px;flex-wrap:wrap">
+          <button class="btn btn-secondary btn-sm" onclick="applyFastestChatModel()" ${fastestChat?'':'disabled'}>使用最快普通模型</button>
+          <span style="font-size:12px;color:var(--c-ink-muted)">${fastestChat?`测速最快：${esc(fastestChat.name)} · 首包 ${Number(fastestChat.benchmark?.firstTokenMs||0)}ms`:'需要先对模型库里的聊天模型测速'}</span>
+        </div>
       </section>
       <div class="model-layout">
         <section class="model-panel">
@@ -5749,6 +5861,9 @@ function renderSettings(){
         <div class="settings-item"><div><div class="settings-label">迁移检查</div><div class="settings-desc">如果旧 backend/data 和外部目录同时存在，建议确认后再手动合并数据，避免覆盖。</div></div>
           <button class="btn btn-secondary" onclick="openPathFromSetting('data')">打开当前数据目录</button>
         </div>
+        <div class="settings-item" style="align-items:flex-start"><div><div class="settings-label">一键备份导出</div><div class="settings-desc">导出设置、模型配置、Skill、聊天索引和数据目录清单；API Key 会自动脱敏。</div><div id="backupExportResult" style="font-size:12px;color:var(--c-ink-muted);margin-top:6px"></div></div>
+          <button class="btn btn-secondary" onclick="exportWebuiBackup()">生成备份</button>
+        </div>
       </div>
       <div class="settings-section">
         <div class="settings-section-title">Prompt 注入治理</div>
@@ -5766,9 +5881,29 @@ function renderSettings(){
         </div>
       </div>
       <div class="settings-section">
+        <div class="settings-section-title">工具权限与安全</div>
+        <div class="settings-item"><div><div class="settings-label">命令执行策略</div><div class="settings-desc">安全模式会阻止危险命令并记录审批日志；严格模式会拦截高风险命令。</div></div>
+          <select id="sCommandPolicy" style="width:160px">
+            <option value="safe" ${(state.settings.toolPermissions?.commandPolicy||'safe')==='safe'?'selected':''}>安全模式</option>
+            <option value="strict" ${(state.settings.toolPermissions?.commandPolicy||'safe')==='strict'?'selected':''}>严格模式</option>
+            <option value="off" ${(state.settings.toolPermissions?.commandPolicy||'safe')==='off'?'selected':''}>关闭拦截</option>
+          </select>
+        </div>
+        <div class="settings-item"><div><div class="settings-label">记录审批日志</div><div class="settings-desc">记录命令执行、阻止原因和风险等级，可在任务日志中查看。</div></div><label class="toggle"><input type="checkbox" id="sLogApprovals" ${state.settings.toolPermissions?.logApprovals!==false?'checked':''}><span class="toggle-slider"></span></label></div>
+        <div class="settings-item"><div><div class="settings-label">高风险命令弹窗确认</div><div class="settings-desc">例如 git push、git reset --hard、npm publish 等命令会先弹窗，确认后才执行。</div></div><label class="toggle"><input type="checkbox" id="sRequireRiskyApproval" ${state.settings.toolPermissions?.requireApprovalForRisky!==false?'checked':''}><span class="toggle-slider"></span></label></div>
+      </div>
+      <div class="settings-section">
         <div class="settings-section-title">更新中心</div>
-        <div class="settings-item"><div><div class="settings-label">GitHub 更新</div><div class="settings-desc">如果当前目录是 Git 克隆项目，可运行 update.bat 拉取最新版本并更新依赖。</div></div>
-          <button class="btn btn-secondary" onclick="showUpdateGuide()">查看更新方法</button>
+        <div id="updateStatusCard" class="settings-item" style="align-items:flex-start;gap:12px">
+          <div style="flex:1;min-width:0">
+            <div class="settings-label">正在检测...</div>
+            <div class="settings-desc">只读取本地 Git 状态，不会自动更新代码。</div>
+          </div>
+          <div style="display:flex;gap:8px;flex-shrink:0;flex-wrap:wrap;justify-content:flex-end">
+            <button class="btn btn-secondary" onclick="loadUpdateStatus(false)">刷新状态</button>
+            <button class="btn btn-secondary" onclick="loadUpdateStatus(true)">检查远端</button>
+            <button class="btn btn-secondary" onclick="showUpdateGuide()">查看方法</button>
+          </div>
         </div>
       </div>
       <div class="settings-section">
@@ -5816,6 +5951,20 @@ function openPathFromSetting(kind){
   apiPost('/api/system/open-path',{path:target}).then(ok=>toast(ok?'已请求打开目录':'打开目录失败',ok?'success':'error'));
 }
 
+async function exportWebuiBackup(){
+  const el=$('#backupExportResult');
+  if(el) el.textContent='正在生成备份...';
+  const data=await apiPost('/api/system/backup/export',{});
+  if(!data){
+    if(el) el.textContent='备份失败，请确认后端已重启并查看日志。';
+    toast('备份导出失败','error');
+    return;
+  }
+  const size=formatBytes(data.size||0);
+  if(el) el.innerHTML=`已生成：<code>${esc(data.fileName)}</code> · ${esc(size)} · <a href="${mediaUrl(data.downloadUrl)}" target="_blank" rel="noreferrer">下载</a>`;
+  toast('备份已生成','success');
+}
+
 function showUpdateGuide(){
   openModal(`<div style="padding:24px;min-width:min(620px,92vw)">
     <h3 style="margin:0 0 12px">WebUI 更新方法</h3>
@@ -5826,6 +5975,46 @@ function showUpdateGuide(){
     </div>
     <div style="display:flex;justify-content:flex-end;margin-top:18px"><button class="btn btn-primary" onclick="closeModal()">知道了</button></div>
   </div>`);
+}
+
+function updateStatusCardHtml(status={}, {checking=false, error=''}={}){
+  if(checking){
+    return `<div style="flex:1;min-width:0"><div class="settings-label">正在检测更新状态...</div><div class="settings-desc">正在读取本地 Git 信息，请稍候。</div></div>`;
+  }
+  if(error){
+    return `<div style="flex:1;min-width:0"><div class="settings-label">更新状态检测失败</div><div class="settings-desc">${esc(error)}</div></div>`;
+  }
+  if(!status.isGitRepo){
+    return `<div style="flex:1;min-width:0"><div class="settings-label">当前不是 Git 克隆项目</div><div class="settings-desc">${esc(status.message||'无法通过 GitHub 自动检测更新。')}</div><div style="margin-top:8px;font-size:12px;color:var(--c-ink-muted)">版本：${esc(status.packageVersion||'unknown')} · 目录：${esc(status.projectRoot||'')}</div></div>`;
+  }
+  const behind=Number(status.behind||0);
+  const ahead=Number(status.ahead||0);
+  const dirty=Number(status.dirtyCount||0);
+  const stateText=behind>0?'发现远端更新':dirty>0?'存在本地未提交改动':ahead>0?'本地领先远端':'当前代码已是最新状态';
+  const stateClass=behind>0?'disconnected':'connected';
+  const advice=behind>0
+    ? (status.safeToPull?'可以关闭 WebUI 后执行 update.bat 或 git pull --ff-only。':'建议先处理本地改动，再执行 git pull --ff-only。')
+    : '如果要主动确认 GitHub 最新版本，可点击“检查远端”。';
+  return `<div style="flex:1;min-width:0">
+    <div class="settings-label">GitHub 更新 · <span class="platform-status ${stateClass}" style="display:inline-flex;align-items:center">${esc(stateText)}</span></div>
+    <div class="settings-desc">${esc(advice)}</div>
+    <div style="margin-top:8px;font-size:12px;color:var(--c-ink-muted);line-height:1.7">
+      版本：${esc(status.packageVersion||'unknown')} · 分支：${esc(status.branch||'unknown')} · 提交：${esc(status.localCommit||'')}${status.currentTag?` · 当前标签：${esc(status.currentTag)}`:''}${status.latestTag?` · 最新标签：${esc(status.latestTag)}`:''}<br>
+      远端：${esc(status.upstream||'未设置 upstream')} · 落后 ${behind} / 领先 ${ahead} · 本地改动 ${dirty} 个${status.fetched?' · 已检查远端':''}${status.fetchError?`<br>远端检查失败：${esc(status.fetchError)}`:''}
+    </div>
+  </div>`;
+}
+
+async function loadUpdateStatus(fetchRemote=false){
+  const card=$('#updateStatusCard');
+  if(!card) return;
+  card.innerHTML=`${updateStatusCardHtml({}, {checking:true})}<div style="display:flex;gap:8px;flex-shrink:0;flex-wrap:wrap;justify-content:flex-end"><button class="btn btn-secondary" disabled>检测中</button><button class="btn btn-secondary" onclick="showUpdateGuide()">查看方法</button></div>`;
+  try{
+    const data=await apiGet('/api/system/update-status'+(fetchRemote?'?fetch=1':''));
+    card.innerHTML=`${updateStatusCardHtml(data||{}, {error:data?'' : '接口没有返回有效数据'})}<div style="display:flex;gap:8px;flex-shrink:0;flex-wrap:wrap;justify-content:flex-end"><button class="btn btn-secondary" onclick="loadUpdateStatus(false)">刷新状态</button><button class="btn btn-secondary" onclick="loadUpdateStatus(true)">检查远端</button><button class="btn btn-secondary" onclick="showUpdateGuide()">查看方法</button></div>`;
+  }catch(err){
+    card.innerHTML=`${updateStatusCardHtml({}, {error:err.message||String(err)})}<div style="display:flex;gap:8px;flex-shrink:0;flex-wrap:wrap;justify-content:flex-end"><button class="btn btn-secondary" onclick="loadUpdateStatus(false)">重试</button><button class="btn btn-secondary" onclick="showUpdateGuide()">查看方法</button></div>`;
+  }
 }
 
 function cliStatusCardHtml(cli={}, {checking=false, error=''}={}){
@@ -5904,7 +6093,7 @@ function showCliInstallGuide(){
 function saveSettings(){
   const promptToggles={};
   ['webuiRules','coreMemory','agentRules','userSystemPrompt','profilePrompt','skills','knowledgeSearch'].forEach(id=>promptToggles[id]=$(`#pt_${id}`)?.checked!==false);
-  state.settings={lang:$('#sLang').value,stream:$('#sStream').checked,debugPerf:$('#sDebugPerf').checked,quickMode:$('#sQuick').checked,routingMode:$('#sRoutingMode')?.value||'auto',hermesApiServerUrl:$('#sHermesApiServerUrl')?.value?.trim()||'',hermesApiServerKey:$('#sHermesApiServerKey')?.value?.trim()||'',history:parseInt($('#sHistory').value)||20,systemPrompt:$('#sSys').value,api:$('#sApi').value.trim(),style:$('#sStyle')?.value||'minimal',dataRootDir:$('#sDataRootDir')?.value?.trim()||'',memoryDir:$('#sMemoryDir')?.value?.trim()||'',imageDir:$('#sImageDir')?.value?.trim()||'',historyDir:$('#sHistoryDir')?.value?.trim()||'',mdLibraryDir:$('#sMdLibraryDir')?.value?.trim()||'',promptToggles,knowledgeSearchLimit:Math.max(0,Math.min(parseInt($('#sKnowledgeSearchLimit')?.value)||0,8))};
+  state.settings={lang:$('#sLang').value,stream:$('#sStream').checked,debugPerf:$('#sDebugPerf').checked,quickMode:$('#sQuick').checked,routingMode:$('#sRoutingMode')?.value||'auto',hermesApiServerUrl:$('#sHermesApiServerUrl')?.value?.trim()||'',hermesApiServerKey:$('#sHermesApiServerKey')?.value?.trim()||'',toolPermissions:{commandPolicy:$('#sCommandPolicy')?.value||'safe',logApprovals:$('#sLogApprovals')?.checked!==false,requireApprovalForRisky:$('#sRequireRiskyApproval')?.checked!==false},history:parseInt($('#sHistory').value)||20,systemPrompt:$('#sSys').value,api:$('#sApi').value.trim(),style:$('#sStyle')?.value||'minimal',dataRootDir:$('#sDataRootDir')?.value?.trim()||'',memoryDir:$('#sMemoryDir')?.value?.trim()||'',imageDir:$('#sImageDir')?.value?.trim()||'',historyDir:$('#sHistoryDir')?.value?.trim()||'',mdLibraryDir:$('#sMdLibraryDir')?.value?.trim()||'',promptToggles,knowledgeSearchLimit:Math.max(0,Math.min(parseInt($('#sKnowledgeSearchLimit')?.value)||0,8))};
   save();
   apiPut('/api/settings', {
     lang: state.settings.lang,
@@ -5914,6 +6103,7 @@ function saveSettings(){
     routingMode: state.settings.routingMode || 'auto',
     hermesApiServerUrl: state.settings.hermesApiServerUrl || '',
     hermesApiServerKey: state.settings.hermesApiServerKey || '',
+    toolPermissions: state.settings.toolPermissions || { commandPolicy:'safe', logApprovals:true, requireApprovalForRisky:true },
     history: state.settings.history,
     systemPrompt: state.settings.systemPrompt,
     style: state.settings.style,
@@ -6587,6 +6777,12 @@ function initNotificationSSE(){
       toast(d.msg, d.type);
     } catch(err){ console.error('SSE toast error:', err); }
   });
+  es.addEventListener('ask', e => {
+    try {
+      const d = JSON.parse(e.data);
+      handleAgentAskEvent(d);
+    } catch(err){ console.error('SSE ask error:', err); }
+  });
   es.onerror = () => {}; // Auto-reconnect by default
 }
 
@@ -6608,10 +6804,11 @@ const AgentAsk={
 
   ask(questions,opts){
     opts=opts||{};
-    const sessionId='ask_'+Date.now();
+    const sessionId=opts.id||('ask_'+Date.now());
     this._session={
       id:sessionId,
       title:opts.title||'Agent 提问',
+      message:opts.message||'',
       questions:questions.map((q,i)=>({
         id:q.id||('q_'+i),
         label:q.label||q.question||q.header||('问题 '+(i+1)),
@@ -6653,6 +6850,7 @@ const AgentAsk={
     const indicatorCls = isSingle ? 'agent-option-radio' : 'agent-option-check';
     const clickFn = isSingle ? '_selectSingle' : '_toggleMulti';
     const otherTitle = '其他';
+    const topStatus = `<span class="agent-panel-count">${answeredCount}/${s.questions.length} 已回答</span>`;
 
     let tabsHtml='';
     if (s.questions.length > 1) {
@@ -6663,7 +6861,7 @@ const AgentAsk={
         return `<button class="agent-tab ${cls}" onclick="AgentAsk._switchTab(${i})">${esc(qq.label)}${dot}</button>`;
       }).join('') + `</div>`;
     } else {
-      tabsHtml = `<div class="agent-panel-title-compact">${esc(s.title)}</div>`;
+      tabsHtml = `<div class="agent-panel-title-compact">${esc(q.label||s.title)}</div>`;
     }
 
     let optionsHtml = q.options.map(opt=>{
@@ -6692,40 +6890,30 @@ const AgentAsk={
       </div>
     `;
 
-    let progressHtml=s.questions.map((qq,i)=>{
-      const isAnswered=this._isAnswered(qq.id);
-      const cls=isAnswered?'answered':(i===this._activeTab?'current':'');
-      return `<div class="agent-progress-dot ${cls}"></div>`;
-    }).join('');
 
     slot.innerHTML=`
       <div class="agent-panel agent-panel-floating" role="dialog" aria-modal="true" aria-label="${esc(s.title)}">
         <div class="agent-panel-top">
           ${tabsHtml}
-          <button class="agent-panel-close" onclick="AgentAsk.dismiss()" title="取消提问" aria-label="取消提问">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-          </button>
+          ${topStatus}
         </div>
         <div class="agent-body">
           <div class="agent-question">
             <div class="agent-question-header">
               <div>
-                <div class="agent-panel-kicker">${esc(s.title)}</div>
-                <div class="agent-question-label">${esc(q.label)}</div>
+
               </div>
             </div>
+            ${s.message?`<div class="agent-question-hint">${esc(s.message)}</div>`:''}
             ${q.hint?`<div class="agent-question-hint">${esc(q.hint)}</div>`:''}
             <div class="agent-options">${optionsHtml}</div>
           </div>
         </div>
         <div class="agent-footer">
-          <div class="agent-footer-left">
-            <div class="agent-progress">${progressHtml}</div>
-            <span>${answeredCount}/${s.questions.length} 已回答</span>
-          </div>
+          <div class="agent-footer-spacer"></div>
           <div class="agent-footer-right">
-            <button class="btn btn-secondary btn-sm agent-next-btn" onclick="AgentAsk._submitCurrent()" ${isCurrentAnswered?'':'disabled style="opacity:0.5"'}>${hasNextQuestion?'下一步':'提交当前'}</button>
-            <button class="btn btn-primary btn-sm agent-submit-all" onclick="AgentAsk._submitAll()" ${allAnswered?'':'disabled style="opacity:0.5"'}>全部提交</button>
+            <button class="btn btn-secondary btn-sm" onclick="AgentAsk.dismiss()">取消</button>
+            <button class="btn btn-primary btn-sm agent-submit-all" onclick="AgentAsk._submitAll()" ${allAnswered?'':'disabled style="opacity:0.5"'}>提交</button>
           </div>
         </div>
       </div>`;
@@ -6853,13 +7041,8 @@ const AgentAsk={
     const s=this._session;
     const answeredCount=s.questions.filter(qq=>this._isAnswered(qq.id)).length;
     const allAnswered=answeredCount===s.questions.length;
-    const footerText=document.querySelector('.agent-footer-left span');
+    const footerText=document.querySelector('.agent-panel-count');
     if(footerText) footerText.textContent=`${answeredCount}/${s.questions.length} 已回答`;
-    document.querySelectorAll('.agent-progress-dot').forEach((dot,i)=>{
-      const q=s.questions[i];
-      dot.classList.toggle('answered', !!q && this._isAnswered(q.id));
-      dot.classList.toggle('current', i===this._activeTab && (!q || !this._isAnswered(q.id)));
-    });
     document.querySelectorAll('.agent-tab').forEach((tab,i)=>{
       const q=s.questions[i];
       const marker=tab.querySelector('.tab-answered,.tab-pending');
@@ -6950,6 +7133,25 @@ const AgentAsk={
 function askUser(questions,opts){
   return AgentAsk.ask(questions,opts);
 }
+window.AgentAsk = AgentAsk;
+window.askUser = askUser;
+
+async function handleAgentAskEvent(data){
+  if(!data||!data.id) return;
+  const questions=Array.isArray(data.questions)?data.questions:[];
+  if(!questions.length) return;
+  if(typeof pushProcessEvent==='function') pushProcessEvent({type:'agent-ask', title:data.title||'Agent 需要确认'});
+  const answers=await AgentAsk.ask(questions,{id:data.id,title:data.title||'Agent 需要确认',message:data.message||''});
+  try{
+    await apiPost('/api/sse/ask/'+encodeURIComponent(data.id)+'/answer',{
+      answers,
+      cancelled:answers===null,
+    });
+    toast(answers===null?'已取消 Agent 提问':'已提交给 Agent，等待继续执行', answers===null?'info':'success');
+  }catch(err){
+    toast('Agent 提问结果提交失败：'+(err.message||err),'error');
+  }
+}
 
 // ===== Init: load real data from backend =====
 async function initApp() {
@@ -6969,6 +7171,7 @@ async function initApp() {
     if (settings.routingMode !== undefined) state.settings.routingMode = settings.routingMode || 'auto';
     if (settings.hermesApiServerUrl !== undefined) state.settings.hermesApiServerUrl = settings.hermesApiServerUrl || '';
     if (settings.hermesApiServerKey !== undefined) state.settings.hermesApiServerKey = settings.hermesApiServerKey || '';
+    if (settings.toolPermissions !== undefined) state.settings.toolPermissions = { ...(state.settings.toolPermissions||{}), ...(settings.toolPermissions||{}) };
     if (settings.dataRootDir !== undefined) state.settings.dataRootDir = settings.dataRootDir || '';
     if (settings.memoryDir !== undefined) state.settings.memoryDir = settings.memoryDir || '';
     if (settings.imageDir !== undefined) state.settings.imageDir = settings.imageDir || '';

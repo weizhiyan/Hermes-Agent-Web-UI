@@ -95,6 +95,87 @@ function detectProvider(cfg) {
   return null;
 }
 
+async function* hermesApiServerStream(cfg, messages) {
+  const settings = store.read('settings', {});
+  const signal = cfg._abortSignal;
+  const base = String(cfg.hermesApiServerUrl || settings.hermesApiServerUrl || '').replace(/\/+$/, '');
+  const key = String(cfg.hermesApiServerKey || settings.hermesApiServerKey || '');
+  const model = cfg._selectedLibraryModel?.name || cfg._requestedModel || cfg.current || 'hermes-agent';
+  if (!base) {
+    yield { type: 'perf', stage: 'hermes-api-skipped', reason: 'missing-url' };
+    return false;
+  }
+  const headers = { 'Content-Type': 'application/json' };
+  if (key) headers.Authorization = 'Bearer ' + key;
+  const body = JSON.stringify({
+    model,
+    messages: messages.map(m => ({ role: m.role, content: m.content })),
+    stream: true,
+  });
+  let resp;
+  try {
+    yield { type: 'perf', stage: 'hermes-api-connect', base };
+    resp = await fetch(chatUrl(base), {
+      method: 'POST',
+      headers,
+      body,
+      signal: anySignal([signal, timeoutSignal(120000)]),
+    });
+  } catch (e) {
+    if (e.name === 'AbortError' || signal?.aborted) {
+      yield { type: 'perf', stage: 'hermes-api-aborted' };
+      return true;
+    }
+    yield { type: 'perf', stage: 'hermes-api-failed', reason: e.message };
+    return false;
+  }
+  if (!resp.ok || !resp.body) {
+    let errText = '';
+    try { errText = await resp.text(); } catch {}
+    yield { type: 'perf', stage: 'hermes-api-failed', status: resp.status, reason: errText.replace(/\s+/g, ' ').slice(0, 180) };
+    return false;
+  }
+  let buffer = '';
+  const reader = resp.body.getReader();
+  const dec = new TextDecoder();
+  try {
+    while (true) {
+      if (signal?.aborted) {
+        try { await reader.cancel(); } catch {}
+        yield { type: 'perf', stage: 'hermes-api-aborted' };
+        return true;
+      }
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += dec.decode(value, { stream: true });
+      let idx;
+      while ((idx = buffer.indexOf('\n')) >= 0) {
+        const line = buffer.slice(0, idx).trim();
+        buffer = buffer.slice(idx + 1);
+        if (!line || !line.startsWith('data:')) continue;
+        const data = line.slice(5).trim();
+        if (data === '[DONE]') return true;
+        let chunk;
+        try { chunk = JSON.parse(data); } catch { continue; }
+        const delta = chunk.choices?.[0]?.delta || chunk.delta || {};
+        const tool = chunk.tool || chunk.tool_call || chunk.toolCall;
+        if (delta.reasoning_content && cfg.showRawReasoning === true) yield { type: 'reasoning', text: delta.reasoning_content };
+        if (delta.content) yield { type: 'token', text: delta.content };
+        if (tool?.name) yield { type: 'tool', name: tool.name, preview: tool.preview || '', args: tool.args || tool.input || {} };
+        if (chunk.session_id || chunk.sessionId) yield { type: 'session', sessionId: chunk.session_id || chunk.sessionId };
+      }
+    }
+    return true;
+  } catch (e) {
+    if (e.name === 'AbortError' || signal?.aborted) {
+      yield { type: 'perf', stage: 'hermes-api-aborted' };
+      return true;
+    }
+    yield { type: 'perf', stage: 'hermes-api-failed', reason: e.message };
+    return false;
+  }
+}
+
 async function* directApiStream(cfg, messages) {
   const signal = cfg._abortSignal;
   const requestedModel = cfg._requestedModel || cfg.current || '';
@@ -150,22 +231,22 @@ async function* directApiStream(cfg, messages) {
   } catch (e) {
     if (e.name === 'AbortError' || signal?.aborted) {
       yield { type: 'perf', stage: 'direct-api-aborted' };
-      return;
+      return true;
     }
     yield { type: 'error', text: `API 连接失败: ${e.message}` };
-    return;
+    return false;
   }
 
   if (!resp.ok) {
     let errText = '';
     try { errText = await resp.text(); } catch {}
     yield { type: 'error', text: `API 返回 ${resp.status}: ${errText.replace(/\s+/g, ' ').slice(0, 240)}` };
-    return;
+    return false;
   }
 
   if (!resp.body) {
     yield { type: 'error', text: 'API 未返回流式响应。' };
-    return;
+    return false;
   }
 
   let buffer = '';
@@ -177,7 +258,7 @@ async function* directApiStream(cfg, messages) {
       if (signal?.aborted) {
         try { await reader.cancel(); } catch {}
         yield { type: 'perf', stage: 'direct-api-aborted' };
-        return;
+        return true;
       }
       const { value, done } = await reader.read();
       if (done) break;
@@ -190,7 +271,7 @@ async function* directApiStream(cfg, messages) {
         if (!line || !line.startsWith('data:')) continue;
 
         const data = line.slice(5).trim();
-        if (data === '[DONE]') return;
+        if (data === '[DONE]') return true;
 
         let chunk;
         try { chunk = JSON.parse(data); } catch { continue; }
@@ -203,10 +284,12 @@ async function* directApiStream(cfg, messages) {
   } catch (e) {
     if (e.name === 'AbortError' || signal?.aborted) {
       yield { type: 'perf', stage: 'direct-api-aborted' };
-      return;
+      return true;
     }
     yield { type: 'error', text: `流式读取失败: ${e.message}` };
+    return false;
   }
+  return true;
 }
 
 async function* chatStream(cfg, messages) {
@@ -232,13 +315,30 @@ async function* chatStream(cfg, messages) {
     const directLibraryItem = selectedLibraryModel(cfg, selected);
     if (provider || directLibraryItem) {
       cfg._activeProvider = provider || directLibraryItem.provider || '';
-      yield* directApiStream(cfg, messages);
+      const directOk = yield* directApiStream(cfg, messages);
+      if (directOk) return;
+      const fallbackId = cfg.scenarios?.fallback || '';
+      const fallbackItem = fallbackId && selectedLibraryModel(cfg, fallbackId);
+      if (fallbackItem && fallbackItem.id !== directLibraryItem?.id) {
+        yield { type: 'perf', stage: 'model-fallback', from: directLibraryItem?.id || selected, to: fallbackItem.id };
+        cfg._requestedModel = fallbackItem.id;
+        cfg._selectedLibraryModel = fallbackItem;
+        cfg._activeProvider = fallbackItem.provider || '';
+        const fallbackOk = yield* directApiStream(cfg, messages);
+        if (fallbackOk) return;
+      }
       return;
     }
     yield { type: 'perf', stage: 'route-fallback', route: 'hermes', reason: 'direct-provider-missing' };
   }
 
   const modelCfg = { model: modelName };
+  const hermesApiUrl = String(cfg.hermesApiServerUrl || settings.hermesApiServerUrl || '').trim();
+  if (hermesApiUrl) {
+    const apiResult = yield* hermesApiServerStream(cfg, messages);
+    if (apiResult) return;
+    yield { type: 'perf', stage: 'route-fallback', route: 'hermes-cli', reason: 'hermes-api-unavailable' };
+  }
   try {
     yield* hermesStream(last, messages, modelCfg, cfg);
   } catch (e) {
@@ -246,4 +346,4 @@ async function* chatStream(cfg, messages) {
   }
 }
 
-module.exports = { chatStream, directApiStream, detectProvider };
+module.exports = { chatStream, directApiStream, hermesApiServerStream, detectProvider };

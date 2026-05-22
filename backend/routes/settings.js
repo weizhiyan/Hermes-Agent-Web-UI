@@ -25,6 +25,11 @@ const DEFAULTS = {
   historyDir: '',
   mdLibraryDir: '',
   debugPerf: false,
+  toolPermissions: {
+    commandPolicy: 'safe',
+    logApprovals: true,
+    requireApprovalForRisky: true,
+  },
   promptToggles: {
     webuiRules: true,
     coreMemory: true,
@@ -41,6 +46,10 @@ function withDefaults(value = {}) {
   return {
     ...DEFAULTS,
     ...value,
+    toolPermissions: {
+      ...DEFAULTS.toolPermissions,
+      ...(value.toolPermissions || {}),
+    },
     promptToggles: {
       ...DEFAULTS.promptToggles,
       ...(value.promptToggles || {}),

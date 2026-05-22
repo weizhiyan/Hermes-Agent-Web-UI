@@ -12,10 +12,11 @@ const DEFAULTS = {
     chat: '',
     reasoning: '',
     image: '',
+    fallback: '',
   },
 };
 
-const OPENAI_COMPAT_PROVIDERS = /new\s*api|one\s*api|openai|deepseek|siliconflow|openrouter|together|moonshot|kimi|zhipu|智谱|中转|gateway/i;
+const OPENAI_COMPAT_PROVIDERS = /new\s*api|one\s*api|openai|deepseek|siliconflow|openrouter|together|moonshot|kimi|zhipu|\u667a\u8c31|\u4e2d\u8f6c|gateway/i;
 
 function looksLocalOllama(base = '', provider = '') {
   const text = `${provider} ${base}`.toLowerCase();
@@ -174,6 +175,7 @@ function normalizeScenarios(scenarios = {}, library = []) {
     chat: ids.has(scenarios.chat) ? scenarios.chat : '',
     reasoning: ids.has(scenarios.reasoning) ? scenarios.reasoning : '',
     image: ids.has(scenarios.image) ? scenarios.image : '',
+    fallback: ids.has(scenarios.fallback) ? scenarios.fallback : '',
   };
 }
 
@@ -398,12 +400,82 @@ router.post('/test', async (req, res) => {
       hints: [],
     });
   } catch (e) {
-    const error = e.message || '连接失败';
+    const error = e.message || '\u8fde\u63a5\u5931\u8d25';
     return res.json({
       ...meta,
       error,
       hints: testHints({ apiFormat, authType, base, provider: providerName, error }),
     });
+  }
+});
+
+router.post('/benchmark', async (req, res) => {
+  const { provider } = req.body || {};
+  const base = provider?.base?.replace(/\/+$/, '') || '';
+  const model = provider?.model || '';
+  const key = provider?.key || '';
+  const providerName = provider?.provider || '';
+  const apiFormat = inferApiFormat(provider || {});
+  const authType = inferAuthType(provider || {});
+  const authHeader = provider?.authHeader || '';
+  const url = chatUrl(base, apiFormat);
+  const startedAt = Date.now();
+  const resultMeta = { ok: false, provider: providerName, model, apiFormat, testedUrl: url, firstTokenMs: 0, totalMs: 0, outputChars: 0, response: '', error: '' };
+  if (!base || !model || !url) return res.json({ ...resultMeta, error: '\u8bf7\u586b\u5199 Base URL \u548c\u6a21\u578b\u540d\uff0c\u4e14\u683c\u5f0f\u9700\u652f\u6301\u804a\u5929\u6d4b\u8bd5\u3002' });
+  if (!['openai-chat', 'ollama', 'anthropic_messages'].includes(apiFormat)) return res.json({ ...resultMeta, error: '\u6682\u4e0d\u652f\u6301\u6d4b\u901f\uff1a' + apiFormat });
+  try {
+    const body = apiFormat === 'ollama' ? { model, messages: [{ role: 'user', content: '\u8bf7\u53ea\u56de\u590d ok' }], stream: true }
+      : apiFormat === 'anthropic_messages' ? { model, messages: [{ role: 'user', content: '\u8bf7\u53ea\u56de\u590d ok' }], max_tokens: 8, stream: true }
+      : { model, messages: [{ role: 'user', content: '\u8bf7\u53ea\u56de\u590d ok' }], max_tokens: 8, stream: true };
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: apiFormat === 'anthropic_messages' ? anthropicHeaders({ key, authType, authHeader }) : authHeaders({ key, authType, authHeader }),
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(20000),
+    });
+    if (!response.ok || !response.body) {
+      const text = await response.text().catch(() => '');
+      const detail = text ? ': ' + snippet(text).slice(0, 120) : '';
+      return res.json({ ...resultMeta, status: response.status, totalMs: Date.now() - startedAt, error: response.status + ' ' + response.statusText + detail });
+    }
+    const reader = response.body.getReader();
+    const dec = new TextDecoder();
+    let buffer = '';
+    let output = '';
+    let firstTokenMs = 0;
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += dec.decode(value, { stream: true });
+      let idx;
+      while ((idx = buffer.indexOf('\n')) >= 0) {
+        const line = buffer.slice(0, idx).trim();
+        buffer = buffer.slice(idx + 1);
+        if (!line) continue;
+        if (line === 'data: [DONE]') break;
+        let text = '';
+        if (line.startsWith('data:')) {
+          try {
+            const chunk = JSON.parse(line.slice(5).trim());
+            const delta = chunk.choices?.[0]?.delta || {};
+            text = delta.content || delta.reasoning_content || delta.reasoning || '';
+          } catch {}
+        } else if (apiFormat === 'ollama') {
+          try { const chunk = JSON.parse(line); text = chunk.message?.content || chunk.response || ''; } catch {}
+        } else if (apiFormat === 'anthropic_messages') {
+          try { const chunk = JSON.parse(line); text = chunk.delta?.text || chunk.content_block?.text || ''; } catch {}
+        }
+        if (text) {
+          if (!firstTokenMs) firstTokenMs = Date.now() - startedAt;
+          output += text;
+        }
+      }
+      if (output.length >= 20) break;
+    }
+    const totalMs = Date.now() - startedAt;
+    return res.json({ ...resultMeta, ok: true, firstTokenMs: firstTokenMs || totalMs, totalMs, outputChars: output.length, response: output.slice(0, 80) });
+  } catch (e) {
+    return res.json({ ...resultMeta, totalMs: Date.now() - startedAt, error: e.message || '\u6d4b\u901f\u5931\u8d25' });
   }
 });
 
