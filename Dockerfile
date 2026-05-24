@@ -1,4 +1,4 @@
-FROM node:18-alpine
+﻿FROM node:18-alpine
 
 WORKDIR /app
 
@@ -8,5 +8,6 @@ RUN npm install --omit=dev && npm --prefix backend install --omit=dev
 
 COPY . .
 
-EXPOSE 8787
+EXPOSE 3381
 CMD ["npm", "start"]
+

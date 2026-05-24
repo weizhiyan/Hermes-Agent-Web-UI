@@ -1,4 +1,4 @@
-const express = require('express');
+﻿const express = require('express');
 const { spawnSync } = require('child_process');
 const store = require('../services/store');
 const { detectHermesCommand } = require('../services/hermes');
@@ -21,8 +21,8 @@ function probeHermes(settings) {
   try {
     let result;
     if (hermesCmd.type === 'wsl') {
-      result = spawnSync('wsl', ['-e', 'bash', '-lc', 'hermes --version'], {
-        encoding: 'utf8', timeout: 5000,
+      result = spawnSync('wsl', ['-e', 'bash', '-lc', 'export PATH="$HOME/.local/bin:$HOME/bin:/usr/local/bin:/usr/bin:/bin:$PATH"; hermes --version'], {
+        encoding: 'utf8', timeout: 8000,
       });
     } else {
       result = spawnSync(hermesCmd.cmd, ['--version'], {
@@ -72,3 +72,5 @@ router.get('/', (req, res) => {
 });
 
 module.exports = router;
+
+

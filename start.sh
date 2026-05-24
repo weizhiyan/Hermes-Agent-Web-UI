@@ -1,9 +1,9 @@
-#!/usr/bin/env sh
+﻿#!/usr/bin/env sh
 set -eu
 
 ROOT="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 BACKEND="$ROOT/backend"
-PORT="${PORT:-8787}"
+PORT="${PORT:-3381}"
 
 if [ -f "$ROOT/.env" ]; then
   set -a
@@ -30,3 +30,4 @@ mkdir -p "$ROOT/logs"
 echo "Hermes Agent is starting on http://127.0.0.1:$PORT/"
 cd "$ROOT"
 exec node backend/server.js
+

@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Hermes Agent — Artifact 面板 + 流式解析（参考 Claude Artifact 机制，适配 Hermes UI）
  * 依赖（由 index.html 引入）：marked, hljs, mermaid
  */
@@ -19,7 +19,9 @@
   }
 
   function stripClosedThinks(str) {
-    return str.replace(/<think>[\s\S]*?<\/redacted_thinking>/gi, '');
+    return str
+      .replace(/<think>[\s\S]*?<\/think>/gi, '')
+      .replace(/<redacted_thinking>[\s\S]*?<\/redacted_thinking>/gi, '');
   }
 
   function extractTailThink(str) {
@@ -43,6 +45,45 @@
     return str.replace(/<artifact\s+[^>]+>[\s\S]*?<\/artifact>/gi, '');
   }
 
+  function stripLooseMarkdownMeta(markdown) {
+    let text = String(markdown || '').replace(/^\uFEFF/, '').trimStart();
+    text = text.replace(/^---\s*\n[\s\S]*?\n---\s*\n?/, '');
+    const lines = text.split(/\r?\n/);
+    const metaRe = /^(title|folder|type|tags|status|summary|createdBy|created|updated|source)\s*:/i;
+    let index = 0;
+    let consumed = false;
+    while (index < lines.length && (metaRe.test(lines[index].trim()) || (!lines[index].trim() && consumed))) {
+      if (metaRe.test(lines[index].trim())) consumed = true;
+      index += 1;
+    }
+    return consumed ? lines.slice(index).join('\n').trimStart() : text;
+  }
+
+  async function writeClipboardText(value) {
+    const text = String(value || '');
+    if (!text) return false;
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText(text);
+        return true;
+      }
+    } catch (_) {}
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.setAttribute('readonly', '');
+    ta.style.position = 'fixed';
+    ta.style.left = '-9999px';
+    ta.style.top = '0';
+    document.body.appendChild(ta);
+    ta.focus();
+    ta.select();
+    ta.setSelectionRange(0, ta.value.length);
+    let ok = false;
+    try { ok = document.execCommand('copy'); } catch (_) { ok = false; }
+    ta.remove();
+    return ok;
+  }
+
   function extractTailArtifact(str) {
     const re = /<artifact\s+([^>]+)>([\s\S]*)$/i;
     const m = re.exec(str);
@@ -58,11 +99,15 @@
   function parseHermesStream(raw) {
     const s = String(raw || '');
     let think = '';
-    s.replace(/<think>([\s\S]*?)<\/redacted_thinking>/gi, (_, inner) => {
+    s.replace(/<think>([\s\S]*?)<\/think>/gi, (_, inner) => {
       think += inner;
       return '';
     });
-    let noClosedThink = s.replace(/<think>[\s\S]*?<\/redacted_thinking>/gi, '');
+    s.replace(/<redacted_thinking>([\s\S]*?)<\/redacted_thinking>/gi, (_, inner) => {
+      think += inner;
+      return '';
+    });
+    let noClosedThink = stripClosedThinks(s);
     const t2 = extractTailThink(noClosedThink);
     think += t2.tail;
     noClosedThink = t2.base;
@@ -123,6 +168,14 @@
   let historyMode = 'all';
   let historyData = null;
   let historyPreview = null;
+  const DOC_FOLDERS = ['工作文档', 'AI分享', '教程', '笔记', '临时收件箱'];
+  const autoSavedKeys = new Set();
+
+  function namedIcon(name, size = 16, fallback = '') {
+    return global.HermesIcons && typeof global.HermesIcons.svg === 'function'
+      ? global.HermesIcons.svg(name, size, fallback)
+      : fallback;
+  }
 
   function renderToolbarIcon(kind) {
     if (kind === 'chat') {
@@ -131,14 +184,26 @@
     if (kind === 'split') {
       return '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M12 4v16"/></svg>';
     }
-    if (kind === 'preview') {
-      return '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 8h10"/><path d="M7 12h7"/><path d="M7 16h8"/></svg>';
+    if (kind === 'eye' || kind === 'preview') {
+      return namedIcon('预览', 16, '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6z"/><circle cx="12" cy="12" r="3"/></svg>');
+    }
+    if (kind === 'code') {
+      return namedIcon('代码', 16, '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M8 9l-4 3 4 3"/><path d="M16 9l4 3-4 3"/><path d="M14 6l-4 12"/></svg>');
     }
     if (kind === 'copy') {
-      return '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="9" y="9" width="10" height="10" rx="2"/><path d="M5 15V7a2 2 0 012-2h8"/></svg>';
+      return namedIcon('复制', 16, '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="9" y="9" width="10" height="10" rx="2"/><path d="M5 15V7a2 2 0 012-2h8"/></svg>');
     }
     if (kind === 'download') {
-      return '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M12 4v10"/><path d="M8 10l4 4 4-4"/><path d="M5 19h14"/></svg>';
+      return namedIcon('下载', 16, '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M12 4v10"/><path d="M8 10l4 4 4-4"/><path d="M5 19h14"/></svg>');
+    }
+    if (kind === 'library') {
+      return namedIcon('知识库', 16, '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M4 6h16"/><path d="M4 12h16"/><path d="M4 18h16"/><circle cx="7" cy="6" r="1.2"/><circle cx="7" cy="12" r="1.2"/><circle cx="7" cy="18" r="1.2"/></svg>');
+    }
+    if (kind === 'refresh') {
+      return '<svg width="18" height="18" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M2.5 9.25C2.91421 9.25 3.25 9.58579 3.25 10C3.25 13.7279 6.27209 16.75 10 16.75C11.8211 16.75 13.4726 16.0301 14.6875 14.8574C14.9855 14.5697 15.4604 14.578 15.748 14.876C16.0356 15.174 16.0274 15.6489 15.7295 15.9365C14.2462 17.3683 12.2252 18.25 10 18.25C7.20848 18.25 4.74284 16.8621 3.25 14.7402V16.667C3.24982 17.0811 2.91411 17.417 2.5 17.417C2.0859 17.417 1.75018 17.0811 1.75 16.667V10C1.75 9.58579 2.08579 9.25 2.5 9.25ZM10 1.75C12.7912 1.75 15.2571 3.13729 16.75 5.25879V3.33301C16.75 2.91879 17.0858 2.58301 17.5 2.58301C17.9142 2.58301 18.25 2.91879 18.25 3.33301V10C18.2499 10.1551 18.2028 10.2993 18.1221 10.4189C18.068 10.499 17.999 10.568 17.9189 10.6221C17.7993 10.7028 17.6552 10.75 17.5 10.75C17.3448 10.75 17.2007 10.7028 17.0811 10.6221C17.001 10.568 16.932 10.499 16.8779 10.4189C16.7972 10.2993 16.7501 10.1551 16.75 10C16.75 6.27209 13.7279 3.25 10 3.25C8.09282 3.25 6.37105 4.03991 5.14258 5.3125C4.85488 5.61035 4.37999 5.61868 4.08203 5.33105C3.78435 5.04334 3.77592 4.56841 4.06348 4.27051C5.56292 2.71723 7.66926 1.75 10 1.75Z" fill="currentColor"/></svg>';
+    }
+    if (kind === 'chevron-down') {
+      return '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M6 9l6 6 6-6"/></svg>';
     }
     if (kind === 'close') {
       return '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M18 6L6 18"/><path d="M6 6l12 12"/></svg>';
@@ -173,7 +238,7 @@
       if (api) return api;
     } catch (_) {}
     if (global.location && /^https?:$/.test(global.location.protocol)) return '';
-    return 'http://127.0.0.1:8787';
+    return 'http://127.0.0.1:3381';
   }
 
   function fmtBytes(bytes) {
@@ -187,6 +252,77 @@
     return String(filePath || '').split(/[\\/]/).pop() || 'Markdown';
   }
 
+  function hideExportMenu() {
+    const menu = $('#artifactExportMenu');
+    if (menu) menu.classList.remove('open');
+  }
+
+  function toggleExportMenu(event) {
+    if (event && event.stopPropagation) event.stopPropagation();
+    const menu = $('#artifactExportMenu');
+    if (!menu) return;
+    menu.classList.toggle('open');
+  }
+
+  function refreshCurrentView() {
+    hideExportMenu();
+    const refreshBtn = $('#artifactRefreshBtn');
+    if (refreshBtn) {
+      refreshBtn.classList.remove('is-refreshing');
+      void refreshBtn.offsetWidth;
+      refreshBtn.classList.add('is-refreshing');
+      setTimeout(() => refreshBtn.classList.remove('is-refreshing'), 650);
+    }
+    if (currentTab === 'history') {
+      if (historyPreview && historyPreview.path) {
+        const encodedPath = encodeURIComponent(historyPreview.path);
+        const encodedName = encodeURIComponent(fileNameFromPath(historyPreview.path));
+        previewHistoryFile(encodedPath, encodedName);
+        return;
+      }
+      loadHistory();
+      return;
+    }
+    const list = getVersionList(currentTitle);
+    const row = list.length && viewVersionIndex >= 0 ? list[viewVersionIndex] : null;
+    const typ = row ? row.type : 'markdown';
+    const lang = row ? row.language : '';
+    const body = getSourceText();
+    const prev = $('#artifactPreview');
+    if (currentTab === 'source') {
+      syncSourceEditor(body);
+    }
+    if (prev) flushPreviewNow(typ, lang, body, prev);
+  }
+
+  function formatDocDate(ts) {
+    return ts ? new Date(ts).toLocaleString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit' }) : '';
+  }
+
+  function renderDocLibraryHeader(all, folders, tags) {
+    const total = Array.isArray(all) ? all.length : 0;
+    const resultText = `${total} 篇文档`;
+    return `<div class="doc-library-head">
+      <div class="doc-library-head-main">
+        <div>
+          <h3>文档库</h3>
+        </div>
+        <div class="doc-library-stats">
+          <span>${esc(resultText)}</span>
+          <span>${(folders || []).length} 个文件夹</span>
+          <span>${(tags || []).length} 个标签</span>
+        </div>
+      </div>
+    </div>`;
+  }
+
+  function renderDocListEmpty(message) {
+    return `<div class="history-empty-docs">
+      <h3>${esc('暂无文档')}</h3>
+      <p>${esc(message || '生成 Markdown 后点击“保存到库”，或让 Hermes Agent 按文档规范输出。')}</p>
+    </div>`;
+  }
+
   function applyLayout() {
     const wb = $('#chatWorkbench');
     const shell = $('#artifactShell');
@@ -198,7 +334,7 @@
     wb.dataset.layout = layout;
     const isOpen = layout !== 'CHAT_ONLY';
     if (toggleButton) {
-      const nextLabel = isOpen ? '收起右侧预览' : '打开右侧预览';
+      const nextLabel = isOpen ? '知识库已打开' : '打开知识库';
       toggleButton.classList.toggle('is-open', isOpen);
       toggleButton.setAttribute('title', nextLabel);
       toggleButton.setAttribute('aria-label', nextLabel);
@@ -206,8 +342,9 @@
     if (layout === 'CHAT_ONLY') {
       shell.classList.remove('open', 'full');
       shell.classList.remove('artifact-focused');
-      main.style.flex = '1 1 auto';
+      main.style.flex = '1 1 100%';
       main.style.width = '';
+      wb.style.removeProperty('--artifact-chat-basis');
       main.style.minWidth = '';
       main.style.removeProperty('overflow');
       if (rs) rs.style.display = 'none';
@@ -226,8 +363,9 @@
     shell.classList.add('artifact-focused');
     shell.classList.remove('full');
     main.style.removeProperty('overflow');
-    main.style.flex = `0 0 ${splitPct}%`;
-    main.style.width = `${splitPct}%`;
+    wb.style.setProperty('--artifact-chat-basis', `${splitPct}%`);
+    main.style.flex = `0 0 var(--artifact-chat-basis, ${splitPct}%)`;
+    main.style.width = '';
     main.style.minWidth = '280px';
   }
 
@@ -248,16 +386,24 @@
         (m === 'PREVIEW_ONLY' && layout === 'PREVIEW_ONLY');
       b.classList.toggle('active', active);
     });
+    document.querySelectorAll('.artifact-view-toggle').forEach((wrap) => {
+      wrap.dataset.active = currentTab === 'source' ? 'source' : 'preview';
+    });
+    document.querySelectorAll('.artifact-view-btn').forEach((t) => {
+      t.classList.toggle('active', t.dataset.tab === currentTab);
+    });
   }
 
   function renderMarkdownDebounced(md, el) {
     if (!el) return;
+    const scrollHost = el.parentElement;
+    const prevScrollTop = scrollHost ? scrollHost.scrollTop : null;
     if (_mdTimer) clearTimeout(_mdTimer);
     _mdTimer = setTimeout(() => {
       _mdTimer = null;
       try {
         if (global.marked && typeof global.marked.parse === 'function') {
-          el.innerHTML = global.marked.parse(md || '', { breaks: true });
+          el.innerHTML = global.marked.parse(stripLooseMarkdownMeta(md || ''), { breaks: true });
         } else {
           el.innerHTML = '<pre class="artifact-fallback">' + esc(md || '') + '</pre>';
         }
@@ -267,6 +413,9 @@
           el.querySelectorAll('pre code').forEach((c) => {
             try { global.hljs.highlightElement(c); } catch (_) {}
           });
+        }
+        if (scrollHost && prevScrollTop != null) {
+          requestAnimationFrame(() => { scrollHost.scrollTop = prevScrollTop; });
         }
       } catch (e) {
         el.innerHTML = '<pre class="artifact-fallback">' + esc(md || '') + '</pre>';
@@ -322,7 +471,12 @@
       clearTimeout(_mdTimer);
       _mdTimer = null;
     }
+    const scrollHost = el && el.parentElement;
+    const prevScrollTop = scrollHost ? scrollHost.scrollTop : null;
     renderPreview(type, language, content, el);
+    if (scrollHost && prevScrollTop != null) {
+      requestAnimationFrame(() => { scrollHost.scrollTop = prevScrollTop; });
+    }
   }
 
   function getVersionList(title) {
@@ -336,6 +490,39 @@
     if (!arts.length) return null;
     const last = arts[arts.length - 1];
     return { attrs: last.attrs, content: last.content, incomplete: false };
+  }
+
+  function getCurrentVersionRow() {
+    const list = getVersionList(currentTitle);
+    if (!list.length || viewVersionIndex < 0 || viewVersionIndex >= list.length) return null;
+    return list[viewVersionIndex] || null;
+  }
+
+  function getSourceText() {
+    const src = $('#artifactSource');
+    if (currentTab === 'source' && src) return src.value || '';
+    const row = getCurrentVersionRow();
+    if (row) return row.content || '';
+    return window.__hermesLastArtifactBody || '';
+  }
+
+  function syncSourceEditor(content) {
+    const src = $('#artifactSource');
+    if (!src) return;
+    const text = content || '';
+    if (src.value !== text) src.value = text;
+  }
+
+  function updateCurrentArtifactBody(content) {
+    const text = content || '';
+    window.__hermesLastArtifactBody = text;
+    const row = getCurrentVersionRow();
+    if (row) row.content = text;
+    const prev = $('#artifactPreview');
+    if (prev && currentTab === 'source') {
+      const meta = row || { type: 'markdown', language: '' };
+      flushPreviewNow(meta.type || 'markdown', meta.language || '', text, prev);
+    }
   }
 
   function updatePanelUI(cur, streaming) {
@@ -375,7 +562,7 @@
 
     if (currentTab === 'source') {
       if (src) {
-        src.textContent = body || '';
+        syncSourceEditor(body || '');
         src.style.display = 'block';
       }
       if (prev) prev.style.display = 'none';
@@ -420,6 +607,7 @@
     }
     const cur = currentContentForPanel(parsed, false);
     updatePanelUI(cur, false);
+    autoSaveCompletedArtifact(cur);
   }
 
   function flashPanel() {
@@ -470,9 +658,10 @@
     if (src) src.style.display = 'none';
     if (prev) {
       prev.style.display = 'block';
-      prev.innerHTML = `<div class="memory-empty" style="min-height:300px">
+      prev.innerHTML = `<div class="artifact-empty-state">
+        <div class="artifact-empty-icon">MD</div>
         <h3>${esc(title || '暂无可预览文件')}</h3>
-        <p>${esc(message || '当前没有检测到可预览的输出文件。你可以在“历史文件”里打开本地 Markdown。')}</p>
+        <p>${esc(message || '当前没有检测到可预览的输出文档。你可以在“文档库”里打开本地 Markdown。')}</p>
       </div>`;
     }
     flashPanel();
@@ -619,34 +808,31 @@
     shell.innerHTML = `
 <div class="artifact-inner">
   <div class="artifact-toolbar">
-    <div class="artifact-toolbar-label">
-      <span>Markdown 预览</span>
+    <div class="artifact-toolbar-left">
+      <div class="artifact-view-toggle" role="tablist" aria-label="文档视图切换" data-active="preview">
+        <button type="button" class="artifact-view-btn active artifact-tooltip" data-tab="preview" data-tip="预览" onclick="HermesArtifact.setTab('preview')" aria-label="预览">${renderToolbarIcon('eye')}</button>
+        <button type="button" class="artifact-view-btn artifact-tooltip" data-tab="source" data-tip="代码" onclick="HermesArtifact.setTab('source')" aria-label="代码">${renderToolbarIcon('code')}</button>
+      </div>
+      <span class="artifact-toolbar-title" id="artifactTitleText">Artifact</span>
     </div>
     <div class="artifact-toolbar-actions">
-      <button type="button" class="artifact-icon-btn" id="artifactCopyBtn" title="复制" onclick="HermesArtifact.copyContent()">${renderToolbarIcon('copy')}</button>
-      <button type="button" class="artifact-icon-btn" title="下载" onclick="HermesArtifact.download()">${renderToolbarIcon('download')}</button>
-      <button type="button" class="artifact-icon-btn" title="关闭面板" onclick="HermesArtifact.setLayout('chat')">${renderToolbarIcon('close')}</button>
+      <div class="artifact-export-wrap" id="artifactExportWrap">
+        <button type="button" class="artifact-copy-main artifact-tooltip" id="artifactCopyBtn" data-tip="复制到剪贴板" aria-label="复制到剪贴板" onclick="HermesArtifact.copyContent()">${renderToolbarIcon('copy')}<span>复制</span></button>
+        <button type="button" class="artifact-icon-btn artifact-copy-caret artifact-tooltip" data-tip="更多导出选项" aria-label="更多导出选项" onclick="HermesArtifact.toggleExportMenu(event)">${renderToolbarIcon('chevron-down')}</button>
+        <div class="artifact-export-menu" id="artifactExportMenu">
+          <button type="button" onclick="HermesArtifact.download();HermesArtifact.hideExportMenu()">下载 Markdown 文件</button>
+          <button type="button" onclick="HermesArtifact.saveToLibrary();HermesArtifact.hideExportMenu()">保存到本地文档库</button>
+        </div>
+      </div>
+      <button type="button" class="artifact-library-btn artifact-tooltip" data-tip="打开知识库" aria-label="打开知识库" onclick="HermesArtifact.showHistory()">${renderToolbarIcon('library')}<span>知识库</span></button>
+      <button type="button" class="artifact-icon-btn artifact-refresh-btn artifact-tooltip" id="artifactRefreshBtn" data-tip="刷新" aria-label="刷新" onclick="HermesArtifact.refreshCurrentView()">${renderToolbarIcon('refresh')}</button>
+      <button type="button" class="artifact-icon-btn artifact-tooltip" data-tip="关闭面板" aria-label="关闭面板" onclick="HermesArtifact.setLayout('chat')">${renderToolbarIcon('close')}</button>
     </div>
-  </div>
-  <div class="artifact-titlebar">
-    <span class="artifact-file-icon">${renderToolbarIcon('doc')}</span>
-    <span class="artifact-title-text" id="artifactTitleText">Artifact</span>
-    <span class="artifact-type-badge" id="artifactTypeBadge">—</span>
-    <span class="artifact-version-wrap">
-      <button type="button" class="artifact-icon-btn sm" id="artifactVerPrev" onclick="HermesArtifact.bumpVersion(-1)">⟨</button>
-      <span id="artifactVersionText" class="artifact-version-text"></span>
-      <button type="button" class="artifact-icon-btn sm" id="artifactVerNext" onclick="HermesArtifact.bumpVersion(1)">⟩</button>
-    </span>
-  </div>
-  <div class="artifact-tabs">
-    <button type="button" class="artifact-tab active" data-tab="preview" onclick="HermesArtifact.setTab('preview')">预览</button>
-    <button type="button" class="artifact-tab" data-tab="source" onclick="HermesArtifact.setTab('source')">源码</button>
-    <button type="button" class="artifact-tab" data-tab="history" style="margin-left:auto" onclick="HermesArtifact.showHistory()">历史文件</button>
   </div>
   <div class="artifact-body">
     <div id="artifactGenerating" class="artifact-generating" style="display:none"><span class="dot-pulse"></span> 生成中…</div>
     <div id="artifactPreview" class="artifact-preview"></div>
-    <pre id="artifactSource" class="artifact-source" style="display:none"></pre>
+    <textarea id="artifactSource" class="artifact-source artifact-source-editor" style="display:none" spellcheck="false"></textarea>
     <div id="artifactHistory" class="artifact-history" style="display:none"></div>
   </div>
   <button type="button" class="artifact-edge-resizer" aria-label="调整预览宽度" title="拖拽调整预览宽度"></button>
@@ -656,7 +842,15 @@
   function initWorkbench() {
     loadSplit();
     ensureShellMarkup();
+    const src = $('#artifactSource');
+    if (src && src.dataset.editBound !== '1') {
+      src.dataset.editBound = '1';
+      src.addEventListener('input', () => {
+        updateCurrentArtifactBody(src.value || '');
+      });
+    }
     bindResize();
+    bindToolbarMenus();
     applyLayout();
     syncToolbarActive();
     if (global.mermaid && typeof global.mermaid.initialize === 'function') {
@@ -664,6 +858,29 @@
         global.mermaid.initialize({ startOnLoad: false, theme: document.documentElement.dataset.theme === 'light' ? 'default' : 'dark' });
       } catch (_) {}
     }
+  }
+
+  function bindToolbarMenus() {
+    if (document.body.dataset.toolbarMenusBound === '1') return;
+    document.body.dataset.toolbarMenusBound = '1';
+    document.addEventListener('click', (event) => {
+      if (!event.target.closest('#artifactExportWrap')) hideExportMenu();
+      if (!event.target.closest('#artifactHistoryMoreMenu') && !event.target.closest('.artifact-more-btn')) {
+        const menu = $('#artifactHistoryMoreMenu');
+        if (menu) menu.classList.remove('open');
+      }
+      if (!event.target.closest('.history-card-menu') && !event.target.closest('.history-card-more')) {
+        document.querySelectorAll('.history-card-menu.open').forEach(menu => menu.classList.remove('open'));
+      }
+    });
+    document.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape') {
+        hideExportMenu();
+        const menu = $('#artifactHistoryMoreMenu');
+        if (menu) menu.classList.remove('open');
+        document.querySelectorAll('.history-card-menu.open').forEach(item => item.classList.remove('open'));
+      }
+    });
   }
 
   function bumpVersion(delta) {
@@ -678,9 +895,7 @@
   function setTab(tab) {
     currentTab = tab;
     if (tab !== 'history') historyPreview = null;
-    document.querySelectorAll('.artifact-tab').forEach((t) => {
-      t.classList.toggle('active', t.dataset.tab === tab);
-    });
+    syncToolbarActive();
     const prev = $('#artifactPreview');
     const src = $('#artifactSource');
     const hist = $('#artifactHistory');
@@ -706,7 +921,7 @@
     if (tab === 'source') {
       if (prev) prev.style.display = 'none';
       if (src) {
-        src.textContent = body;
+        syncSourceEditor(body);
         src.style.display = 'block';
       }
     } else {
@@ -722,79 +937,104 @@
     const name = f.file || f.name || '';
     const title = f.title || name.replace(/\.md$/, '');
     const summary = f.summary || f.preview || '暂无内容概括';
-    const date = f.mtime ? new Date(f.mtime).toLocaleString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit' }) : '';
+    const date = formatDocDate(f.mtime);
     const safePath = encodeURIComponent(f.path || '');
-    const safeName = encodeURIComponent(name || title);
+    const safeName = encodeURIComponent(title || name);
+    const tags = (Array.isArray(f.tags) ? f.tags : []).slice(0, 3);
+    const cardId = 'docMenu_' + String(f.id || safePath).replace(/[^a-zA-Z0-9_-]/g, '_');
     return `
-      <div class="history-card">
-        <div class="history-card-kicker">
-          <span>${esc(f.mdType || f.type || f.folder || 'Markdown')}</span>
-          <span>${esc(fmtBytes(f.size))}</span>
+      <div class="history-card" title="${esc(f.relativePath || f.path || title)}">
+        <button type="button" class="history-card-more" onclick="HermesArtifact.toggleHistoryCardMenu(event, '${cardId}')" aria-label="更多操作" title="更多操作">⋮</button>
+        <div class="history-card-menu" id="${cardId}">
+          <button type="button" onclick="HermesArtifact.renameHistoryFile('${safePath}', '${safeName}')">编辑命名</button>
+          <button type="button" class="danger" onclick="HermesArtifact.deleteHistoryFile('${safePath}')">删除</button>
         </div>
-        <button type="button" class="history-card-title" onclick="HermesArtifact.previewHistoryFile('${safePath}', '${safeName}')">${esc(title)}</button>
-        <div class="history-card-summary">${esc(summary)}</div>
-        <div class="history-card-meta">
-          <span>${esc(date)}${f.folder ? ' · ' + esc(f.folder) : ''}</span>
-        </div>
-        <div class="history-card-actions">
-          <button class="history-card-btn primary" onclick="HermesArtifact.previewHistoryFile('${safePath}', '${safeName}')">预览</button>
-          <button class="history-card-btn secondary" onclick="HermesArtifact.openFileLocation('${safePath}')">打开文件</button>
-        </div>
+        <button type="button" class="history-card-main" aria-label="预览 ${esc(title)}" onclick="HermesArtifact.previewHistoryFile('${safePath}', '${safeName}')">
+          <span class="history-card-doc-icon" aria-hidden="true">${renderToolbarIcon('doc')}</span>
+          <div class="history-card-content">
+            <div class="history-card-title">${esc(title)}</div>
+            <div class="history-card-meta">
+              <span class="history-card-meta-left">
+                ${esc(date)}
+                <span class="history-card-type">${esc(f.mdType || f.type || f.folder || 'Markdown')}</span>
+                ${tags.map(tag => `<span class="history-card-tag">${esc(tag)}</span>`).join('')}
+              </span>
+              <span class="history-card-size">${esc(fmtBytes(f.size))}</span>
+            </div>
+          </div>
+        </button>
       </div>`;
   }
-
   function renderHistoryList() {
     const hist = $('#artifactHistory');
     if (!hist || !historyData) return;
     if (historyPreview) {
       hist.innerHTML = `
         <div class="artifact-history-preview-head">
-          <button class="history-back-btn" onclick="HermesArtifact.backToHistoryList()">← 返回</button>
-          <div>
+          <button class="history-back-btn" onclick="HermesArtifact.backToHistoryList()" aria-label="返回文档库">←</button>
+          <div class="artifact-history-preview-meta">
+            <div class="artifact-history-preview-label">文档预览</div>
             <div class="artifact-history-preview-title">${esc(historyPreview.title || 'Markdown 预览')}</div>
-            <div class="artifact-history-preview-path">${esc(historyPreview.path || '')}</div>
+            <div class="artifact-history-preview-path" title="${esc(historyPreview.path || '')}">${esc(historyPreview.path || '')}</div>
           </div>
-          <button class="history-card-btn secondary" onclick="HermesArtifact.openFileLocation('${encodeURIComponent(historyPreview.path || '')}')">打开文件</button>
+          <div class="artifact-preview-actions">
+            <button class="artifact-more-btn" onclick="HermesArtifact.toggleHistoryMore(event)" title="更多操作" aria-label="更多操作" aria-haspopup="menu">⋮</button>
+            <div class="artifact-more-menu" id="artifactHistoryMoreMenu">
+              <button type="button" onclick="HermesArtifact.openHistoryPreviewFile()">打开文件</button>
+              <button type="button" class="danger" onclick="HermesArtifact.confirmDeleteHistoryFile()">删除文件</button>
+            </div>
+          </div>
         </div>
         <div class="artifact-history-preview markdown-body artifact-preview" id="artifactHistoryPreview"></div>`;
       flushPreviewNow('markdown', '', historyPreview.content || '', $('#artifactHistoryPreview'));
       return;
     }
     const all = historyData.filesFlat || [];
-    const types = historyData.types || [];
-    const folders = historyData.folders || [];
+    const folders = (historyData.folders || []).filter(group => (group.files || []).length > 0);
     const tags = historyData.tags || [];
-    const groupList = historyMode === 'folder' ? folders : historyMode === 'tag' ? tags : types;
-    const root = historyData.root || '';
-    const tabs = `<div class="artifact-history-tabs">
-      <button class="${historyMode === 'all' ? 'active' : ''}" onclick="HermesArtifact.setHistoryMode('all')">全部</button>
-      <button class="${historyMode === 'type' ? 'active' : ''}" onclick="HermesArtifact.setHistoryMode('type')">按类型</button>
-      <button class="${historyMode === 'folder' ? 'active' : ''}" onclick="HermesArtifact.setHistoryMode('folder')">按文件夹</button>
-      <button class="${historyMode === 'tag' ? 'active' : ''}" onclick="HermesArtifact.setHistoryMode('tag')">按标签</button>
+    const folderTabs = folders.map(group => {
+      const name = group.name || group.folder || '其他';
+      const mode = 'folder:' + name;
+      return `<button class="${historyMode === mode ? 'active' : ''}" onclick="HermesArtifact.setHistoryMode('folder:${encodeURIComponent(name)}')" aria-pressed="${historyMode === mode ? 'true' : 'false'}">${esc(name)}<span class="history-tab-count">${(group.files || []).length}</span></button>`;
+    }).join('');
+    const tabs = `<div class="artifact-history-tabs doc-library-tabs">
+      <button class="${historyMode === 'all' ? 'active' : ''}" onclick="HermesArtifact.setHistoryMode('all')" aria-pressed="${historyMode === 'all' ? 'true' : 'false'}">全部<span class="history-tab-count">${(all).length}</span></button>
+      ${folderTabs}
+      <button class="${historyMode === 'tag' ? 'active' : ''}" onclick="HermesArtifact.setHistoryMode('tag')" aria-pressed="${historyMode === 'tag' ? 'true' : 'false'}">标签<span class="history-tab-count">${tags.length}</span></button>
     </div>`;
+    const libraryHead = renderDocLibraryHeader(all, folders, tags);
     if (!all.length) {
-      hist.innerHTML = tabs + `<div class="history-empty-docs">
-        <h3>暂无本地 MD 输出文件</h3>
-        <p>这里读取的是 Agent 输出文章/报告等 Markdown 的独立文件夹，不是聊天历史记录。</p>
-        <code>${esc(root)}</code>
+      hist.innerHTML = libraryHead + tabs + renderDocListEmpty();
+      return;
+    }
+    if (historyMode === 'tag') {
+      hist.innerHTML = libraryHead + tabs + (tags.length ? tags.map(group => {
+        const files = (group.files || []);
+        if (!files.length) return '';
+        return `
+        <div class="history-month-group">
+          <div class="history-month-title">#${esc(group.name || group.tag || '标签')} (${files.length})</div>
+          <div class="history-cards">${files.map(renderHistoryCard).join('')}</div>
+        </div>`;
+      }).join('') || renderDocListEmpty('当前标签下还没有文档。') : renderDocListEmpty('还没有带标签的文档。'));
+      return;
+    }
+    if (String(historyMode || '').startsWith('folder:')) {
+      const selectedFolder = decodeURIComponent(String(historyMode).slice(7));
+      const group = folders.find(item => (item.name || item.folder) === selectedFolder);
+      const files = (group ? (group.files || []) : []);
+      hist.innerHTML = libraryHead + tabs + `<div class="history-month-group">
+        <div class="history-month-title">${esc(selectedFolder)} (${files.length})</div>
+        <div class="history-cards">${files.length ? files.map(renderHistoryCard).join('') : renderDocListEmpty('这个文件夹还没有文档。')}</div>
       </div>`;
       return;
     }
-    const intro = `<div class="artifact-history-root">MD 输出库：<code>${esc(root)}</code></div>`;
-    if (historyMode !== 'all') {
-      hist.innerHTML = tabs + intro + (groupList.length ? groupList.map(group => `
-        <div class="history-month-group">
-          <div class="history-month-title">${esc(group.name || group.type || group.folder || group.tag || '其他')} (${group.files.length})</div>
-          <div class="history-cards">${(group.files || []).map(renderHistoryCard).join('')}</div>
-        </div>`).join('') : '<div style="text-align:center;padding:28px;color:var(--c-ink-muted)">当前分类暂无文件</div>');
-      return;
-    }
-    hist.innerHTML = tabs + intro + `<div class="history-month-group">
-      <div class="history-month-title">全部 · 按时间 (${all.length})</div>
-      <div class="history-cards">${all.map(renderHistoryCard).join('')}</div>
+    const files = (all);
+    hist.innerHTML = libraryHead + tabs + `<div class="history-month-group">
+      <div class="history-month-title">全部 · 按时间 (${files.length})</div>
+      <div class="history-cards">${files.length ? files.map(renderHistoryCard).join('') : renderDocListEmpty('暂无文档')}</div>
     </div>`;
   }
-
   function setHistoryMode(mode) {
     historyMode = mode;
     historyPreview = null;
@@ -809,7 +1049,7 @@
       const res = await fetch(apiBase() + '/api/system/md-library', { cache: 'no-store' });
       const data = await res.json();
       if (!data || data.code !== 0 || !data.data) {
-        hist.innerHTML = '<div style="text-align:center;padding:20px;color:var(--c-ink-muted)">暂无历史文件</div>';
+        hist.innerHTML = '<div style="text-align:center;padding:20px;color:var(--c-ink-muted)">暂无文档</div>'; 
         return;
       }
       historyData = data.data;
@@ -832,27 +1072,171 @@
       if (data && data.data && data.data.content) {
         resetSession();
         recordCompletedArtifacts([{ attrs: { title: name, type: 'markdown' }, content: data.data.content }]);
-        const historyVisible = currentTab === 'history' && $('#artifactHistory') && $('#artifactHistory').style.display !== 'none';
-        if (historyVisible) {
-          historyPreview = { title: name, path, content: data.data.content };
-          renderHistoryList();
-          currentTitle = name;
-          window.__hermesLastArtifactBody = data.data.content;
-          const titleEl = $('#artifactTitleText');
-          const typeEl = $('#artifactTypeBadge');
-          const verEl = $('#artifactVersionText');
-          if (titleEl) titleEl.textContent = name;
-          if (typeEl) typeEl.textContent = 'Markdown';
-          if (verEl) verEl.textContent = '本地文件';
-        } else {
-          openRef(name);
-        }
+        currentTitle = name;
+        window.__hermesLastArtifactBody = data.data.content;
+        historyPreview = null;
+        setTab('preview');
+        openRef(name);
       }
     } catch (e) {
       openEmpty('无法读取文件', e && e.message ? e.message : '读取本地 Markdown 失败。');
     }
   }
 
+  function toggleHistoryMore(event) {
+    if (event && event.stopPropagation) event.stopPropagation();
+    const menu = $('#artifactHistoryMoreMenu');
+    if (!menu) return;
+    menu.classList.toggle('open');
+  }
+
+  function toggleHistoryCardMenu(event, id) {
+    if (event && event.stopPropagation) event.stopPropagation();
+    document.querySelectorAll('.history-card-menu.open').forEach(menu => {
+      if (menu.id !== id) menu.classList.remove('open');
+    });
+    const menu = document.getElementById(id);
+    if (menu) menu.classList.toggle('open');
+  }
+
+  async function renameHistoryFile(encodedPath, encodedName) {
+    const file = decodeURIComponent(encodedPath || '');
+    const currentName = decodeURIComponent(encodedName || '').replace(/\.md$/i, '');
+    document.querySelectorAll('.history-card-menu.open').forEach(menu => menu.classList.remove('open'));
+    if (!file) return;
+    const nextName = await askRenameHistoryFile(currentName);
+    if (!nextName || !nextName.trim() || nextName.trim() === currentName) return;
+    try {
+      const res = await fetch(apiBase() + '/api/system/md-library', {
+        method: 'PATCH',
+        cache: 'no-store',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path: file, name: nextName.trim() }),
+      });
+      const data = await res.json();
+      if (!data || data.code !== 0) throw new Error(data && data.msg ? data.msg : '重命名失败');
+      if (global.toast) global.toast('文档已重命名', 'success');
+      historyData = null;
+      await loadHistory();
+    } catch (e) {
+      if (global.toast) global.toast(e && e.message ? e.message : '重命名失败', 'error');
+    }
+  }
+
+  function askRenameHistoryFile(currentName) {
+    return new Promise(resolve => {
+      const safeValue = esc(currentName || '');
+      if (typeof global.openModal !== 'function') {
+        resolve('');
+        return;
+      }
+      global.openModal(`
+        <div class="doc-rename-modal">
+          <div class="doc-rename-head">
+            <div class="doc-rename-icon" aria-hidden="true">
+              <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+                <path d="M4.25 3.25h7.08c.3 0 .6.12.81.33l3.28 3.28c.21.21.33.51.33.81v9.08h-11.5V3.25Z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>
+                <path d="M11.25 3.5v4h4M6.75 11h6.5M6.75 14h4.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+              </svg>
+            </div>
+            <div class="doc-rename-title">
+              <h3>编辑文档名称</h3>
+              <p>仅修改名称，内容和分类保持不变。</p>
+            </div>
+          </div>
+          <label class="doc-rename-field">
+            <span>文档名称</span>
+            <input id="historyRenameInput" class="rename-input" value="${safeValue}" placeholder="输入新的文档名称">
+          </label>
+          <div class="rename-actions">
+            <button class="btn btn-ghost" id="historyRenameCancel">取消</button>
+            <button class="btn btn-primary" id="historyRenameOk">保存</button>
+          </div>
+        </div>
+      `, { className: 'doc-rename-shell' });
+      setTimeout(() => {
+        const input = document.getElementById('historyRenameInput');
+        const cancel = document.getElementById('historyRenameCancel');
+        const ok = document.getElementById('historyRenameOk');
+        const done = value => {
+          if (typeof global.closeModal === 'function') global.closeModal();
+          resolve(value || '');
+        };
+        if (input) {
+          input.focus();
+          input.select();
+          input.addEventListener('keydown', event => {
+            if (event.key === 'Enter') done(input.value.trim());
+            if (event.key === 'Escape') done('');
+          });
+        }
+        if (cancel) cancel.onclick = () => done('');
+        if (ok) ok.onclick = () => done(input ? input.value.trim() : '');
+      }, 0);
+    });
+  }
+
+  async function deleteHistoryFile(encodedPath) {
+    const file = decodeURIComponent(encodedPath || '');
+    document.querySelectorAll('.history-card-menu.open').forEach(menu => menu.classList.remove('open'));
+    if (!file) return;
+    const message = '确定删除这个 Markdown 文档吗？\n\n' + file + '\n\n删除后会从本地文档库移除。';
+    const ok = typeof global.askConfirm === 'function'
+      ? await global.askConfirm(message)
+      : (global.confirm ? global.confirm(message) : false);
+    if (!ok) return;
+    try {
+      const res = await fetch(apiBase() + '/api/system/md-library?path=' + encodeURIComponent(file), {
+        method: 'DELETE',
+        cache: 'no-store',
+      });
+      const data = await res.json();
+      if (!data || data.code !== 0) throw new Error(data && data.msg ? data.msg : '删除失败');
+      if (global.toast) global.toast('文档已删除', 'success');
+      historyPreview = null;
+      historyData = null;
+      await loadHistory();
+    } catch (e) {
+      if (global.toast) global.toast(e && e.message ? e.message : '删除失败', 'error');
+    }
+  }
+
+  function hideHistoryMore() {
+    const menu = $('#artifactHistoryMoreMenu');
+    if (menu) menu.classList.remove('open');
+  }
+
+  function openHistoryPreviewFile() {
+    const file = historyPreview && historyPreview.path ? historyPreview.path : '';
+    hideHistoryMore();
+    if (!file) return;
+    openFileLocation(encodeURIComponent(file));
+  }
+
+  async function confirmDeleteHistoryFile() {
+    const file = historyPreview && historyPreview.path ? historyPreview.path : '';
+    if (!file) return;
+    hideHistoryMore();
+    const message = '确定删除这个 Markdown 文档吗？\n\n' + file + '\n\n删除后会从本地文档库移除。';
+    const ok = typeof global.askConfirm === 'function'
+      ? await global.askConfirm(message)
+      : (global.confirm ? global.confirm(message) : false);
+    if (!ok) return;
+    try {
+      const res = await fetch(apiBase() + '/api/system/md-library?path=' + encodeURIComponent(file), {
+        method: 'DELETE',
+        cache: 'no-store',
+      });
+      const data = await res.json();
+      if (!data || data.code !== 0) throw new Error(data && data.msg ? data.msg : '删除失败');
+      historyPreview = null;
+      historyData = null;
+      if (global.toast) global.toast('文档已删除', 'success');
+      await loadHistory();
+    } catch (e) {
+      if (global.toast) global.toast(e && e.message ? e.message : '删除失败', 'error');
+    }
+  }
   async function openFileLocation(encodedPath) {
     const path = decodeURIComponent(encodedPath || '');
     if (!path) return;
@@ -872,37 +1256,131 @@
 
   function showHistory() {
     historyPreview = null;
+    layout = layout === 'CHAT_ONLY' ? 'SPLIT_VIEW' : layout;
+    applyLayout();
     setTab('history');
   }
 
   function getCurrentBody() {
-    const list = getVersionList(currentTitle);
-    if (list.length && viewVersionIndex >= 0) return list[viewVersionIndex].content;
-    const src = $('#artifactSource');
-    return src ? src.textContent : '';
+    return getSourceText();
   }
 
-  function copyContent() {
-    const list = getVersionList(currentTitle);
-    let text = '';
-    if (currentTab === 'source' || document.getElementById('artifactSource')?.style.display !== 'none') {
-      text = document.getElementById('artifactSource')?.textContent || '';
-    } else {
-      text = list.length && viewVersionIndex >= 0 ? list[viewVersionIndex].content : window.__hermesLastArtifactBody || '';
-    }
-    navigator.clipboard.writeText(text).then(() => {
+  async function copyContent() {
+    const text = getSourceText();
+    if (await writeClipboardText(text)) {
       const b = $('#artifactCopyBtn');
       if (b) {
         const o = b.innerHTML;
         b.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"></polyline></svg>';
         setTimeout(() => { b.innerHTML = o; }, 1600);
       }
-    }).catch(() => {});
+    }
+  }
+
+
+  function shouldAutoSaveArtifact(cur) {
+    if (!cur || cur.incomplete) return false;
+    const type = String(cur.attrs && cur.attrs.type || 'markdown').toLowerCase();
+    if (type !== 'markdown') return false;
+    const body = String(cur.content || '').trim();
+    if (body.length < 120) return false;
+    const title = String(cur.attrs && cur.attrs.title || firstHeading(body) || '').trim();
+    if (!title) return false;
+    const key = title + '::' + body.length + '::' + body.slice(0, 80);
+    if (autoSavedKeys.has(key)) return false;
+    autoSavedKeys.add(key);
+    return { title, body, key };
+  }
+
+  async function autoSaveCompletedArtifact(cur) {
+    const doc = shouldAutoSaveArtifact(cur);
+    if (!doc) return;
+    const folder = inferFolderFromContent(doc.body, doc.title);
+    const btn = $('#artifactSaveBtn');
+    const old = btn ? btn.textContent : '';
+    if (btn) {
+      btn.textContent = '自动保存中…';
+      btn.disabled = true;
+    }
+    try {
+      const res = await fetch(apiBase() + '/api/system/md-library', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title: doc.title, folder, content: doc.body }),
+      });
+      const data = await res.json();
+      if (!data || data.code !== 0) throw new Error(data && data.msg ? data.msg : '保存失败');
+      historyData = null;
+      if (global.toast) global.toast('已自动保存到文档库：' + data.data.folder, 'success');
+      if (btn) btn.textContent = '已自动保存';
+      setTimeout(() => {
+        const current = $('#artifactSaveBtn');
+        if (current && current.textContent === '已自动保存') current.textContent = old || '保存到库';
+      }, 2200);
+    } catch (e) {
+      autoSavedKeys.delete(doc.key);
+      if (global.toast) global.toast('自动保存失败，可手动保存', 'warning');
+    } finally {
+      if (btn) {
+        btn.disabled = false;
+        if (btn.textContent === '自动保存中…') btn.textContent = old || '保存到库';
+      }
+    }
+  }
+  function inferFolderFromContent(content, title) {
+    const text = (String(title || '') + '\n' + String(content || '')).toLowerCase();
+    if (/教程|guide|how\s*to|manual|步骤|使用说明|排错/.test(text)) return '教程';
+    if (/分享|share|presentation|演讲|课程|案例拆解/.test(text)) return 'AI分享';
+    if (/笔记|note|memo|灵感|学习|知识卡片/.test(text)) return '笔记';
+    if (/工作|方案|需求|prd|复盘|汇报|会议|report|plan|proposal/.test(text)) return '工作文档';
+    return '临时收件箱';
+  }
+
+  function firstHeading(content) {
+    const m = String(content || '').match(/^#\s+(.+)$/m);
+    return m ? m[1].trim() : '';
+  }
+
+  async function saveToLibrary() {
+    const body = getSourceText().trim();
+    if (!body) {
+      if (global.toast) global.toast('当前没有可保存的 Markdown', 'warning');
+      return;
+    }
+    const title = currentTitle || firstHeading(body) || '未命名文档';
+    const folder = inferFolderFromContent(body, title);
+    const btn = $('#artifactSaveBtn');
+    const old = btn ? btn.textContent : '';
+    if (btn) {
+      btn.disabled = true;
+      btn.textContent = '保存中…';
+    }
+    try {
+      const res = await fetch(apiBase() + '/api/system/md-library', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title, folder, content: body }),
+      });
+      const data = await res.json();
+      if (!data || data.code !== 0) throw new Error(data && data.msg ? data.msg : '保存失败');
+      historyData = null;
+      if (global.toast) global.toast('已保存到文档库：' + data.data.folder, 'success');
+      const verEl = $('#artifactVersionText');
+      if (verEl) verEl.textContent = '已保存';
+      if (currentTab === 'history') loadHistory();
+    } catch (e) {
+      if (global.toast) global.toast(e && e.message ? e.message : '保存失败', 'error');
+    } finally {
+      if (btn) {
+        btn.disabled = false;
+        btn.textContent = old || '保存到库';
+      }
+    }
   }
 
   function download() {
     const list = getVersionList(currentTitle);
-    const body = list.length && viewVersionIndex >= 0 ? list[viewVersionIndex].content : window.__hermesLastArtifactBody || '';
+    const body = getSourceText();
     const typ = list.length && viewVersionIndex >= 0 ? list[viewVersionIndex].type : 'markdown';
     const ext = typ === 'code' ? 'txt' : typ === 'html' ? 'html' : typ === 'mermaid' ? 'mmd' : 'md';
     const blob = new Blob([body], { type: 'text/plain;charset=utf-8' });
@@ -915,7 +1393,7 @@
 
   function openNewWindow() {
     const list = getVersionList(currentTitle);
-    const body = list.length && viewVersionIndex >= 0 ? list[viewVersionIndex].content : window.__hermesLastArtifactBody || '';
+    const body = getSourceText();
     const typ = list.length && viewVersionIndex >= 0 ? list[viewVersionIndex].type : 'markdown';
     const w = window.open('', '_blank');
     if (!w) return;
@@ -954,6 +1432,10 @@
     bumpVersion,
     setTab,
     copyContent,
+    hideExportMenu,
+    toggleExportMenu,
+    refreshCurrentView,
+    saveToLibrary,
     download,
     openNewWindow,
     recordCompletedArtifacts,
@@ -962,6 +1444,13 @@
     showHistory,
     openHistoryFile,
     previewHistoryFile,
+    toggleHistoryMore,
+    toggleHistoryCardMenu,
+    renameHistoryFile,
+    deleteHistoryFile,
+    hideHistoryMore,
+    openHistoryPreviewFile,
+    confirmDeleteHistoryFile,
     openFileLocation,
     backToHistoryList,
     setHistoryMode
@@ -969,3 +1458,13 @@
 
   global.HermesArtifact = API;
 })(typeof window !== 'undefined' ? window : this);
+
+
+
+
+
+
+
+
+
+

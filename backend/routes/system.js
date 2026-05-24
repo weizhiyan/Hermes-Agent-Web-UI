@@ -1,21 +1,24 @@
-const express = require('express');
+﻿const express = require('express');
 const fs = require('fs');
 const path = require('path');
 const { spawn } = require('child_process');
+const { spawnSync } = require('child_process');
 const store = require('../services/store');
+const paths = require('../services/paths');
+const modalBus = require('./modal');
 
 const router = express.Router();
 const PROJECT_ROOT = path.resolve(path.join(__dirname, '..', '..'));
-const DEFAULT_MD_LIBRARY_DIR = path.join(store.DATA_DIR, 'output-md');
+const DOC_FOLDERS = ['工作文档', 'AI分享', '教程', '笔记', '临时收件箱'];
 
 function mdLibraryRoot() {
-  const settings = store.read('settings', {}) || {};
-  return path.resolve(normalizeIncomingPath(settings.mdLibraryDir || process.env.HERMES_MD_LIBRARY_DIR || DEFAULT_MD_LIBRARY_DIR));
+  return paths.mdLibraryRoot();
 }
 
 function roots() {
   return [...new Set([
     path.resolve(store.DATA_DIR),
+    ...paths.roots(),
     PROJECT_ROOT,
     mdLibraryRoot(),
   ])];
@@ -24,6 +27,162 @@ function roots() {
 function allowed(target) {
   const full = path.resolve(target);
   return roots().some(root => full === root || full.startsWith(root + path.sep));
+}
+
+function allowedCommand(cmd) {
+  const name = String(cmd || '').trim().toLowerCase();
+  return ['node', 'npm', 'npx', 'git', 'powershell', 'pwsh', 'cmd'].includes(name);
+}
+
+function appendLog(entry = {}) {
+  try {
+    const logs = store.read('logs', []);
+    logs.push({ ts: Date.now(), source: 'security', ...entry });
+    if (logs.length > 1000) logs.splice(0, logs.length - 1000);
+    store.write('logs', logs);
+  } catch (_) {}
+}
+
+function commandRisk(command, args = []) {
+  const full = [command, ...args].join(' ').toLowerCase();
+  const dangerous = [
+    /\brm\s+-rf\b/,
+    /\brmdir\b.*\/s/,
+    /\bdel\b.*\/s/,
+    /remove-item\b.*(-recurse|-force)/,
+    /format\b/,
+    /diskpart\b/,
+    /shutdown\b/,
+    /restart-computer\b/,
+    /stop-computer\b/,
+    /\breg\s+(delete|add)\b/,
+    /set-executionpolicy\b/,
+    /invoke-expression|\biex\b/,
+    /curl\b.*\|\s*(sh|bash|powershell|pwsh)/,
+    /wget\b.*\|\s*(sh|bash|powershell|pwsh)/,
+  ];
+  if (dangerous.some(re => re.test(full))) return { level: 'blocked', reason: '命中危险命令规则' };
+  if (/\b(git\s+push|git\s+clean|git\s+reset\s+--hard|npm\s+publish|docker\s+system\s+prune)\b/.test(full)) return { level: 'risky', reason: '可能修改远程或清理本地数据' };
+  return { level: 'safe', reason: '安全命令' };
+}
+
+
+function approvalAccepted(answers) {
+  if (!Array.isArray(answers)) return false;
+  return answers.some(item => {
+    const selected = Array.isArray(item.selected) ? item.selected.join(' ').toLowerCase() : '';
+    return selected.includes('approve') || selected.includes('allow') || selected.includes('确认执行') || selected.includes('允许执行');
+  });
+}
+
+function executeCommandPayload(command, args, cwd, timeoutMs, risk) {
+  return new Promise((resolve, reject) => {
+    const startedAt = Date.now();
+    const child = spawn(command, args, { cwd, shell: false, windowsHide: true, env: { ...process.env } });
+    let stdout = '';
+    let stderr = '';
+    let killed = false;
+    const timer = setTimeout(() => {
+      killed = true;
+      try { child.kill('SIGTERM'); } catch (_) {}
+    }, Math.max(1000, Math.min(Number(timeoutMs) || 30000, 120000)));
+    child.stdout.on('data', chunk => { stdout += chunk.toString('utf8'); if (stdout.length > 60000) stdout = stdout.slice(-60000); });
+    child.stderr.on('data', chunk => { stderr += chunk.toString('utf8'); if (stderr.length > 60000) stderr = stderr.slice(-60000); });
+    child.on('error', error => { clearTimeout(timer); reject(error); });
+    child.on('close', code => {
+      clearTimeout(timer);
+      resolve({ command, args, cwd, code, killed, stdout, stderr, durationMs: Date.now() - startedAt, risk });
+    });
+  });
+}
+
+function runGit(args, { timeout = 8000 } = {}) {
+  const result = spawnSync('git', args, {
+    cwd: PROJECT_ROOT,
+    encoding: 'utf8',
+    timeout,
+    windowsHide: true,
+    maxBuffer: 1024 * 1024,
+  });
+  return {
+    ok: result.status === 0,
+    code: result.status,
+    stdout: String(result.stdout || '').trim(),
+    stderr: String(result.stderr || '').trim(),
+    error: result.error ? result.error.message : '',
+  };
+}
+
+function parseAheadBehind(text) {
+  const match = String(text || '').match(/^(\d+)\s+(\d+)$/);
+  return match ? { ahead: Number(match[1]) || 0, behind: Number(match[2]) || 0 } : { ahead: 0, behind: 0 };
+}
+
+function readPackageVersion() {
+  try {
+    const pkg = JSON.parse(fs.readFileSync(path.join(PROJECT_ROOT, 'package.json'), 'utf8'));
+    return String(pkg.version || 'unknown');
+  } catch (_) {
+    return 'unknown';
+  }
+}
+
+function redactBackupSecrets(value) {
+  if (Array.isArray(value)) return value.map(redactBackupSecrets);
+  if (value && typeof value === 'object') {
+    const out = {};
+    for (const [key, val] of Object.entries(value)) {
+      if (/key|token|secret|password|authorization/i.test(key)) out[key] = val ? '[REDACTED]' : val;
+      else out[key] = redactBackupSecrets(val);
+    }
+    return out;
+  }
+  return value;
+}
+
+function listBackupFiles(root, limit = 400) {
+  const result = [];
+  const base = path.resolve(root);
+  function walk(dir, depth = 0) {
+    if (result.length >= limit || depth > 4) return;
+    let entries = [];
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    for (const entry of entries) {
+      if (result.length >= limit) break;
+      if (['.git', 'node_modules'].includes(entry.name)) continue;
+      const full = path.join(dir, entry.name);
+      let stat = null;
+      try { stat = fs.statSync(full); } catch { continue; }
+      if (entry.isDirectory()) walk(full, depth + 1);
+      else result.push({ path: full, relativePath: path.relative(base, full).replace(/\\/g, '/'), size: stat.size, mtime: stat.mtimeMs });
+    }
+  }
+  if (fs.existsSync(base)) walk(base, 0);
+  return result;
+}
+
+function backupManifest() {
+  const settings = store.read('settings', {});
+  const rootsToScan = [...new Set([store.DATA_DIR, ...paths.roots(), mdLibraryRoot()].filter(Boolean).map(p => path.resolve(p)))];
+  return {
+    createdAt: new Date().toISOString(),
+    packageVersion: readPackageVersion(),
+    projectRoot: PROJECT_ROOT,
+    dataDir: store.DATA_DIR,
+    roots: rootsToScan,
+    settings: redactBackupSecrets(settings),
+    models: redactBackupSecrets(store.read('models', {})),
+    skills: store.read('skills', []),
+    chatsIndex: store.read('chats', []).map(chat => ({ id: chat.id, title: chat.title, ts: chat.ts, updatedAt: chat.updatedAt, messageCount: Array.isArray(chat.messages) ? chat.messages.length : 0 })),
+    gateways: redactBackupSecrets(store.read('gateways', [])),
+    memories: redactBackupSecrets(store.read('memories', {})),
+    files: rootsToScan.map(root => ({ root, files: listBackupFiles(root) })),
+    note: 'This backup intentionally redacts API keys/tokens/passwords. File contents are not embedded; file lists and main WebUI config are included.',
+  };
+}
+function safeCommandCwd(cwd) {
+  const dir = path.resolve(normalizeIncomingPath(cwd || PROJECT_ROOT));
+  return allowed(dir) ? dir : PROJECT_ROOT;
 }
 
 function normalizeIncomingPath(target) {
@@ -83,6 +242,76 @@ router.get('/logs', (req, res) => {
   res.ok(logs.slice(-limit));
 });
 
+router.get('/update-status', (req, res) => {
+  try {
+    const packageVersion = readPackageVersion();
+    const isRepo = runGit(['rev-parse', '--is-inside-work-tree']);
+    if (!isRepo.ok || isRepo.stdout !== 'true') {
+      return res.ok({
+        isGitRepo: false,
+        packageVersion,
+        projectRoot: PROJECT_ROOT,
+        message: '当前目录不是 Git 克隆项目，无法通过 GitHub 自动检测更新。',
+      });
+    }
+
+    const shouldFetch = String(req.query.fetch || '') === '1';
+    const fetchResult = shouldFetch ? runGit(['fetch', '--tags', '--prune'], { timeout: 30000 }) : null;
+    const branch = runGit(['branch', '--show-current']).stdout || 'detached';
+    const localCommit = runGit(['rev-parse', '--short', 'HEAD']).stdout || '';
+    const upstream = runGit(['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}']);
+    const remote = runGit(['remote', '-v']).stdout.split(/\r?\n/).find(line => /\(fetch\)$/.test(line)) || '';
+    const dirty = runGit(['status', '--porcelain']).stdout;
+    let ahead = 0;
+    let behind = 0;
+    if (upstream.ok && upstream.stdout) {
+      const counts = runGit(['rev-list', '--left-right', '--count', `HEAD...${upstream.stdout}`]);
+      ({ ahead, behind } = parseAheadBehind(counts.stdout));
+    }
+    const latestTag = runGit(['describe', '--tags', '--abbrev=0']).stdout || '';
+    const currentTag = runGit(['describe', '--tags', '--exact-match', 'HEAD']).stdout || '';
+
+    res.ok({
+      isGitRepo: true,
+      packageVersion,
+      projectRoot: PROJECT_ROOT,
+      branch,
+      upstream: upstream.ok ? upstream.stdout : '',
+      remote,
+      localCommit,
+      currentTag,
+      latestTag,
+      ahead,
+      behind,
+      dirtyCount: dirty ? dirty.split(/\r?\n/).filter(Boolean).length : 0,
+      hasLocalChanges: !!dirty,
+      fetched: shouldFetch,
+      fetchOk: fetchResult ? fetchResult.ok : null,
+      fetchError: fetchResult && !fetchResult.ok ? (fetchResult.stderr || fetchResult.error || 'git fetch failed') : '',
+      updateCommand: 'git pull --ff-only && npm install',
+      safeToPull: behind > 0 && ahead === 0 && !dirty,
+    });
+  } catch (e) {
+    res.fail('update status failed: ' + e.message, 500, 500);
+  }
+});
+
+router.post('/backup/export', (req, res) => {
+  try {
+    const backupsDir = path.join(store.DATA_DIR, 'backups');
+    fs.mkdirSync(backupsDir, { recursive: true });
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const fileName = `hermes-webui-backup-${stamp}.json`;
+    const target = path.join(backupsDir, fileName);
+    const data = backupManifest();
+    fs.writeFileSync(target, JSON.stringify(data, null, 2), 'utf8');
+    const stat = fs.statSync(target);
+    res.ok({ fileName, path: target, size: stat.size, createdAt: data.createdAt, downloadUrl: `/api/system/file-raw?path=${encodeURIComponent(target)}` });
+  } catch (e) {
+    res.fail('backup failed: ' + e.message, 500, 500);
+  }
+});
+
 router.post('/logs', (req, res) => {
   const logs = store.read('logs', []);
   const entry = {
@@ -90,6 +319,14 @@ router.post('/logs', (req, res) => {
     level: req.body.level || 'info',
     msg: req.body.msg || '',
     source: req.body.source || 'system',
+    type: req.body.type || '',
+    route: req.body.route || '',
+    reason: req.body.reason || '',
+    chatId: req.body.chatId || '',
+    title: req.body.title || '',
+    durationMs: Number(req.body.durationMs || 0),
+    outputChars: Number(req.body.outputChars || 0),
+    error: req.body.error || '',
   };
   logs.push(entry);
   if (logs.length > 1000) logs.splice(0, logs.length - 1000);
@@ -115,6 +352,9 @@ router.get('/files', (req, res) => {
       roots: [
         { id: 'data', label: '数据目录', path: path.resolve(store.DATA_DIR) },
         { id: 'workspace', label: '项目目录', path: PROJECT_ROOT },
+        { id: 'data-root', label: 'Hermes 数据目录', path: paths.dataRoot() },
+        { id: 'memory', label: '记忆目录', path: paths.memoryRoot() },
+        { id: 'images', label: '图片目录', path: paths.imageRoot() },
         { id: 'md', label: 'MD 输出库', path: mdLibraryRoot() },
       ],
       items,
@@ -149,6 +389,59 @@ router.get('/file-raw', (req, res) => {
     res.sendFile(filePath);
   } catch (e) {
     res.status(500).send('read failed: ' + e.message);
+  }
+});
+
+router.post('/execute-command', async (req, res) => {
+  const command = String(req.body?.command || '').trim();
+  const args = Array.isArray(req.body?.args) ? req.body.args.map(item => String(item)) : [];
+  const cwd = safeCommandCwd(req.body?.cwd);
+  const settings = store.read('settings', {});
+  const toolPermissions = { commandPolicy: 'safe', logApprovals: true, requireApprovalForRisky: true, ...(settings.toolPermissions || {}) };
+  if (!command) return res.fail('command required', 400, 400);
+  if (!allowedCommand(command)) return res.fail('command not allowed', 403, 403);
+  if (args.join('\n').length > 4000) return res.fail('args too long', 400, 400);
+  const risk = commandRisk(command, args);
+  const commandText = `${command} ${args.join(' ')}`.trim();
+
+  if (toolPermissions.commandPolicy !== 'off' && risk.level === 'blocked') {
+    appendLog({ type: 'approval', level: 'warn', msg: `已阻止危险命令：${commandText}`, command, args, cwd, risk: risk.level, reason: risk.reason });
+    return res.fail(`命令被安全策略阻止：${risk.reason}`, 403, 403);
+  }
+
+  const needsApproval = toolPermissions.commandPolicy !== 'off' && risk.level === 'risky' && toolPermissions.requireApprovalForRisky !== false;
+  const strictBlocks = toolPermissions.commandPolicy === 'strict' && risk.level !== 'safe';
+  if (needsApproval || strictBlocks) {
+    appendLog({ type: 'approval', level: 'warn', msg: `等待用户审批命令：${commandText}`, command, args, cwd, risk: risk.level, reason: risk.reason });
+    const approval = await modalBus.createAsk({
+      title: '命令执行需要确认',
+      message: `即将执行高风险命令，请确认是否允许。\n命令：${commandText}\n目录：${cwd}\n风险：${risk.reason}` ,
+      questions: [{
+        id: 'approval',
+        label: '是否允许执行该命令？',
+        type: 'single',
+        options: [
+          { label: '确认执行', value: 'approve', description: '我了解风险，允许 WebUI 执行该命令。' },
+          { label: '取消执行', value: 'deny', description: '不要执行该命令。' },
+        ],
+        placeholder: '可补充审批原因',
+      }],
+      timeoutMs: 10 * 60 * 1000,
+    }, { wait: true }).catch(error => ({ ok: false, status: error.status || 'error', error: error.message, answers: null }));
+    if (!approvalAccepted(approval.answers)) {
+      appendLog({ type: 'approval', level: 'warn', msg: `用户拒绝或未完成审批：${commandText}`, command, args, cwd, risk: risk.level, reason: approval.status || approval.error || risk.reason });
+      return res.fail(`命令未获用户确认：${approval.status || approval.error || risk.reason}`, 403, 403);
+    }
+    appendLog({ type: 'approval', level: 'info', msg: `用户已确认执行命令：${commandText}`, command, args, cwd, risk: risk.level, reason: risk.reason });
+  } else if (toolPermissions.logApprovals !== false) {
+    appendLog({ type: 'approval', level: risk.level === 'safe' ? 'info' : 'warn', msg: `命令执行审批：${commandText}`, command, args, cwd, risk: risk.level, reason: risk.reason });
+  }
+
+  try {
+    const result = await executeCommandPayload(command, args, cwd, req.body?.timeoutMs, risk);
+    return res.ok(result);
+  } catch (error) {
+    return res.fail('execute failed: ' + error.message, 500, 500);
   }
 });
 
@@ -196,24 +489,78 @@ function summarizeMarkdown(content) {
 function inferMdType(fileName, content, relPath) {
   const text = `${fileName}\n${relPath}\n${stripFrontmatter(content).slice(0, 2000)}`.toLowerCase();
   const rules = [
-    ['文章', /文章|博客|blog|essay|post|专栏/],
-    ['方案', /方案|proposal|plan|prd|需求|设计方案/],
-    ['报告', /报告|report|复盘|review|分析|调研/],
-    ['教程', /教程|guide|how to|步骤|使用指南|说明/],
-    ['会议纪要', /会议|纪要|meeting|minutes/],
+    ['AI分享', /分享|presentation|演讲|课程|案例|blog|essay|post|文章|专栏/],
+    ['工作文档', /工作|方案|proposal|plan|prd|需求|设计方案|报告|report|复盘|review|分析|调研|会议|纪要|meeting|minutes/],
+    ['教程', /教程|guide|how to|步骤|使用指南|说明|manual|排错/],
+    ['笔记', /笔记|note|memo|灵感|学习|知识卡片/],
     ['代码文档', /api|接口|代码|函数|class|组件|开发/],
-    ['视觉设计', /ui|视觉|样式|设计|交互|验收/],
     ['其他', /.*/],
   ];
   return (rules.find(([, re]) => re.test(text)) || rules[rules.length - 1])[0];
 }
-
 function normalizeTags(value) {
   if (!value) return [];
   if (Array.isArray(value)) return value.map(String).map(s => s.trim()).filter(Boolean);
-  return String(value).split(/[,\s，、]+/).map(s => s.trim()).filter(Boolean);
+  return String(value).split(/[,，、\s]+/).map(s => s.trim()).filter(Boolean);
 }
 
+
+function safeFilePart(value, fallback = '未命名文档') {
+  const clean = String(value || '')
+    .replace(/[<>:"/\\|?*\x00-\x1F]/g, ' ')
+    .replace(/\s+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 80);
+  return clean || fallback;
+}
+
+function normalizeDocFolder(value, content = '') {
+  const exact = String(value || '').trim();
+  if (DOC_FOLDERS.includes(exact)) return exact;
+  const text = (exact + '\n' + String(content || '')).toLowerCase();
+  if (/教程|guide|how\s*to|manual|步骤|使用说明|排错/.test(text)) return '教程';
+  if (/分享|share|presentation|演讲|课程|案例/.test(text)) return 'AI分享';
+  if (/笔记|note|memo|灵感|学习|知识卡片/.test(text)) return '笔记';
+  if (/工作|方案|需求|prd|复盘|汇报|会议|report|plan|proposal/.test(text)) return '工作文档';
+  return '临时收件箱';
+}
+
+function ensureMarkdownFrontmatter(content, meta = {}) {
+  const raw = String(content || '').trim();
+  const existing = parseFrontmatter(raw);
+  const body = stripFrontmatter(raw).trimStart();
+  const title = String(meta.title || existing.title || firstHeading(raw) || '未命名文档').trim();
+  const folder = normalizeDocFolder(meta.folder || existing.folder || existing.type || existing.category, raw);
+  const type = String(meta.type || existing.type || existing.category || folder).trim();
+  const tags = [...new Set([...normalizeTags(existing.tags), ...normalizeTags(existing.tag), ...normalizeTags(meta.tags)])].slice(0, 12);
+  const summary = String(meta.summary || existing.summary || existing.description || summarizeMarkdown(raw)).replace(/\r?\n/g, ' ').trim();
+  const status = String(meta.status || existing.status || 'draft').trim();
+  const yaml = [
+    '---',
+    'title: ' + title,
+    'folder: ' + folder,
+    'type: ' + type,
+    tags.length ? 'tags: [' + tags.join(', ') + ']' : 'tags: []',
+    'status: ' + status,
+    'summary: ' + summary.slice(0, 180),
+    'createdBy: hermes',
+    '---',
+    '',
+  ].join('\n');
+  return { title, folder, type, tags, summary, status, content: yaml + body };
+}
+
+function uniqueMarkdownPath(dir, title) {
+  const date = new Date().toISOString().slice(0, 10);
+  const base = date + '-' + safeFilePart(title) + '.md';
+  let target = path.join(dir, base);
+  let index = 2;
+  while (fs.existsSync(target)) {
+    target = path.join(dir, date + '-' + safeFilePart(title) + '-' + index + '.md');
+    index += 1;
+  }
+  return target;
+}
 function scanMarkdownFiles(root) {
   const files = [];
   const maxFiles = 500;
@@ -268,7 +615,7 @@ function groupBy(list, key, label) {
   const map = new Map();
   for (const item of list) {
     const value = key(item) || label;
-    if (!map.has(value)) map.set(value, { [label === '其他' ? 'name' : 'name']: value, files: [] });
+    if (!map.has(value)) map.set(value, { name: value, files: [] });
     map.get(value).files.push(item);
   }
   return [...map.entries()].map(([name, group]) => ({ name, type: name, tag: name, folder: name, files: group.files }))
@@ -280,8 +627,13 @@ router.get('/md-library', (req, res) => {
   if (!allowed(root)) return res.fail('path not allowed', 403, 403);
   try {
     if (!fs.existsSync(root)) fs.mkdirSync(root, { recursive: true });
+    for (const folder of DOC_FOLDERS) fs.mkdirSync(path.join(root, folder), { recursive: true });
     const filesFlat = scanMarkdownFiles(root);
-    const folders = groupBy(filesFlat, f => f.folder, '根目录');
+    const folderGroups = groupBy(filesFlat, f => f.folder, '根目录');
+    const folders = [
+      ...DOC_FOLDERS.map(name => ({ name, type: name, tag: name, folder: name, files: filesFlat.filter(f => f.folder === name) })),
+      ...folderGroups.filter(group => !DOC_FOLDERS.includes(group.name)),
+    ];
     const types = groupBy(filesFlat, f => f.mdType, '其他');
     const tagItems = [];
     const tagMap = new Map();
@@ -311,4 +663,86 @@ router.get('/md-library', (req, res) => {
   }
 });
 
+
+router.post('/md-library', (req, res) => {
+  const root = mdLibraryRoot();
+  if (!allowed(root)) return res.fail('path not allowed', 403, 403);
+  try {
+    const raw = String(req.body.content || '').trim();
+    if (!raw) return res.fail('content required', 400, 400);
+    if (Buffer.byteLength(raw, 'utf8') > 1024 * 1024) return res.fail('file too large (max 1MB)', 400, 400);
+    const doc = ensureMarkdownFrontmatter(raw, req.body || {});
+    const folder = normalizeDocFolder(doc.folder, raw);
+    const dir = path.join(root, folder);
+    fs.mkdirSync(dir, { recursive: true });
+    const target = uniqueMarkdownPath(dir, doc.title);
+    fs.writeFileSync(target, doc.content, 'utf8');
+    const stat = fs.statSync(target);
+    res.ok({
+      title: doc.title,
+      folder,
+      path: target,
+      file: path.basename(target),
+      size: stat.size,
+      mtime: stat.mtimeMs,
+    });
+  } catch (e) {
+    res.fail('save failed: ' + e.message, 500, 500);
+  }
+});
+
+router.patch('/md-library', (req, res) => {
+  const filePath = path.resolve(normalizeIncomingPath(req.body?.path || ''));
+  const rawName = String(req.body?.name || '').trim();
+  if (!filePath || !allowed(filePath)) return res.fail('path not allowed', 403, 403);
+  if (!rawName) return res.fail('name required', 400, 400);
+  try {
+    const root = mdLibraryRoot();
+    if (!(filePath === root || filePath.startsWith(root + path.sep))) return res.fail('only md library files can be renamed', 403, 403);
+    const stat = fs.statSync(filePath);
+    if (!stat.isFile()) return res.fail('not a file', 400, 400);
+    if (path.extname(filePath).toLowerCase() !== '.md') return res.fail('only markdown files can be renamed', 400, 400);
+    const base = safeFilePart(rawName, path.basename(filePath, '.md')) + '.md';
+    const target = path.join(path.dirname(filePath), base);
+    if (path.resolve(target) !== filePath && fs.existsSync(target)) return res.fail('file already exists', 409, 409);
+    try {
+      const content = fs.readFileSync(filePath, 'utf8');
+      const updated = content.match(/^---\s*[\r\n]/)
+        ? content.replace(/^(---\s*[\r\n])([\s\S]*?)([\r\n]---)/, (match, start, body, end) => {
+            const nextBody = /(^|\r?\n)title\s*:/i.test(body)
+              ? body.replace(/(^|\r?\n)title\s*:[^\r\n]*/i, '$1title: ' + rawName)
+              : 'title: ' + rawName + '\n' + body;
+            return start + nextBody + end;
+          })
+        : '# ' + rawName + '\n\n' + content.replace(/^#\s+.*(?:\r?\n){1,2}/, '');
+      fs.writeFileSync(filePath, updated, 'utf8');
+    } catch {}
+    fs.renameSync(filePath, target);
+    const nextStat = fs.statSync(target);
+    res.ok({ path: target, file: path.basename(target), title: rawName, size: nextStat.size, mtime: nextStat.mtimeMs });
+  } catch (e) {
+    res.fail('rename failed: ' + e.message, 500, 500);
+  }
+});
+
+router.delete('/md-library', (req, res) => {
+  const filePath = path.resolve(normalizeIncomingPath(req.query.path || req.body?.path || ''));
+  if (!filePath || !allowed(filePath)) return res.fail('path not allowed', 403, 403);
+  try {
+    const root = mdLibraryRoot();
+    if (!(filePath === root || filePath.startsWith(root + path.sep))) return res.fail('only md library files can be deleted', 403, 403);
+    const stat = fs.statSync(filePath);
+    if (!stat.isFile()) return res.fail('not a file', 400, 400);
+    if (path.extname(filePath).toLowerCase() !== '.md') return res.fail('only markdown files can be deleted', 400, 400);
+    fs.unlinkSync(filePath);
+    res.ok({ path: filePath });
+  } catch (e) {
+    res.fail('delete failed: ' + e.message, 500, 500);
+  }
+});
 module.exports = router;
+
+
+
+
+

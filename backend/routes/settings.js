@@ -16,14 +16,51 @@ const DEFAULTS = {
   hermesModel: '',
   hermesPath: '',
   quickMode: false,
+  routingMode: 'auto',
+  hermesApiServerUrl: '',
+  hermesApiServerKey: '',
+  dataRootDir: '',
+  memoryDir: '',
+  imageDir: '',
+  historyDir: '',
   mdLibraryDir: '',
   debugPerf: false,
+  toolPermissions: {
+    commandPolicy: 'safe',
+    logApprovals: true,
+    requireApprovalForRisky: true,
+  },
+  promptToggles: {
+    webuiRules: true,
+    coreMemory: true,
+    agentRules: true,
+    userSystemPrompt: true,
+    profilePrompt: true,
+    skills: true,
+    knowledgeSearch: true,
+  },
+  knowledgeSearchLimit: 3,
 };
 
-router.get('/', (req, res) => res.ok(store.read(KEY, DEFAULTS)));
+function withDefaults(value = {}) {
+  return {
+    ...DEFAULTS,
+    ...value,
+    toolPermissions: {
+      ...DEFAULTS.toolPermissions,
+      ...(value.toolPermissions || {}),
+    },
+    promptToggles: {
+      ...DEFAULTS.promptToggles,
+      ...(value.promptToggles || {}),
+    },
+  };
+}
+
+router.get('/', (req, res) => res.ok(withDefaults(store.read(KEY, DEFAULTS))));
 
 router.put('/', (req, res) => {
-  const merged = { ...store.read(KEY, DEFAULTS), ...req.body };
+  const merged = withDefaults({ ...store.read(KEY, DEFAULTS), ...req.body });
   store.write(KEY, merged);
   res.ok(merged);
 });

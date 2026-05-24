@@ -5,7 +5,6 @@ backend/data/
 .claude/
 .hermes-server.pid
 awesome-design-md/
-一键启动.bat
 *.log
 .DS_Store
 Thumbs.db

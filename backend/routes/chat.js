@@ -3,26 +3,61 @@ const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const store = require('../services/store');
+const paths = require('../services/paths');
 const { chatStream } = require('../services/llm');
-const { readCoreMemoryPrompt } = require('../services/memory');
+const { readCoreMemoryPrompt, readAgentRulesPrompt } = require('../services/memory');
 const { redactSecrets, sanitizeAny, sanitizeChat } = require('../services/security');
+const { discoverExternalSkills, samePath, normalizeFsPath } = require('../services/skillDiscovery');
+const modalBus = require('./modal');
 
 const router = express.Router();
 const KEY = 'chats';
-const HISTORY_DIR = path.join(store.DATA_DIR, 'history-md');
-const WEBUI_SELF_PROTECTION_PROMPT = `【WebUI 自保护规则】
-当前请求来自 Hermes WebUI 对话页面。除非用户明确说明“现在不用 WebUI，而是在 CLI/代码模式中修改项目”，否则你不能修改当前 Hermes WebUI 的核心代码与服务文件。
+const DEFAULT_SKILL_PROMPT_LIMIT = Math.max(1000, Number(process.env.HERMES_SKILL_PROMPT_LIMIT || 6000));
+const DEFAULT_KNOWLEDGE_SEARCH_LIMIT = Math.max(0, Math.min(Number(process.env.HERMES_KNOWLEDGE_SEARCH_LIMIT || 3), 8));
+const WEBUI_ASK_BRIDGE_PROMPT = [
+  '【WebUI 反问弹窗协议】',
+  '当你需要向用户确认信息、让用户在多个方案中选择、确认路径/范围/风险，或需要用户授权后才能继续时，请不要直接输出普通问题。',
+  '请输出且只输出一个 WEBUI_ASK_JSON 代码块，WebUI 后端会自动弹窗询问用户并把答案带回给你。',
+  '',
+  '```WEBUI_ASK_JSON',
+  '{',
+  '  "title": "Agent 需要确认",',
+  '  "message": "我需要你确认下一步操作，然后继续执行。",',
+  '  "questions": [',
+  '    {',
+  '      "id": "action",',
+  '      "label": "下一步怎么做？",',
+  '      "type": "single",',
+  '      "options": [',
+  '        { "label": "继续执行", "description": "按当前方案继续" },',
+  '        { "label": "先暂停", "description": "停止当前任务，等待进一步说明" }',
+  '      ],',
+  '      "placeholder": "也可以补充其他要求"',
+  '    }',
+  '  ],',
+  '  "timeoutMs": 600000',
+  '}',
+  '```',
+  '',
+  '不要在 WEBUI_ASK_JSON 代码块前后输出其他解释。'
+].join('\n');
+const WEBUI_SELF_PROTECTION_PROMPT = `【WebUI 对话执行规则】
+当前请求来自 Hermes WebUI 对话页。除非用户明确说明“现在不是 WebUI 对话，而是在 CLI/代码维护模式中修改项目”，否则你应把自己当作正在 WebUI 中服务用户的 Agent。
 
-禁止修改范围包括但不限于：
-- index.html、app-new.js、frontend/、backend/routes/、backend/services/、backend/server.js
-- 启动脚本、模型连接核心逻辑、WebUI 路由和页面样式
+1. 图像任务：
+- 当用户要求生成图片、画图、出图、改图、优化图片，或基于参考图生成视觉效果时，必须优先调用可用的图像生成工具，例如 webui_image_generate。
+- 不要输出 curl、Python、HTTP 请求示例、伪代码，或“等待 API 返回”这类说明。
+- 工具调用完成后，只需要用简短中文总结结果，并展示工具返回的图片 Markdown/预览链接。
+- 如果工具不可用或失败，明确说明失败原因和下一步，不要假装已经生成。
 
-允许操作范围：
-- 读取文件、解释现状、给出方案
-- 写入或更新数据文件，例如用户授权的第三方 API 配置、记忆文件、图片/Markdown 输出目录、backend/data 下的业务数据
-- 指导用户在 CLI 中执行维护操作
+2. 参考图任务：
+- 用户上传图片并要求生成、修改、优化视觉效果时，应作为图像任务处理。
+- 如果当前工具不能读取参考图，请直接说明工具限制，不要编造本地接口命令。
 
-如果用户在 WebUI 对话里要求修改 WebUI 自身，请说明需要切换到 CLI/代码维护模式后再执行。`;
+3. WebUI 自保护：
+- 不要主动修改当前 Hermes WebUI 的核心代码与服务文件。
+- 允许读取文件、解释现状、给出方案；允许在用户授权后写入业务数据文件，例如配置、记忆、输出文档和 backend/data 下的数据。
+- 如果用户要求维护 WebUI 代码，请提示需要切换到 CLI/代码维护模式。`;
 
 function loadAll() { return store.read(KEY, []); }
 function saveAll(list) { store.write(KEY, list); }
@@ -49,12 +84,167 @@ function writeMarkdown(chat) {
   const date = new Date(chat.updatedAt || chat.createdAt || Date.now());
   const monthFolder = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
   const dateStr = `${date.getFullYear()}${String(date.getMonth() + 1).padStart(2, '0')}${String(date.getDate()).padStart(2, '0')}`;
-  const targetDir = path.join(HISTORY_DIR, monthFolder);
+  const targetDir = path.join(paths.historyDir(), monthFolder);
   if (!fs.existsSync(targetDir)) fs.mkdirSync(targetDir, { recursive: true });
   const filePath = path.join(targetDir, `${dateStr}_${safeName(redactSecrets(chat.title))}.md`);
   const content = toMarkdown(chat);
   fs.writeFileSync(filePath, content, 'utf8');
   return { content, path: filePath, folder: targetDir };
+}
+
+function extractWebuiAskRequest(text = '') {
+  const match = String(text || '').match(/```WEBUI_ASK_JSON\s*([\s\S]*?)```/i);
+  if (!match) return null;
+  try {
+    const data = JSON.parse(match[1].trim());
+    if (!data || !Array.isArray(data.questions) || !data.questions.length) return null;
+    return {
+      title: String(data.title || 'Agent 需要确认'),
+      message: String(data.message || '请确认后继续。'),
+      questions: data.questions,
+      timeoutMs: Math.max(10000, Math.min(Number(data.timeoutMs || 600000), 30 * 60 * 1000)),
+    };
+  } catch (_) {
+    return null;
+  }
+}
+
+function formatAskAnswersForModel(result) {
+  if (!result || !result.ok || !Array.isArray(result.answers)) return '用户未完成弹窗确认，请在聊天中直接追问。';
+  return result.answers.map(item => {
+    const selected = Array.isArray(item.selected) ? item.selected.filter(Boolean).join('、') : '';
+    const custom = String(item.custom || '').trim();
+    return `- ${item.label || item.id}: ${selected || '未选择'}${custom ? `；补充：${custom}` : ''}`;
+  }).join('\n') || '用户已确认，但没有具体答案。';
+}
+function needsKnowledgeBaseRules(text = '') {
+  return /文档|markdown|md\b|知识库|教程|笔记|总结|规范|方案|验收|交接|复盘|报告|分享|归档|保存|frontmatter|artifact/i.test(String(text || ''));
+}
+
+function isAgentTaskIntent(text = '') {
+  return /\b(改代码|修改代码|写入文件|保存文件|创建文件|删除文件|移动文件|重命名文件|运行命令|执行命令|终端|shell|powershell|cmd|git\s|npm\s|pnpm\s|yarn\s|docker\s|测试|构建|部署|安装依赖|批量处理|扫描项目|读取目录|分析代码库|修复bug|修 bug|提交|commit|push)\b|帮我(改|修|写|创建|删除|运行|执行|安装|部署)|打开.*文件|操作.*文件|工具调用|agent\s*模式|hermes\s*模式/i.test(String(text || ''));
+}
+
+function skillMatchInfo(skill = {}, text = '') {
+  const triggerText = Array.isArray(skill.triggers) ? skill.triggers.join(' ') : String(skill.triggers || '');
+  const haystack = String((skill.name || '') + ' ' + (skill.description || skill.desc || '') + ' ' + triggerText + ' ' + (skill.prompt || '')).toLowerCase();
+  const message = String(text || '').toLowerCase();
+  const triggers = Array.isArray(skill.triggers) ? skill.triggers : String(skill.triggers || '').split(/[，,、\s]+/);
+  const trigger = triggers.find(token => token && message.includes(String(token).toLowerCase()));
+  if (trigger) return { matched: true, reason: 'trigger', trigger: String(trigger) };
+  const keywords = tokenizeForSearch((skill.name || '') + ' ' + (skill.description || skill.desc || '')).slice(0, 12);
+  const keyword = keywords.find(token => token && message.includes(token));
+  if (keyword) return { matched: true, reason: 'keyword', trigger: keyword };
+  const pairs = [
+    [/图片|生成图|生图|出图|海报|插画|logo|视觉|参考图|改图|修图|image/i, /图片|image|视觉|海报|插画|logo|生成/i],
+    [/代码|bug|报错|重构|审查|项目|函数|接口|前端|后端|node|js|css|html/i, /代码|审查|重构|bug|开发|编程/i],
+    [/文件|保存|写入|读取|目录|路径|md|markdown|文档/i, /文件|目录|markdown|文档|写入|读取/i],
+    [/联网|搜索|查一下|资料|官网|最新|新闻/i, /联网|搜索|浏览|资料|网页/i],
+    [/记忆|偏好|习惯|兴趣|长期|remember/i, /记忆|长期|偏好|习惯/i],
+    [/更新|安装|升级|github|版本|webui/i, /更新|安装|升级|webui|github/i],
+    [/润色|表达|文案|改写|标题|方案|设计/i, /润色|表达|写作|文案|design|polish/i],
+  ];
+  const pairIndex = pairs.findIndex(([intent, skillRe]) => intent.test(message) && skillRe.test(haystack));
+  if (pairIndex >= 0) return { matched: true, reason: 'intent', trigger: 'intent:' + (pairIndex + 1) };
+  return { matched: false, reason: '', trigger: '' };
+}
+
+function skillMatchesMessage(skill = {}, text = '') {
+  return skillMatchInfo(skill, text).matched;
+}
+function selectRelevantSkills(skills = [], message = '', { forceAll = false, limit = 4 } = {}) {
+  const sorted = [...skills].sort((a, b) => Number(b.priority || 0) - Number(a.priority || 0));
+  if (forceAll) return sorted;
+  const matched = sorted.filter(skill => skillMatchesMessage(skill, message));
+  return matched.slice(0, Math.max(0, limit));
+}
+
+function limitPromptText(text = '', limit = DEFAULT_SKILL_PROMPT_LIMIT) {
+  const raw = String(text || '');
+  if (!raw || raw.length <= limit) return { text: raw, truncated: false, originalChars: raw.length };
+  const head = Math.floor(limit * 0.72);
+  const tail = Math.max(400, limit - head - 220);
+  const clipped = `${raw.slice(0, head).trim()}\n\n[内容已截断：原始 ${raw.length} 字，仅注入前 ${head} 字和末尾 ${tail} 字。请优先遵守摘要、触发条件和关键规则。]\n\n${raw.slice(-tail).trim()}`;
+  return { text: clipped, truncated: true, originalChars: raw.length };
+}
+
+function promptToggles(settings = {}) {
+  return {
+    webuiRules: true,
+    coreMemory: true,
+    agentRules: true,
+    userSystemPrompt: true,
+    profilePrompt: true,
+    skills: true,
+    knowledgeSearch: true,
+    ...(settings.promptToggles || {}),
+  };
+}
+
+function tokenizeForSearch(text = '') {
+  return [...new Set(String(text || '')
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\u4e00-\u9fa5]+/gu, ' ')
+    .split(/\s+/)
+    .map(item => item.trim())
+    .filter(item => item.length >= 2)
+    .slice(0, 80))];
+}
+
+function compactKnowledgeContent(content = '', limit = 900) {
+  const text = String(content || '')
+    .replace(/^---\s*[\s\S]*?\n---\s*/m, '')
+    .replace(/```[\s\S]*?```/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return text.length > limit ? `${text.slice(0, limit).trim()}…` : text;
+}
+
+function searchKnowledgeSnippets(query = '', limit = DEFAULT_KNOWLEDGE_SEARCH_LIMIT) {
+  const root = paths.mdLibraryRoot();
+  if (!limit || !fs.existsSync(root)) return [];
+  const tokens = tokenizeForSearch(query);
+  if (!tokens.length) return [];
+  const results = [];
+  const maxFiles = 300;
+
+  function walk(dir, depth) {
+    if (results.length >= maxFiles || depth > 6) return;
+    let entries = [];
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    for (const entry of entries) {
+      if (results.length >= maxFiles || entry.name.startsWith('.') || entry.name === 'node_modules') continue;
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        walk(full, depth + 1);
+        continue;
+      }
+      if (!entry.isFile() || path.extname(entry.name).toLowerCase() !== '.md') continue;
+      const stat = fs.statSync(full);
+      if (stat.size > 1024 * 1024) continue;
+      let content = '';
+      try { content = fs.readFileSync(full, 'utf8'); } catch { continue; }
+      const haystack = `${entry.name}\n${content}`.toLowerCase();
+      let score = 0;
+      for (const token of tokens) {
+        if (haystack.includes(token)) score += token.length > 3 ? 2 : 1;
+      }
+      if (!score) continue;
+      results.push({
+        title: entry.name.replace(/\.md$/i, ''),
+        path: full,
+        relativePath: path.relative(root, full),
+        score,
+        mtime: stat.mtimeMs,
+        snippet: compactKnowledgeContent(content),
+      });
+    }
+  }
+
+  walk(root, 0);
+  return results
+    .sort((a, b) => b.score - a.score || b.mtime - a.mtime)
+    .slice(0, limit);
 }
 
 router.get('/', (req, res) => {
@@ -65,6 +255,7 @@ router.get('/', (req, res) => {
     agentId: c.agentId,
     agentName: c.agentName,
     source: c.source || 'WebUI',
+    pinned: !!c.pinned,
     updatedAt: c.updatedAt,
     createdAt: c.createdAt,
     preview: redactSecrets(c.messages?.slice(-1)[0]?.content || '').slice(0, 90),
@@ -93,12 +284,13 @@ router.post('/', (req, res) => {
 });
 
 router.get('/exports/history', (req, res) => {
-  if (!fs.existsSync(HISTORY_DIR)) return res.ok([]);
+  const historyDir = paths.historyDir();
+  if (!fs.existsSync(historyDir)) return res.ok([]);
   const result = [];
   try {
-    const months = fs.readdirSync(HISTORY_DIR, { withFileTypes: true }).filter(d => d.isDirectory());
+    const months = fs.readdirSync(historyDir, { withFileTypes: true }).filter(d => d.isDirectory());
     for (const month of months) {
-      const monthPath = path.join(HISTORY_DIR, month.name);
+      const monthPath = path.join(historyDir, month.name);
       const files = fs.readdirSync(monthPath, { withFileTypes: true })
         .filter(f => f.isFile() && f.name.endsWith('.md'))
         .map(f => {
@@ -126,8 +318,9 @@ router.get('/exports/history', (req, res) => {
 });
 
 router.get('/exports/folder', (req, res) => {
-  if (!fs.existsSync(HISTORY_DIR)) fs.mkdirSync(HISTORY_DIR, { recursive: true });
-  res.ok({ path: HISTORY_DIR });
+  const historyDir = paths.historyDir();
+  if (!fs.existsSync(historyDir)) fs.mkdirSync(historyDir, { recursive: true });
+  res.ok({ path: historyDir });
 });
 
 router.get('/:id', (req, res) => {
@@ -182,6 +375,16 @@ function sseWrite(res, event, data) {
   res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
 }
 
+function appendSystemLog(entry = {}) {
+  try {
+    const logs = store.read('logs', []);
+    logs.push({ ts: Date.now(), source: 'chat', ...entry });
+    if (logs.length > 1000) logs.splice(0, logs.length - 1000);
+    store.write('logs', logs);
+  } catch (_) {}
+}
+
+
 function perfMark(res, start, stage, extra = {}) {
   sseWrite(res, 'perf', { stage, ms: Date.now() - start, ...extra });
 }
@@ -192,28 +395,97 @@ router.post('/:id/messages', async (req, res) => {
   const chat = list.find(c => c.id === req.params.id);
   if (!chat) return res.fail('chat not found', 404, 404);
 
-  const userMsg = { role: 'user', content: redactSecrets(String(req.body.content || '')), ts: Date.now() };
+  const userMsg = {
+    role: 'user',
+    content: redactSecrets(String(req.body.displayContent ?? req.body.content ?? '')),
+    ts: Date.now(),
+  };
+  if (Array.isArray(req.body.attachments) && req.body.attachments.length) {
+    userMsg.attachments = req.body.attachments.map(item => ({
+      id: String(item?.id || ''),
+      name: String(item?.name || item?.originalName || item?.filename || '上传图片'),
+      url: String(item?.url || ''),
+      publicUrl: String(item?.publicUrl || item?.url || ''),
+      path: String(item?.path || ''),
+      kind: String(item?.kind || 'input'),
+      mime: String(item?.mime || ''),
+    })).filter(item => item.id || item.url || item.publicUrl);
+  }
   chat.messages.push(userMsg);
   if (req.body.profileId) chat.agentId = String(req.body.profileId);
   if (req.body.profileName) chat.agentName = String(req.body.profileName).slice(0, 120);
 
   const requestedSkillIds = Array.isArray(req.body.profileSkillIds) ? req.body.profileSkillIds.map(String) : [];
-  const skills = store.read('skills', []).filter(s => {
+  const storedSkills = store.read('skills', []);
+  const externalSkills = discoverExternalSkills().map(skill => {
+    const old = storedSkills.find(item => item && (item.id === skill.id || samePath(item.path, skill.path) || item.name === skill.name));
+    return old ? { ...skill, on: old.on !== undefined ? old.on : skill.on, enabled: old.enabled !== undefined ? old.enabled : old.on } : skill;
+  });
+  const allSkills = [
+    ...externalSkills,
+    ...storedSkills
+      .filter(item => item && item.source !== 'builtin' && item.source !== 'external')
+      .filter(item => !externalSkills.some(skill => skill.id === item.id || samePath(skill.path, item.path) || skill.name === item.name))
+      .map(item => ({ ...item, path: item.path ? normalizeFsPath(item.path) : item.path })),
+  ];
+  const enabledSkills = allSkills.filter(s => {
     if (!s.prompt) return false;
     if (requestedSkillIds.length) return requestedSkillIds.includes(String(s.id));
     return s.on;
   });
   const settings = store.read('settings', {});
+  const forceAllSkills = requestedSkillIds.length > 0 || String(settings.routingMode || 'auto').toLowerCase() === 'hermes' || isAgentTaskIntent(userMsg.content);
+  const skills = selectRelevantSkills(enabledSkills, userMsg.content, { forceAll: forceAllSkills, limit: Number(settings.skillAutoLimit || 4) || 4 });
+  const toggles = promptToggles(settings);
   const systemParts = [];
-  systemParts.push(WEBUI_SELF_PROTECTION_PROMPT);
+  const promptDebug = [];
+  function addSystemPart(label, content, extra = {}) {
+    const text = String(content || '');
+    if (!text) return;
+    systemParts.push(text);
+    promptDebug.push({
+      label,
+      chars: text.length,
+      approxTokens: Math.ceil(text.length / 4),
+      ...extra,
+    });
+  }
+  if (toggles.webuiRules) addSystemPart('WebUI 自保护规则', WEBUI_SELF_PROTECTION_PROMPT, { source: 'builtin' });
+  if (toggles.webuiRules) addSystemPart('WebUI 反问弹窗协议', WEBUI_ASK_BRIDGE_PROMPT, { source: 'builtin' });
   const memoryPrompt = readCoreMemoryPrompt();
-  if (memoryPrompt) systemParts.push(memoryPrompt);
-  if (settings.systemPrompt) systemParts.push(settings.systemPrompt);
-  if (req.body.profilePrompt || req.body.profileName) systemParts.push(`[当前 Agent: ${String(req.body.profileName || req.body.profileId || '默认助手').slice(0, 80)}]\n${String(req.body.profilePrompt || '').slice(0, 6000)}`);
-  skills.forEach(s => systemParts.push(`[技能: ${s.name}] ${s.prompt}`));
+  if (toggles.coreMemory) addSystemPart('核心记忆', memoryPrompt, { source: 'memory' });
+  const agentRulesPrompt = readAgentRulesPrompt({ includeKnowledgeBase: needsKnowledgeBaseRules(userMsg.content) });
+  if (toggles.agentRules) addSystemPart('Agent 规则', agentRulesPrompt, { source: 'rules', knowledgeBase: needsKnowledgeBaseRules(userMsg.content) });
+  if (toggles.userSystemPrompt) addSystemPart('全局系统提示词', settings.systemPrompt, { source: 'settings' });
+  if (toggles.profilePrompt && (req.body.profilePrompt || req.body.profileName)) {
+    addSystemPart(`Agent Profile: ${String(req.body.profileName || req.body.profileId || '默认助手').slice(0, 80)}`, `[当前 Agent: ${String(req.body.profileName || req.body.profileId || '默认助手').slice(0, 80)}]\n${String(req.body.profilePrompt || '').slice(0, 6000)}`, { source: 'profile' });
+  }
+  if (toggles.skills) skills.forEach(s => {
+    const limited = limitPromptText(s.prompt);
+    addSystemPart(`技能: ${s.name}`, `[技能: ${s.name}] ${limited.text}`, {
+      source: 'skill',
+      id: s.id || '',
+      name: s.name || '',
+      truncated: limited.truncated,
+      originalChars: limited.originalChars,
+      limit: DEFAULT_SKILL_PROMPT_LIMIT,
+    });
+  });
+  const knowledgeLimit = Math.max(0, Math.min(Number(settings.knowledgeSearchLimit ?? DEFAULT_KNOWLEDGE_SEARCH_LIMIT) || 0, 8));
+  const knowledgeSnippets = toggles.knowledgeSearch ? searchKnowledgeSnippets(userMsg.content, knowledgeLimit) : [];
+  if (knowledgeSnippets.length) {
+    addSystemPart('相关 Markdown 知识片段', [
+      '以下是从 MD 输出库按当前问题轻量检索到的相关片段，仅作为上下文参考；如果与用户当前要求冲突，以用户当前要求为准。',
+      ...knowledgeSnippets.map((item, index) => `\n[${index + 1}] ${item.title}\n路径：${item.relativePath}\n摘要：${item.snippet}`),
+    ].join('\n'), { source: 'knowledge-search', items: knowledgeSnippets.map(({ title, relativePath, score }) => ({ title, relativePath, score })) });
+  }
   const systemPrompt = systemParts.join('\n\n');
   const historyLimit = Math.max(4, Math.min(Number(settings.history) || 16, 60));
-  const recentMessages = chat.messages.slice(-historyLimit);
+  const recentMessages = chat.messages.slice(-historyLimit).map((msg, index, arr) => (
+    index === arr.length - 1 && msg === userMsg
+      ? { ...msg, content: redactSecrets(String(req.body.content || userMsg.content || '')) }
+      : msg
+  ));
   const contextMessages = systemPrompt ? [{ role: 'system', content: systemPrompt }, ...recentMessages] : recentMessages;
 
   res.writeHead(200, {
@@ -223,25 +495,42 @@ router.post('/:id/messages', async (req, res) => {
     'X-Accel-Buffering': 'no',
   });
   res.flushHeaders();
+  const abortController = new AbortController();
+  res.on('close', () => {
+    if (!res.writableEnded) abortController.abort();
+  });
   perfMark(res, perfStart, 'sse-flushed', {
     historyMessages: recentMessages.length,
     systemChars: systemPrompt.length,
+    promptDebug,
+    promptTotalApproxTokens: Math.ceil(systemPrompt.length / 4),
+    matchedSkills: skills.map(s => ({ id: s.id || '', name: s.name || '', category: s.category || (Array.isArray(s.tags) ? s.tags[0] : ''), priority: Number(s.priority || 0), match: skillMatchInfo(s, userMsg.content) })),
   });
 
   const cfg = store.read('models', {});
   cfg._scene = req.body.scene || 'chat';
+  cfg._abortSignal = abortController.signal;
   if (req.body.model && req.body.model !== 'auto') cfg._requestedModel = req.body.model;
   const lastAssistant = [...chat.messages].reverse().find(m => m && m.role === 'assistant' && String(m.hermesSessionId || '').trim());
   if (lastAssistant?.hermesSessionId) cfg._resumeSessionId = String(lastAssistant.hermesSessionId).trim();
   let full = '';
   let reasoningFull = '';
+  let errorFull = '';
   const toolCalls = [];
   let firstContentEventSeen = false;
   let sessionIdFromDone = cfg._resumeSessionId || '';
+  let selectedRoute = '';
+  let selectedRouteReason = '';
+  let suppressAskJsonStream = false;
 
   try {
     for await (const event of chatStream(cfg, contextMessages)) {
+      if (abortController.signal.aborted) break;
       if (event.type === 'perf') {
+        if (event.stage === 'route-selected') {
+          selectedRoute = event.route || '';
+          selectedRouteReason = event.reason || '';
+        }
         sseWrite(res, 'perf', event);
         continue;
       }
@@ -254,7 +543,8 @@ router.post('/:id/messages', async (req, res) => {
           {
             const safeText = redactSecrets(event.text);
             full += safeText;
-            sseWrite(res, 'token', { text: safeText });
+            if (full.toUpperCase().includes('WEBUI_ASK_JSON')) suppressAskJsonStream = true;
+            if (!suppressAskJsonStream) sseWrite(res, 'token', { text: safeText });
           }
           break;
 
@@ -305,7 +595,11 @@ router.post('/:id/messages', async (req, res) => {
           break;
 
         case 'error':
-          sseWrite(res, 'error', { msg: redactSecrets(event.text) });
+          {
+            const safeText = redactSecrets(event.text || '未知错误');
+            errorFull += (errorFull ? '\n' : '') + safeText;
+            sseWrite(res, 'error', { msg: safeText });
+          }
           break;
 
         case 'done':
@@ -314,14 +608,80 @@ router.post('/:id/messages', async (req, res) => {
       }
     }
 
-    chat.messages.push({ role: 'assistant', content: redactSecrets(full), ts: Date.now() });
+    if (abortController.signal.aborted) {
+      perfMark(res, perfStart, 'client-aborted', { output_chars: full.length });
+      return;
+    }
+
+    const askPayload = extractWebuiAskRequest(full);
+    if (askPayload) {
+      sseWrite(res, 'perf', { stage: 'agent-ask', title: askPayload.title });
+      sseWrite(res, 'token', { text: '\n\n⏸️ Agent 正在等待你的确认...\n' });
+      const askResult = await modalBus.createAsk(askPayload, { wait: true }).catch(error => ({ ok: false, status: error.status || 'error', error: error.message, answers: null }));
+      sseWrite(res, 'perf', { stage: 'agent-ask-result', status: askResult.status || (askResult.ok ? 'answered' : 'failed') });
+      const answerText = formatAskAnswersForModel(askResult);
+      full = '';
+      const followupMessages = [
+        ...contextMessages,
+        { role: 'assistant', content: '[WebUI 已弹窗向用户确认，等待用户回答。]' },
+        { role: 'user', content: `用户通过 WebUI 弹窗回答如下：\n${answerText}\n\n请根据用户回答继续完成原任务。不要再输出 WEBUI_ASK_JSON，除非仍然缺少关键信息。` },
+      ];
+      for await (const followEvent of chatStream(cfg, followupMessages)) {
+        if (abortController.signal.aborted) break;
+        if (followEvent.type === 'token') {
+          const safeText = redactSecrets(followEvent.text);
+          full += safeText;
+          sseWrite(res, 'token', { text: safeText });
+        } else if (followEvent.type === 'reasoning') {
+          const safeText = redactSecrets(followEvent.text);
+          reasoningFull += safeText;
+          sseWrite(res, 'reasoning', { text: safeText });
+        } else if (followEvent.type === 'tool') {
+          toolCalls.push({ ...sanitizeAny(followEvent), done: false });
+          sseWrite(res, 'tool', { event_type: followEvent.event_type, name: followEvent.name, preview: redactSecrets(followEvent.preview), args: sanitizeAny(followEvent.args) });
+        } else if (followEvent.type === 'tool_complete') {
+          sseWrite(res, 'tool_complete', { event_type: followEvent.event_type, name: followEvent.name, preview: redactSecrets(followEvent.preview), is_error: followEvent.is_error, duration: followEvent.duration });
+        } else if (followEvent.type === 'session') {
+          if (followEvent.sessionId) sessionIdFromDone = String(followEvent.sessionId);
+        } else if (followEvent.type === 'error') {
+          const safeText = redactSecrets(followEvent.text || '未知错误');
+          errorFull += (errorFull ? '\n' : '') + safeText;
+          sseWrite(res, 'error', { msg: safeText });
+        } else if (followEvent.type === 'done') {
+          if (followEvent.session_id || followEvent.sessionId) sessionIdFromDone = String(followEvent.session_id || followEvent.sessionId);
+        }
+      }
+    }
+
+    const assistantContent = full || (errorFull ? `⚠️ ${errorFull}` : '');
+    chat.messages.push({ role: 'assistant', content: redactSecrets(assistantContent), ts: Date.now(), error: Boolean(errorFull && !full) });
     if (reasoningFull) chat.messages[chat.messages.length - 1].reasoning = reasoningFull;
-    if (toolCalls.length) chat.messages[chat.messages.length - 1].tool_calls = toolCalls;
+    if (toolCalls.length) {
+      chat.messages[chat.messages.length - 1].tool_calls = toolCalls;
+      chat.messages[chat.messages.length - 1].toolCalls = toolCalls.map(item => ({
+        name: item.name || item.event_type || 'tool',
+        status: item.is_error ? 'error' : 'success',
+        input: item.args || item.preview || '',
+        output: item.preview || '',
+      }));
+    }
     if (sessionIdFromDone) chat.messages[chat.messages.length - 1].hermesSessionId = sessionIdFromDone;
     chat.updatedAt = Date.now();
-    if (chat.title === '新建对话' && userMsg.content) chat.title = userMsg.content.slice(0, 24);
+    if ((chat.title === '新建对话' || chat.title === '鏂板缓瀵硅瘽') && userMsg.content) chat.title = userMsg.content.slice(0, 24);
     saveAll(list);
     try { writeMarkdown(chat); } catch {}
+    appendSystemLog({
+      type: 'task',
+      level: errorFull ? 'error' : 'info',
+      msg: `${chat.title || '新建对话'} · ${selectedRoute || 'unknown'} · ${Date.now() - perfStart}ms`,
+      chatId: chat.id,
+      title: chat.title || '',
+      route: selectedRoute || '',
+      reason: selectedRouteReason || '',
+      durationMs: Date.now() - perfStart,
+      outputChars: full.length,
+      error: errorFull || '',
+    });
 
     sseWrite(res, 'done', {
       session_id: chat.id,
@@ -329,7 +689,16 @@ router.post('/:id/messages', async (req, res) => {
       perf: { total_ms: Date.now() - perfStart, output_chars: full.length },
     });
   } catch (e) {
-    sseWrite(res, 'error', { msg: e.message });
+    if (abortController.signal.aborted) return;
+    const safeText = redactSecrets(e.message || '未知错误');
+    sseWrite(res, 'error', { msg: safeText });
+    try {
+      chat.messages.push({ role: 'assistant', content: `⚠️ ${safeText}`, ts: Date.now(), error: true });
+      chat.updatedAt = Date.now();
+      appendSystemLog({ type: 'task', level: 'error', msg: `${chat.title || '新建对话'} · error · ${Date.now() - perfStart}ms`, chatId: chat.id, title: chat.title || '', route: selectedRoute || '', reason: selectedRouteReason || '', durationMs: Date.now() - perfStart, outputChars: full.length, error: safeText });
+      saveAll(list);
+      writeMarkdown(chat);
+    } catch {}
   } finally {
     res.end();
   }
@@ -346,13 +715,19 @@ router.post('/gc-stream', async (req, res) => {
     'X-Accel-Buffering': 'no',
   });
   res.flushHeaders();
+  const abortController = new AbortController();
+  res.on('close', () => {
+    if (!res.writableEnded) abortController.abort();
+  });
 
   const cfg = store.read('models', {});
   cfg._scene = scene || 'chat';
+  cfg._abortSignal = abortController.signal;
   if (model && model !== 'auto') cfg._requestedModel = model;
 
   try {
     for await (const event of chatStream(cfg, messages)) {
+      if (abortController.signal.aborted) break;
       switch (event.type) {
         case 'token':
           sseWrite(res, 'token', { text: redactSecrets(event.text) });
@@ -365,8 +740,9 @@ router.post('/gc-stream', async (req, res) => {
           break;
       }
     }
-    sseWrite(res, 'done', {});
+    if (!abortController.signal.aborted) sseWrite(res, 'done', {});
   } catch (e) {
+    if (abortController.signal.aborted) return;
     sseWrite(res, 'error', { msg: e.message });
   } finally {
     res.end();

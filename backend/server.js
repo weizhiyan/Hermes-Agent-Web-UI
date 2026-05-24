@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Hermes Agent backend entry.
  * Lightweight Express server exposing REST APIs under /api.
  */
@@ -19,6 +19,8 @@ const cliRoutes = require('./routes/cli');
 const modalRoutes = require('./routes/modal');
 const memoryRoutes = require('./routes/memory');
 const imageRoutes = require('./routes/images');
+const feishuStream = require('./services/feishuStream');
+const paths = require('./services/paths');
 
 function loadDotEnvFile(filePath) {
   try {
@@ -48,7 +50,7 @@ loadDotEnvFile(path.join(__dirname, '..', '.env'));
 loadDotEnvFile(path.join(__dirname, '.env'));
 
 const app = express();
-const PORT = process.env.PORT || 8787;
+const PORT = process.env.PORT || 3381;
 
 app.use(cors());
 app.use(express.json({ limit: '30mb' }));
@@ -101,9 +103,16 @@ app.use('/frontend', express.static(path.join(__dirname, '..', 'frontend')));
 
 app.use((err, req, res, _next) => {
   console.error('[error]', err);
-  res.fail(err.message || 'internal error', 500, 500);
+  if (typeof res.fail === 'function') {
+    res.fail(err.message || 'internal error', 500, 500);
+    return;
+  }
+  res.status(500).json({ code: 500, data: null, msg: err.message || 'internal error' });
 });
 
 app.listen(PORT, '0.0.0.0', () => {
+  try { paths.ensureWorkspaceDirs(); } catch (error) { console.warn('[hermes] failed to prepare workspace dirs:', error.message); }
   console.log(`[hermes] backend listening on http://0.0.0.0:${PORT}`);
+  feishuStream.startFromConfig().catch(error => console.warn('[feishu-stream] startup skipped:', error.message));
 });
+

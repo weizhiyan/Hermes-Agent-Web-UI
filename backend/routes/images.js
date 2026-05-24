@@ -1,18 +1,16 @@
-const express = require('express');
+﻿const express = require('express');
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const store = require('../services/store');
+const paths = require('../services/paths');
 const { redactSecrets } = require('../services/security');
-const { chatStream } = require('../services/llm');
+const { directApiStream } = require('../services/llm');
 
 const router = express.Router();
 
 const IMAGE_KEY = 'images';
 const CHAT_KEY = 'chats';
-const IMAGE_ROOT = path.join(store.DATA_DIR, 'images');
-const INPUT_DIR = path.join(IMAGE_ROOT, 'inputs');
-const OUTPUT_DIR = path.join(IMAGE_ROOT, 'outputs');
 const MAX_UPLOAD_BYTES = 25 * 1024 * 1024;
 
 function ensureDir(dir) {
@@ -49,9 +47,114 @@ function promptSlug(prompt = 'image') {
 function compactPrompt(text = '') {
   return String(text || '')
     .replace(/```[\s\S]*?```/g, ' ')
+    .replace(/(?:^|\n)\s*⚠?\s*Normalized model .*? for deepseek\.?\s*(?=\n|$)/gi, '\n')
+    .replace(/^⚠?\s*Normalized model .*? for deepseek\.?\s*/i, '')
+    .replace(/!\[[^\]]*]\([^)]+\)/g, ' ')
+    .replace(/https?:\/\/\S+/gi, ' ')
     .replace(/^["'“”‘’\s]+|["'“”‘’\s]+$/g, '')
-    .replace(/^(最终提示词|优化后提示词|prompt)\s*[:：]\s*/i, '')
+    .replace(/^(最终提示词|优化后的提示词|final prompt|optimized prompt|prompt)\s*[:：]\s*/i, '')
+    .replace(/\s+/g, ' ')
     .trim();
+}
+
+const PROTECTED_IMAGE_TERMS = [
+  { re: /阿尼亚|anya/i, canonical: 'Anya Forger (阿尼亚), from Spy x Family' },
+  { re: /初音未来|miku/i, canonical: 'Hatsune Miku (初音未来)' },
+  { re: /五条悟/i, canonical: 'Satoru Gojo (五条悟), from Jujutsu Kaisen' },
+  { re: /路飞/i, canonical: 'Monkey D. Luffy (路飞), from One Piece' },
+];
+
+function protectImagePromptTerms(source = '', optimized = '') {
+  let prompt = String(optimized || '').trim();
+  const raw = String(source || '');
+  if (!prompt) return prompt;
+  const missing = PROTECTED_IMAGE_TERMS
+    .filter(item => item.re.test(raw) && !item.re.test(prompt) && !prompt.includes(item.canonical))
+    .map(item => item.canonical);
+  if (missing.length) prompt = `${missing.join(', ')}, ${prompt}`;
+  return dedupePromptText(prompt);
+}
+
+function dedupePromptText(prompt = '') {
+  let text = String(prompt || '').replace(/\s+/g, ' ').trim();
+  if (!text) return '';
+  text = text.replace(/(Anya Forger \(阿尼亚\), from Spy x Family,\s*){2,}/gi, 'Anya Forger (阿尼亚), from Spy x Family, ');
+  text = text.replace(/(Anya Forger \(阿尼亚\), from Spy x Family[^。.!?；;]{8,120})(?:[。.!?；;,\s]+影感|[。.!?；;,\s]+电影质感)?[。.!?；;,\s]+\1/gi, '$1');
+  const chunks = text
+    .split(/(?<=[。.!?；;])\s+|[，,]\s+/)
+    .map(s => s.trim())
+    .filter(Boolean);
+  const seen = new Set();
+  const out = [];
+  for (const chunk of chunks) {
+    const key = chunk
+      .toLowerCase()
+      .replace(/\s+/g, ' ')
+      .replace(/^(and|with|the)\s+/i, '')
+      .trim();
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    out.push(chunk);
+  }
+  return out.join(', ');
+}
+
+function isBadOptimizedPrompt(prompt = '') {
+  const text = String(prompt || '').trim();
+  if (!text) return true;
+  if (/!\[[^\]]*]\([^)]+\)/.test(text)) return true;
+  if (/https?:\/\/|\/api\/images\/file\//i.test(text)) return true;
+  if (/Normalized model|deepseek-chat|Provider:|HTTP \d{3}/i.test(text)) return true;
+  if (/^(图片已生成|已生成图片|图像生成失败|Error:)/i.test(text)) return true;
+  return false;
+}
+
+function pickTextModelId(cfg = {}, requested = '') {
+  const library = Array.isArray(cfg.library) ? cfg.library : [];
+  const usable = id => {
+    if (!id || id === 'auto') return '';
+    const item = library.find(m => m.enabled !== false && (m.id === id || m.name === id));
+    if (!item) return id;
+    return (item.apiFormat || 'openai-chat') === 'openai-chat' ? (item.id || item.name || id) : '';
+  };
+  return usable(requested)
+    || usable(cfg.scenarios?.reasoning)
+    || usable(cfg.scenarios?.chat)
+    || usable(cfg.current)
+    || (library.find(m => m.enabled !== false && (m.apiFormat || 'openai-chat') === 'openai-chat')?.id || '');
+}
+
+function localImagePromptFallback(source = '', mode = 'text-to-image') {
+  const raw = redactSecrets(String(source || '').trim());
+  let prompt = raw
+    .replace(/^图像生成\s*[:：]\s*/i, '')
+    .replace(/^生成\s*/i, '')
+    .replace(/^一张\s*/i, '')
+    .trim();
+  prompt = protectImagePromptTerms(raw, prompt);
+  if (/阿尼亚|anya/i.test(raw)) {
+    prompt = prompt
+      .replace(/阿尼亚/g, 'Anya Forger (阿尼亚), from Spy x Family, ')
+      .replace(/,\s*([，,。])/g, '$1')
+      .replace(/Anya Forger \(阿尼亚\), from Spy x Family[，,]\s*Anya Forger \(阿尼亚\), from Spy x Family/gi, 'Anya Forger (阿尼亚), from Spy x Family');
+  }
+  const base = mode === 'image-to-image'
+    ? [
+      'Use the provided reference image as the visual basis',
+      prompt,
+      'preserve the main subject, identity, composition, pose, layout, color mood, and visual style from the reference image',
+      'apply only the user requested changes',
+      'keep unchanged areas consistent with the reference image',
+      'high quality, coherent details, natural lighting',
+    ]
+    : [
+      prompt,
+      'anime illustration style',
+      'preserve the exact named character identity and outfit described by the user',
+      'clear subject focus, coherent composition, high quality, detailed, vibrant natural lighting',
+      'avoid changing the requested character, scene, clothing, animals, or action',
+    ];
+  return dedupePromptText(base.filter(Boolean).join(', '));
 }
 
 function mimeToExt(mime = '') {
@@ -111,6 +214,12 @@ function isInside(root, target) {
   return !!rel && !rel.startsWith('..') && !path.isAbsolute(rel);
 }
 
+function isInsideImageRoot(target) {
+  const full = path.resolve(target);
+  const roots = [paths.imageRoot(), path.join(store.DATA_DIR, 'images')].map(item => path.resolve(item));
+  return roots.some(root => full === root || isInside(root, full));
+}
+
 function normalizeStoredImagePath(target = '') {
   const text = String(target || '');
   const wsl = text.match(/^\/mnt\/([a-zA-Z])\/(.*)$/);
@@ -124,9 +233,29 @@ function normalizeStoredImagePath(target = '') {
   return text;
 }
 
+function imageRelativePath(record = {}) {
+  if (record.relativePath) return String(record.relativePath);
+  if (!record.path) return '';
+  const stored = path.resolve(normalizeStoredImagePath(record.path));
+  const legacyRoot = path.resolve(path.join(store.DATA_DIR, 'images'));
+  const currentRoot = path.resolve(paths.imageRoot());
+  for (const root of [currentRoot, legacyRoot]) {
+    const rel = path.relative(root, stored);
+    if (rel && !rel.startsWith('..') && !path.isAbsolute(rel)) return rel;
+  }
+  return '';
+}
+
+function imagePathFromRelative(rel = '') {
+  return rel ? path.join(paths.imageRoot(), rel) : '';
+}
+
 function existingImagePath(record = {}) {
   const candidates = [
+    imagePathFromRelative(imageRelativePath(record)),
     normalizeStoredImagePath(record.path),
+    record.kind === 'input' && record.filename ? path.join(paths.imageInputDir(), record.filename) : '',
+    record.kind === 'output' && record.filename ? path.join(paths.imageOutputDir(), record.filename) : '',
     record.path,
   ].filter(Boolean);
   return candidates.find(p => fs.existsSync(p)) || '';
@@ -170,7 +299,7 @@ function resolveImageModel(modelId = 'auto') {
   const wanted = modelId && modelId !== 'auto' ? modelId : (cfg.scenarios?.image || '');
   const model = lib.find(m => m.id === wanted || m.name === wanted);
   if (!model) {
-    const err = new Error('请先在设置 > 模型配置 > 图像生成 场景中选择一个真实图像模型。');
+    const err = new Error('请先在 设置 > 模型配置 > 图像生成 场景中选择一个真实图像模型。');
     err.status = 400;
     throw err;
   }
@@ -283,7 +412,7 @@ async function saveGeneratedItem(item, req, meta = {}) {
   }
 
   const ext = mimeToExt(mime);
-  const dir = monthDir(OUTPUT_DIR);
+  const dir = monthDir(paths.imageOutputDir());
   const filename = `${dateStamp()}_${promptSlug(meta.sourcePrompt || meta.prompt)}_${id.slice(-6)}${ext}`;
   const filePath = path.join(dir, filename);
   fs.writeFileSync(filePath, buffer);
@@ -295,6 +424,7 @@ async function saveGeneratedItem(item, req, meta = {}) {
     mime,
     size: buffer.length,
     path: filePath,
+    relativePath: path.relative(paths.imageRoot(), filePath),
     url: publicUrlFor(id),
     publicUrl: toPublicUrl(req, id),
     prompt: meta.prompt || '',
@@ -306,6 +436,55 @@ async function saveGeneratedItem(item, req, meta = {}) {
     sourceUrl,
     createdAt: Date.now(),
   });
+}
+
+const IMAGE2_DIR = path.resolve(__dirname, '..', '..', '..', '记忆', 'skill', 'image2');
+
+function readTextIfExists(filePath, maxChars = 12000) {
+  try {
+    if (!fs.existsSync(filePath)) return '';
+    return fs.readFileSync(filePath, 'utf8').replace(/^\uFEFF/, '').slice(0, maxChars).trim();
+  } catch (_) {
+    return '';
+  }
+}
+
+function readImage2SkillContext() {
+  const skill = readTextIfExists(path.join(IMAGE2_DIR, 'SKILL.md'), 14000);
+  const preferences = readTextIfExists(path.join(IMAGE2_DIR, 'preferences.md'), 8000);
+  return { skill, preferences, path: IMAGE2_DIR };
+}
+
+function defaultImagePromptRules() {
+  return [
+    '你是 Hermes Agent 的图像生成提示词优化助手。',
+    '任务：在不改变用户核心意图的前提下，把用户的中文需求整理成更适合图像生成模型执行的提示词。',
+    '必须保留用户输入中的具体人物、角色、IP、作品名、品牌名、产品名、地点名和专有名词；不要泛化、不要替换、不要删除。',
+    '例如：阿尼亚不能改成 a young girl with pink hair；应该保留为 Anya Forger (阿尼亚), from Spy x Family。',
+    '可以补充构图、光影、风格、材质、镜头、色彩、质量要求，但不能改变主体身份。',
+    '如果是二次改图，要保留上一张图的主体连续性，并把本轮修改明确写进去。',
+    '这是纯文本提示词优化任务，不要调用工具，不要执行命令，不要写文件，不要输出代码。',
+    '只输出最终提示词，不要 Markdown，不要解释过程，不要编号，不要输出模型日志。',
+    '如果输出中出现 Normalized model 等系统日志，必须删除。',
+  ].join('\n');
+}
+
+function imagePromptModeRules(mode = 'text-to-image') {
+  if (mode === 'image-to-image') {
+    return [
+      '当前任务类型：IMAGE TO IMAGE / 图生图 / 基于参考图编辑。',
+      '必须把用户上传或选择的参考图作为视觉基础。',
+      '提示词要明确要求：preserve the main subject, identity, composition, pose, layout, color mood, and visual style from the reference image。',
+      '只执行用户本轮要求的修改；没有要求修改的部分应保持与参考图一致。',
+      '如果用户说“改、换、加、去掉、优化、保持、参考、基于”，要写成编辑指令，而不是重新发明一张无关新图。',
+      '不要把参考图描述成普通附件；要写出 use the provided reference image as the visual basis。',
+    ].join('\n');
+  }
+  return [
+    '当前任务类型：TEXT TO IMAGE / 文生图。',
+    '根据用户文字创建新图，扩展主体、场景、构图、光影、风格、材质、质量要求。',
+    '不得引入与用户需求冲突的新主体或新场景。',
+  ].join('\n');
 }
 
 router.post('/optimize-prompt', async (req, res) => {
@@ -324,56 +503,85 @@ router.post('/optimize-prompt', async (req, res) => {
   const attachmentText = Array.isArray(attachments) && attachments.length
     ? attachments.slice(0, 6).map((img, i) => `${i + 1}. ${img.name || '参考图'} ${img.kind || 'input'} ${img.path || ''}`.trim()).join('\n')
     : '无参考图';
+  const promptMode = Array.isArray(attachments) && attachments.length ? 'image-to-image' : 'text-to-image';
+  const image2 = readImage2SkillContext();
   const messages = [
     {
       role: 'system',
       content: [
-        '你是 Hermes Agent 的图像生成提示词优化助手。',
-        '任务：在不改变用户核心意图的前提下，把用户的中文需求整理成更适合图像生成模型执行的提示词。',
-        '严格要求：不要编造用户没有要求的主体、文字、品牌、人物身份；可以补充构图、光线、风格、材质、镜头、质量要求。',
-        '如果是二次改图，要保留上一张图的主体连续性，并把本轮修改明确写进去。',
-        '这是纯文本提示词优化任务，不要调用工具，不要执行命令，不要写文件，不要输出代码。',
-        '只输出最终提示词，不要 Markdown，不要解释过程，不要编号。',
+        image2.skill ? `[image2/SKILL.md]\n${image2.skill}` : defaultImagePromptRules(),
+        image2.preferences ? `[image2/preferences.md]\n${image2.preferences}` : '',
+        [
+          '硬性输出格式：只返回一段用于图像生成模型的提示词。',
+          '禁止调用任何图片生成工具。',
+          '禁止返回 Markdown 图片、URL、文件路径、接口地址、模型日志、解释文字。',
+          '如果你已经生成了图片，也必须忽略图片结果，只输出优化后的文本提示词。',
+        ].join('\n'),
+        imagePromptModeRules(promptMode),
         profilePrompt ? `当前 Agent：${profileName}\n${String(profilePrompt).slice(0, 2000)}` : `当前 Agent：${profileName}`,
-      ].join('\n'),
+      ].filter(Boolean).join('\n\n'),
     },
     {
       role: 'user',
       content: [
         `用户原始需求：${String(userPrompt || prompt).slice(0, 1200)}`,
         previousPrompt ? `上一轮提示词：${String(previousPrompt).slice(0, 1200)}` : '',
-        `本轮合成提示词草稿：${cleanPrompt.slice(0, 2200)}`,
+        cleanPrompt !== String(userPrompt || prompt).trim() ? `本轮合成提示词草稿（仅供参考，不要重复拼接）：${cleanPrompt.slice(0, 2200)}` : '',
         `参考图片：\n${attachmentText}`,
+        '请基于“用户原始需求”输出一版去重后的最终提示词；不要把原始需求、草稿、上一轮提示词重复拼接。',
       ].filter(Boolean).join('\n\n'),
     },
   ];
 
   const cfg = store.read('models', {});
   cfg._scene = 'reasoning';
-  if (model && model !== 'auto') cfg._requestedModel = model;
+  cfg._requestedModel = pickTextModelId(cfg, model && model !== 'auto' ? model : '');
+  cfg.params = { ...(cfg.params || {}), temperature: 0.35, maxTokens: Math.min(Number(cfg.params?.maxTokens || 1200), 1200) };
+  if (!cfg._requestedModel) {
+    const optimized = localImagePromptFallback([userPrompt, prompt, previousPrompt].filter(Boolean).join('\n'), promptMode);
+    return res.ok({
+      prompt: optimized || cleanPrompt,
+      sourcePrompt: redactSecrets(String(userPrompt || prompt || '').trim()),
+      usedAgent: false,
+      fallback: true,
+      error: '未配置可用于 Image Agent 的文本模型，已使用本地 image2 规则兜底。',
+      skill: image2.skill ? 'image-agent/image2' : 'image-agent/default',
+      skillPath: image2.skill ? image2.path : '',
+      mode: promptMode,
+    });
+  }
   let full = '';
   let err = '';
 
   try {
-    for await (const event of chatStream(cfg, messages)) {
+    for await (const event of directApiStream(cfg, messages)) {
       if (event.type === 'token') full += redactSecrets(event.text || '');
       if (event.type === 'error') err += redactSecrets(event.text || '');
     }
-    const optimized = compactPrompt(full);
+    const sourceForProtection = [userPrompt, prompt, cleanPrompt].filter(Boolean).join('\n');
+    const rawOptimized = protectImagePromptTerms(sourceForProtection, compactPrompt(full));
+    const optimized = dedupePromptText(isBadOptimizedPrompt(rawOptimized) ? localImagePromptFallback(sourceForProtection, promptMode) : rawOptimized);
     res.ok({
       prompt: optimized || cleanPrompt,
       sourcePrompt: redactSecrets(String(userPrompt || prompt || '').trim()),
-      usedAgent: !!optimized && optimized !== cleanPrompt,
-      fallback: !optimized,
+      usedAgent: !!optimized && optimized !== cleanPrompt && !isBadOptimizedPrompt(rawOptimized),
+      fallback: isBadOptimizedPrompt(rawOptimized),
       error: err.slice(0, 300),
+      skill: image2.skill ? 'image-agent/image2' : 'image-agent/default',
+      skillPath: image2.skill ? image2.path : '',
+      mode: promptMode,
     });
   } catch (e) {
+    const optimized = dedupePromptText(localImagePromptFallback([userPrompt, prompt, previousPrompt].filter(Boolean).join('\n'), promptMode));
     res.ok({
-      prompt: cleanPrompt,
+      prompt: optimized || cleanPrompt,
       sourcePrompt: redactSecrets(String(userPrompt || prompt || '').trim()),
       usedAgent: false,
       fallback: true,
       error: redactSecrets(e.message || 'optimize failed'),
+      skill: 'image-agent/fallback',
+      skillPath: '',
+      mode: promptMode,
     });
   }
 });
@@ -394,6 +602,11 @@ function appendChatMessages(chatId, userContent, assistantContent, modelName, im
       model: modelName,
       outputs: imageRecords.outputs || [],
       inputs: imageRecords.inputs || [],
+      prompt: imageRecords.prompt || '',
+      sourcePrompt: imageRecords.sourcePrompt || '',
+      optimizedByAgent: !!imageRecords.optimizedByAgent,
+      mode: imageRecords.mode || '',
+      optimizeSkill: imageRecords.optimizeSkill || '',
     },
   });
   if (!chat.title || chat.title === '新建对话') chat.title = redactSecrets(userContent).replace(/\s+/g, ' ').slice(0, 24) || '图像生成';
@@ -413,7 +626,7 @@ router.post('/upload', (req, res) => {
     const id = imageId('in');
     const ext = extFromName(fileName, parsed.mime);
     const filename = `${id}${ext}`;
-    const dir = monthDir(INPUT_DIR);
+    const dir = monthDir(paths.imageInputDir());
     const filePath = path.join(dir, filename);
     fs.writeFileSync(filePath, parsed.buffer);
     const record = addRecord({
@@ -424,6 +637,7 @@ router.post('/upload', (req, res) => {
       mime: parsed.mime,
       size: parsed.buffer.length,
       path: filePath,
+      relativePath: path.relative(paths.imageRoot(), filePath),
       url: publicUrlFor(id),
       publicUrl: toPublicUrl(req, id),
       source,
@@ -435,105 +649,130 @@ router.post('/upload', (req, res) => {
   }
 });
 
-router.post('/generate', async (req, res) => {
-  const { prompt = '', sourcePrompt = '', optimizedByAgent = false, attachmentIds = [], model = 'auto', size = '1024x1024', chatId = '' } = req.body || {};
+async function generateImageFromPrompt({ prompt = '', sourcePrompt = '', optimizedByAgent = false, attachmentIds = [], model = 'auto', size = '1024x1024', chatId = '', publicBase = '' } = {}) {
   const cleanPrompt = redactSecrets(String(prompt || '').trim());
   const cleanSourcePrompt = redactSecrets(String(sourcePrompt || prompt || '').trim());
   const inputIds = Array.isArray(attachmentIds) ? attachmentIds : [];
-  if (!cleanPrompt && inputIds.length === 0) return res.fail('prompt or image attachment required', 400, 400);
+  if (!cleanPrompt && inputIds.length === 0) {
+    const err = new Error('prompt or image attachment required');
+    err.status = 400;
+    throw err;
+  }
 
-  try {
-    const selectedModel = resolveImageModel(model);
-    const records = readRecords();
-    const inputs = inputIds
-      .map(id => records.find(r => r.id === id))
-      .map(r => {
-        const filePath = r ? existingImagePath(r) : '';
-        return filePath ? { ...r, path: filePath } : null;
-      })
-      .filter(r => r && ['input', 'output'].includes(r.kind) && isInside(IMAGE_ROOT, r.path));
-    const finalPrompt = cleanPrompt || '请基于上传图片生成一张新的图片。';
-    let json;
+  const reqLike = { body: { publicBase } };
+  const selectedModel = resolveImageModel(model);
+  const records = readRecords();
+  const inputs = inputIds
+    .map(id => records.find(r => r.id === id))
+    .map(r => {
+      const filePath = r ? existingImagePath(r) : '';
+      return filePath ? { ...r, path: filePath } : null;
+    })
+    .filter(r => r && ['input', 'output'].includes(r.kind) && isInsideImageRoot(r.path));
+  const finalPrompt = cleanPrompt || '请基于参考图片生成一张新的图片。';
+  let json;
 
-    if (inputs.length > 0) {
-      const url = imageEndpoint(selectedModel.base, 'edits');
-      if (!url) return res.fail('image edit url missing', 400, 400);
-      json = await fetchMultipartWithRetry(url, selectedModel, (includeResponseFormat) => {
-        const form = new FormData();
-        form.append('model', selectedModel.name);
-        form.append('prompt', finalPrompt);
-        form.append('n', '1');
-        form.append('size', size || '1024x1024');
-        if (includeResponseFormat) form.append('response_format', 'b64_json');
-        inputs.forEach((input, index) => {
-          const buffer = fs.readFileSync(input.path);
-          const blob = new Blob([buffer], { type: input.mime || 'image/png' });
-          form.append(index === 0 ? 'image' : `image_${index}`, blob, input.originalName || input.filename || `input_${index}.png`);
-        });
-        return form;
-      });
-    } else {
-      const url = imageEndpoint(selectedModel.base, 'generations');
-      if (!url) return res.fail('image generation url missing', 400, 400);
-      json = await fetchJsonWithRetry(url, selectedModel, {
-        model: selectedModel.name,
-        prompt: finalPrompt,
-        n: 1,
-        size: size || '1024x1024',
-      });
+  if (inputs.length > 0) {
+    const url = imageEndpoint(selectedModel.base, 'edits');
+    if (!url) {
+      const err = new Error('image edit url missing');
+      err.status = 400;
+      throw err;
     }
-
-    const items = extractImageItems(json);
-    const outputs = [];
-    for (const item of items) {
-      if (outputs.length >= 4) break;
-      try {
-        outputs.push(await saveGeneratedItem(item, req, {
-          prompt: finalPrompt,
-          sourcePrompt: cleanSourcePrompt,
-          model: selectedModel.name,
-          provider: selectedModel.provider,
-          inputs: inputs.map(i => ({ id: i.id, path: i.path, url: i.url, publicUrl: toPublicUrl(req, i.id), name: i.originalName })),
-        }));
-      } catch (e) {
-        if (!outputs.length) throw e;
-      }
-    }
-    if (!outputs.length) throw new Error('没有生成可保存的图片。');
-
-    const imageMd = outputs.map((img, i) => `![生成图片 ${i + 1}](${toPublicUrl(req, img.id)})`).join('\n\n');
-    const assistantContent = `已生成图片：\n\n${imageMd}`;
-    const inputMd = inputs.length
-      ? `\n\n参考图片：\n${inputs.map(img => `![${img.originalName || img.filename}](${toPublicUrl(req, img.id)})\n本地路径：${img.path}`).join('\n\n')}`
-      : '';
-    const userContent = `图像生成：${cleanSourcePrompt || finalPrompt}${optimizedByAgent && cleanSourcePrompt !== finalPrompt ? `\n\nAgent 优化提示词：${finalPrompt}` : ''}${inputMd}`;
-    const chat = appendChatMessages(chatId, userContent, assistantContent, selectedModel.name, {
-      inputs: inputs.map(i => ({ id: i.id, path: i.path, url: i.url, publicUrl: toPublicUrl(req, i.id), name: i.originalName })),
-      outputs: outputs.map(o => ({ id: o.id, path: o.path, url: o.url, publicUrl: o.publicUrl, name: o.filename, prompt: o.prompt, sourcePrompt: o.sourcePrompt })),
+    json = await fetchMultipartWithRetry(url, selectedModel, (includeResponseFormat) => {
+      const form = new FormData();
+      form.append('model', selectedModel.name);
+      form.append('prompt', finalPrompt);
+      form.append('n', '1');
+      form.append('size', size || '1024x1024');
+      if (includeResponseFormat) form.append('response_format', 'b64_json');
+      inputs.forEach((input, index) => {
+        const buffer = fs.readFileSync(input.path);
+        const blob = new Blob([buffer], { type: input.mime || 'image/png' });
+        form.append(index === 0 ? 'image' : `image_${index}`, blob, input.originalName || input.filename || `input_${index}.png`);
+      });
+      return form;
     });
-
-    res.ok({
+  } else {
+    const url = imageEndpoint(selectedModel.base, 'generations');
+    if (!url) {
+      const err = new Error('image generation url missing');
+      err.status = 400;
+      throw err;
+    }
+    json = await fetchJsonWithRetry(url, selectedModel, {
       model: selectedModel.name,
-      provider: selectedModel.provider,
       prompt: finalPrompt,
-      sourcePrompt: cleanSourcePrompt,
-      optimizedByAgent: !!optimizedByAgent,
-      inputs,
-      outputs,
-      content: assistantContent,
-      chat: chat ? { id: chat.id, title: chat.title, updatedAt: chat.updatedAt, messageCount: chat.messages?.length || 0 } : null,
+      n: 1,
+      size: size || '1024x1024',
     });
+  }
+
+  const items = extractImageItems(json);
+  const outputs = [];
+  for (const item of items) {
+    if (outputs.length >= 4) break;
+    try {
+      outputs.push(await saveGeneratedItem(item, reqLike, {
+        prompt: finalPrompt,
+        sourcePrompt: cleanSourcePrompt,
+        model: selectedModel.name,
+        provider: selectedModel.provider,
+        inputs: inputs.map(i => ({ id: i.id, path: i.path, url: i.url, publicUrl: toPublicUrl(reqLike, i.id), name: i.originalName })),
+      }));
+    } catch (e) {
+      if (!outputs.length) throw e;
+    }
+  }
+  if (!outputs.length) throw new Error('图像接口没有返回可用图片。');
+
+  const imageMd = outputs.map((img, i) => `![生成图片 ${i + 1}](${toPublicUrl(reqLike, img.id)})`).join('\n\n');
+  const promptLabel = inputs.length ? '图生图提示词' : '图像提示词';
+  const promptBlock = `\n\n${promptLabel}：\n${finalPrompt}`;
+  const assistantContent = `图片已生成${promptBlock}\n\n${imageMd}`;
+  const inputMd = inputs.length
+    ? `\n\n参考图片：\n${inputs.map(img => `![${img.originalName || img.filename}](${toPublicUrl(reqLike, img.id)})\n本地路径：${img.path}`).join('\n\n')}`
+    : '';
+  const userContent = `图像生成：${cleanSourcePrompt || finalPrompt}${inputMd}`;
+  const chat = appendChatMessages(chatId, userContent, assistantContent, selectedModel.name, {
+    inputs: inputs.map(i => ({ id: i.id, path: i.path, url: i.url, publicUrl: toPublicUrl(reqLike, i.id), name: i.originalName })),
+    outputs: outputs.map(o => ({ id: o.id, path: o.path, url: o.url, publicUrl: o.publicUrl, name: o.filename, prompt: o.prompt, sourcePrompt: o.sourcePrompt })),
+    prompt: finalPrompt,
+    sourcePrompt: cleanSourcePrompt,
+    optimizedByAgent: !!optimizedByAgent,
+    mode: inputs.length ? 'image-to-image' : 'text-to-image',
+    optimizeSkill: optimizedByAgent ? 'image-agent/image2' : '',
+  });
+
+  return {
+    model: selectedModel.name,
+    provider: selectedModel.provider,
+    prompt: finalPrompt,
+    sourcePrompt: cleanSourcePrompt,
+    optimizedByAgent: !!optimizedByAgent,
+    mode: inputs.length ? 'image-to-image' : 'text-to-image',
+    inputs,
+    outputs,
+    content: assistantContent,
+    chat: chat ? { id: chat.id, title: chat.title, updatedAt: chat.updatedAt, messageCount: chat.messages?.length || 0 } : null,
+  };
+}
+
+router.post('/generate', async (req, res) => {
+  const { prompt = '', sourcePrompt = '', optimizedByAgent = false, attachmentIds = [], model = 'auto', size = '1024x1024', chatId = '', publicBase = '' } = req.body || {};
+  try {
+    const data = await generateImageFromPrompt({ prompt, sourcePrompt, optimizedByAgent, attachmentIds, model, size, chatId, publicBase });
+    res.ok(data);
   } catch (e) {
     res.fail(e.message || 'image generation failed', e.status || 500, e.status || 500);
   }
 });
-
 router.get('/file/:id', (req, res) => {
   const record = findRecord(req.params.id);
   const filePath = record ? existingImagePath(record) : '';
   if (!record || !filePath) return res.status(404).send('not found');
   const resolved = path.resolve(filePath);
-  if (!isInside(IMAGE_ROOT, resolved)) return res.status(403).send('forbidden');
+  if (!isInsideImageRoot(resolved)) return res.status(403).send('forbidden');
   res.setHeader('Content-Type', record.mime || 'image/png');
   res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
   res.sendFile(resolved);
@@ -547,6 +786,7 @@ router.get('/', (_req, res) => {
     mime: r.mime,
     size: r.size,
     path: r.path,
+    relativePath: r.relativePath || imageRelativePath(r),
     url: r.url,
     createdAt: r.createdAt,
     prompt: r.prompt,
@@ -557,3 +797,5 @@ router.get('/', (_req, res) => {
 });
 
 module.exports = router;
+module.exports.generateImageFromPrompt = generateImageFromPrompt;
+

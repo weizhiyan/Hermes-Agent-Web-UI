@@ -1,9 +1,9 @@
-$ErrorActionPreference = 'Stop'
+﻿$ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $backend = Join-Path $root 'backend'
 $logDir = Join-Path $root 'logs'
 $port = $env:PORT
-if (-not $port) { $port = '8787' }
+if (-not $port) { $port = '3381' }
 
 $rootEnv = Join-Path $root '.env'
 $backendEnv = Join-Path $backend '.env'
@@ -47,3 +47,4 @@ if (-not (Test-Path $logDir)) {
 Start-Process -FilePath node -ArgumentList 'backend/server.js' -WorkingDirectory $root -WindowStyle Hidden
 
 Write-Host "Hermes Agent is starting on http://127.0.0.1:$port/"
+

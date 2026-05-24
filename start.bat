@@ -1,8 +1,8 @@
-@echo off
+﻿@echo off
 setlocal EnableExtensions EnableDelayedExpansion
 set "ROOT=%~dp0"
 set "BACKEND=%ROOT%backend"
-set "PORT=8787"
+set "PORT=3381"
 set "URL=http://127.0.0.1:%PORT%/"
 set "PID_FILE=%ROOT%.hermes-server.pid"
 set "LOG_DIR=%ROOT%logs"
@@ -114,3 +114,4 @@ for /f "usebackq tokens=1,* delims==" %%A in ("%ENV_FILE%") do (
   )
 )
 exit /b 0
+
