@@ -2,6 +2,7 @@
 
 这份文档用于说明当前 Hermes Agent WebUI 的定位、运行方式、核心逻辑、记忆机制、Skill 机制、更新方式和常见问题。它面向日常使用者，也方便后续 AI 或开发者接手维护。
 ****<img width="1918" height="921" alt="Clipboard - 2026-05-21 17 51 50" src="https://github.com/user-attachments/assets/97e228c2-f070-43ff-a7d5-85af0fb541f7" />
+<img width="1918" height="924" alt="Clipboard - 2026-05-21 17 51 44" src="https://github.com/user-attachments/assets/064d8ff1-0491-4d2b-a25a-8ed6621e68d6" />
 
 
 
