@@ -1,6 +1,6 @@
-{
+﻿{
   "name": "hermes-agent-webui",
-  "version": "1.4.0",
+  "version": "1.5.0",
   "private": true,
   "description": "Hermes Agent WebUI launcher package",
   "scripts": {
@@ -13,3 +13,4 @@
     "node": ">=18.0.0"
   }
 }
+
