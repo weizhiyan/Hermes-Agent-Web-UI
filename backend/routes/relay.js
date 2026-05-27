@@ -24,6 +24,30 @@ function findRelayModel(modelName = '') {
   return null;
 }
 
+function anthropicToOpenAI(body = {}) {
+  const messages = [];
+  if (body.system) messages.push({ role: 'system', content: typeof body.system === 'string' ? body.system : JSON.stringify(body.system) });
+  for (const item of Array.isArray(body.messages) ? body.messages : []) {
+    const content = typeof item.content === 'string'
+      ? item.content
+      : Array.isArray(item.content)
+        ? item.content.map(part => part && (part.text || part.content) || '').filter(Boolean).join('\n')
+        : String(item.content || '');
+    if (item.role && content) messages.push({ role: item.role === 'assistant' ? 'assistant' : 'user', content });
+  }
+  return { model: body.model, messages, stream: body.stream !== false, temperature: body.temperature, max_tokens: body.max_tokens, top_p: body.top_p };
+}
+function openAIChunkToAnthropic(line = '') {
+  if (!line.startsWith('data:')) return '';
+  const data = line.slice(5).trim();
+  if (!data || data === '[DONE]') return 'event: message_stop\ndata: {"type":"message_stop"}\n\n';
+  try {
+    const chunk = JSON.parse(data);
+    const text = chunk.choices && chunk.choices[0] && chunk.choices[0].delta && chunk.choices[0].delta.content || '';
+    if (!text) return '';
+    return 'event: content_block_delta\ndata: ' + JSON.stringify({ type:'content_block_delta', index:0, delta:{ type:'text_delta', text } }) + '\n\n';
+  } catch (_) { return ''; }
+}
 function authHeaders(model) {
   const headers = {
     'Content-Type': 'application/json',
@@ -67,6 +91,58 @@ function cleanBody(body = {}, model) {
   return next;
 }
 
+async function proxyChatCompletion(req, res, options = {}) {
+  const anthropic = !!options.anthropic;
+  const requestedModel = (req.body && req.body.model) || '';
+  const model = findRelayModel(requestedModel);
+  if (!model) return res.status(404).json({ error: { message: 'No WebUI relay model configured for ' + (requestedModel || 'empty model') } });
+  try {
+    const requestBody = anthropic ? anthropicToOpenAI(req.body || {}) : cleanBody(req.body || {}, model);
+    const upstream = await fetch(chatUrl(model.base), {
+      method: 'POST',
+      headers: authHeaders(model),
+      body: JSON.stringify(requestBody),
+      signal: AbortSignal.timeout(180000),
+    });
+    res.status(upstream.status);
+    const contentType = upstream.headers.get('content-type') || '';
+    if (anthropic && requestBody.stream !== false) res.set('Content-Type', 'text/event-stream; charset=utf-8');
+    else if (contentType) res.set('Content-Type', contentType);
+    if (!upstream.body) return res.end(await upstream.text().catch(() => ''));
+    if (!anthropic || requestBody.stream === false) {
+      const reader = upstream.body.getReader();
+      while (true) {
+        const chunk = await reader.read();
+        if (chunk.done) break;
+        res.write(Buffer.from(chunk.value));
+      }
+      return res.end();
+    }
+    res.write('event: message_start\ndata: {"type":"message_start","message":{"role":"assistant","content":[]}}\n\n');
+    res.write('event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}\n\n');
+    const reader = upstream.body.getReader();
+    const dec = new TextDecoder();
+    let buffer = '';
+    while (true) {
+      const chunk = await reader.read();
+      if (chunk.done) break;
+      buffer += dec.decode(chunk.value, { stream: true });
+      let idx;
+      while ((idx = buffer.indexOf('\n')) >= 0) {
+        const line = buffer.slice(0, idx).trim();
+        buffer = buffer.slice(idx + 1);
+        const out = openAIChunkToAnthropic(line);
+        if (out) res.write(out);
+      }
+    }
+    res.end();
+  } catch (error) {
+    res.status(502).json({ error: { message: error.message || 'WebUI relay failed' } });
+  }
+}
+
+router.post('/messages', (req, res) => proxyChatCompletion(req, res, { anthropic: true }));
+router.post('/v1/messages', (req, res) => proxyChatCompletion(req, res, { anthropic: true }));
 router.post('/chat/completions', async (req, res) => {
   const requestedModel = req.body?.model || '';
   const model = findRelayModel(requestedModel);

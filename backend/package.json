@@ -1,6 +1,6 @@
 {
   "name": "hermes-agent-backend",
-  "version": "0.1.0",
+  "version": "1.5.1",
   "description": "Hermes Agent backend API",
   "main": "server.js",
   "scripts": {

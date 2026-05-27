@@ -17,7 +17,7 @@ const DEFAULTS = {
   },
 };
 
-const OPENAI_COMPAT_PROVIDERS = /new\s*api|one\s*api|openai|deepseek|siliconflow|openrouter|together|moonshot|kimi|zhipu|\u667a\u8c31|\u4e2d\u8f6c|gateway/i;
+const OPENAI_COMPAT_PROVIDERS = /new\s*api|one\s*api|openai|deepseek|siliconflow|openrouter|together|moonshot|kimi|zhipu|xiaomi|mimo|mi\s*model|\u5c0f\u7c73|\u667a\u8c31|\u4e2d\u8f6c|gateway/i;
 
 function looksLocalOllama(base = '', provider = '') {
   const text = `${provider} ${base}`.toLowerCase();
@@ -105,8 +105,18 @@ function anthropicHeaders({ key = '', authType = 'x-api-key', authHeader = '' } 
   return headers;
 }
 
+function normalizeApiBase(base = '') {
+  return String(base || '')
+    .trim()
+    .replace(/\/+(v1\/)?chat\/completions\/?$/i, '')
+    .replace(/\/+(v1\/)?images\/(generations|edits)\/?$/i, '')
+    .replace(/\/+v1\/models\/?$/i, '/v1')
+    .replace(/\/+models\/?$/i, '')
+    .replace(/\/+$/g, '');
+}
+
 function modelListUrl(base, apiFormat = 'openai-chat') {
-  let clean = String(base || '').replace(/\/+$/, '');
+  let clean = normalizeApiBase(base);
   if (!clean) return '';
   if (apiFormat === 'openai-image' || apiFormat === 'openai_image') {
     clean = clean.replace(/\/images\/(generations|edits)$/i, '');
@@ -120,7 +130,7 @@ function modelListUrl(base, apiFormat = 'openai-chat') {
 }
 
 function chatUrl(base, apiFormat = 'openai-chat') {
-  const clean = String(base || '').replace(/\/+$/, '');
+  const clean = normalizeApiBase(base);
   if (!clean) return '';
   if (apiFormat === 'openai-image' || apiFormat === 'openai_image') return modelListUrl(base, apiFormat);
   if (apiFormat === 'ollama') return clean.endsWith('/api/chat') ? clean : `${clean}/api/chat`;
@@ -233,6 +243,64 @@ function saveScope(scope, cfg) {
   return root[SCOPES.includes(scope) ? scope : 'webui'];
 }
 
+
+function toCcSwitch(root = loadAll()) {
+  const cfg = root.agent || root.webui || DEFAULTS;
+  const providers = {};
+  for (const item of cfg.library || []) {
+    if (!item || !item.name) continue;
+    const provider = item.provider || 'custom';
+    providers[provider] = providers[provider] || { name: provider, models: [] };
+    providers[provider].models.push({
+      id: item.id,
+      name: item.name,
+      model: item.name,
+      base_url: normalizeApiBase(item.base || ''),
+      api_key: item.key || '',
+      api_format: item.apiFormat || 'openai-chat',
+      auth_type: item.authType || 'bearer',
+      auth_header: item.authHeader || '',
+      enabled: item.enabled !== false,
+      tags: item.tags || [],
+    });
+  }
+  return { current: cfg.current || cfg.scenarios?.chat || '', scenarios: cfg.scenarios || {}, providers };
+}
+function fromCcSwitch(body = {}, scope = 'agent') {
+  const cfg = load(scope);
+  const next = [];
+  const providers = body.providers || body;
+  for (const [provider, value] of Object.entries(providers || {})) {
+    const models = Array.isArray(value) ? value : Array.isArray(value.models) ? value.models : [value];
+    for (const item of models) {
+      const name = item.name || item.model || item.id;
+      if (!name) continue;
+      next.push({
+        id: item.id || provider + ':' + name,
+        provider: item.provider || provider,
+        name,
+        base: item.base || item.base_url || item.api_base || '',
+        key: item.key || item.api_key || '',
+        enabled: item.enabled !== false,
+        tags: Array.isArray(item.tags) ? item.tags : ['chat'],
+        kind: item.kind || 'chat',
+        apiFormat: item.apiFormat || item.api_format || 'openai-chat',
+        authType: item.authType || item.auth_type || 'bearer',
+        authHeader: item.authHeader || item.auth_header || '',
+      });
+    }
+  }
+  cfg.library = normalizeLibrary({ ...cfg, library: next });
+  cfg.scenarios = normalizeScenarios(body.scenarios || cfg.scenarios || DEFAULTS.scenarios, cfg.library);
+  cfg.current = body.current || cfg.current || cfg.scenarios.chat || cfg.library[0]?.id || '';
+  return saveScope(scope, cfg);
+}
+router.get('/ccswitch', (req, res) => res.ok(toCcSwitch(loadAll())));
+router.put('/ccswitch', (req, res) => {
+  const scope = requestedScope(req) || 'agent';
+  res.ok(fromCcSwitch(req.body || {}, scope));
+});
+
 router.get('/', (req, res) => {
   const scope = requestedScope(req);
   res.ok(scope ? load(scope) : loadAll());
@@ -281,8 +349,7 @@ router.delete('/library/:id', (req, res) => {
     if (id === req.params.id) cfg.scenarios[scene] = '';
   }
   if (cfg.current === req.params.id) cfg.current = '';
-  store.write(KEY, cfg);
-  res.ok(cfg);
+  res.ok(saveScope(scope, cfg));
 });
 
 /** 代理获取远程模型列表（避免前端 CORS 问题） */

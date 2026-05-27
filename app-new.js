@@ -4,6 +4,26 @@ const LS={
   get(k,d){try{const v=localStorage.getItem(k);return v?JSON.parse(v):d}catch(_){return d}},
   set(k,v){localStorage.setItem(k,JSON.stringify(v))}
 };
+function chatTimestamp(c){
+  const raw = Number(c?.updatedAt || c?.createdAt || 0);
+  return Number.isFinite(raw) && raw > 0 ? raw : Date.now();
+}
+function formatChatDate(c, mode='short'){
+  const d = new Date(chatTimestamp(c));
+  if (Number.isNaN(d.getTime())) return '';
+  const pad = n => String(n).padStart(2,'0');
+  const y = d.getFullYear();
+  const m = pad(d.getMonth()+1);
+  const day = pad(d.getDate());
+  const hh = pad(d.getHours());
+  const mm = pad(d.getMinutes());
+  if (mode === 'full') return y + '-' + m + '-' + day + ' ' + hh + ':' + mm;
+  const now = new Date();
+  const sameYear = y === now.getFullYear();
+  const sameDay = sameYear && d.getMonth() === now.getMonth() && d.getDate() === now.getDate();
+  return sameDay ? (hh + ':' + mm) : (sameYear ? (m + '-' + day) : (y + '-' + m + '-' + day));
+}
+
 const esc=s=>String(s).replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
 function redactSecrets(value){
   if(value==null) return value;
@@ -507,16 +527,26 @@ function renderPage(){
   if(!main) return;
   const seq = ++renderSeq;
   main.dataset.renderSeq = String(seq);
-  if(state.page==='skill'){
-    main.innerHTML=renderSkillPage();
-  } else if(state.page==='settingsPage'){
-    main.innerHTML=renderSettingsPage();
-  } else if(state.page==='groupChat'){
-    main.innerHTML=renderGroupChat();
-  } else {
-    main.innerHTML=renderChat();
+  try{
+    if(state.page==='skill'){
+      main.innerHTML=renderSkillPage();
+    } else if(state.page==='settingsPage'){
+      main.innerHTML=renderSettingsPage();
+    } else if(state.page==='groupChat'){
+      main.innerHTML=renderGroupChat();
+    } else {
+      main.innerHTML=renderChat();
+    }
+  }catch(error){
+    console.error('[Hermes] render failed', error);
+    main.innerHTML=renderErrorPage(error);
   }
   afterRender(seq);
+}
+
+function renderErrorPage(error){
+  const msg = error && (error.stack || error.message) ? String(error.stack || error.message) : 'unknown render error';
+  return `<div class="page-error-state"><h2>页面渲染失败</h2><p>请复制下面的错误信息反馈，或先返回对话页继续使用。</p><pre>${esc(msg)}</pre><button class="btn btn-primary" onclick="state.page='chat';renderAppNow()">返回对话</button></div>`;
 }
 
 function afterRender(seq){
@@ -551,7 +581,7 @@ function renderChat(){
   const editRef=state.imageEditReference;
   const setupTips=[];
   if(!getEnabledModels().length) setupTips.push({title:'配置模型',desc:'还没有可用模型，先添加 Provider、Base URL、API Key 和模型名。',action:"setSettingsTab('models')",label:'去模型配置'});
-  if(!String(state.settings.dataRootDir||state.settings.memoryDir||state.settings.imageDir||state.settings.mdLibraryDir||'').trim()) setupTips.push({title:'配置外部数据目录',desc:'建议把记忆、图片、历史和输出文档放到项目外部，方便更新和迁移。',action:"state.page='settings';renderPage()",label:'去设置'});
+  if(!String(state.settings.dataRootDir||state.settings.memoryDir||state.settings.imageDir||state.settings.mdLibraryDir||'').trim()) setupTips.push({title:'配置外部数据目录',desc:'建议把记忆、图片、历史和输出文档放到项目外部，方便更新和迁移。',action:"setSettingsTab('settings')",label:'去设置'});
   const setupHtml=setupTips.length?`<div class="setup-guide-card" style="max-width:720px;margin:24px auto 0;padding:16px;border:1px solid var(--c-accent-muted);border-radius:16px;background:var(--c-accent-soft);display:flex;flex-direction:column;gap:10px">
     <strong>首次使用建议先完成配置</strong>
     ${setupTips.map(item=>`<div style="display:flex;gap:12px;align-items:center;justify-content:space-between"><div><div style="font-weight:var(--fw-semibold)">${esc(item.title)}</div><div style="font-size:var(--fs-sm);color:var(--c-ink-muted)">${esc(item.desc)}</div></div><button class="btn btn-secondary btn-sm" onclick="${item.action}">${esc(item.label)}</button></div>`).join('')}
@@ -560,16 +590,14 @@ function renderChat(){
     <div class="chat-panel">
       <div class="session-sidebar" id="sessionSidebar">
         <div class="session-sidebar-header">
-          <button class="agent-switch-btn" id="chatAgentSwitchBtn" onclick="toggleChatAgentPopup(event)" title="切换当前 Agent">
-            ${profileAvatarHtml(activeProfile,'chat-agent-avatar')}
-            <span class="agent-switch-copy"><strong>${esc(activeProfile?.name||'默认助手')}</strong><small>${esc(activeProfile?.modelId&&activeProfile.modelId!=='auto' ? (getModelById(activeProfile.modelId)?.name||activeProfile.model||effectiveChatModelName()) : '自动')}</small></span>
+          <button class="agent-switch-btn" id="chatAgentSwitchBtn" onclick="toggleChatAgentPopup(event)" title="New chat with Agent">
+            <span class="chat-agent-avatar">+</span>
+            <span class="agent-switch-copy"><strong>\u65b0\u5efa\u5bf9\u8bdd</strong><small>\u9009\u62e9\u4f60\u7684 Agent</small></span>
             ${SVG.chevronDown}
           </button>
-          <button class="new-chat-btn" onclick="newChat()">${SVG.plus} 新建会话</button>
+          <div class="session-search-row"><input id="sessionSearchInput" class="session-search-input" placeholder="\u641c\u7d22\u5bf9\u8bdd..." oninput="renderSessionSearch(this.value)"><button class="history-btn compact" onclick="openHistoryPopup()" title="\u5386\u53f2\u8bb0\u5f55">${SVG.history}</button></div>
           <div class="chat-agent-popup" id="chatAgentPopup" style="display:none">${renderChatAgentPopup()}</div>
-          <div style="position:relative">
-            <button class="history-btn" onclick="openHistoryPopup()" title="历史记录">${SVG.history}</button>
-          </div>
+
         </div>
         <div class="session-items" id="sessionItems">
           ${renderSessionList()}
@@ -581,8 +609,7 @@ function renderChat(){
           <div class="chat-header-left">
             <button class="btn-icon" onclick="document.getElementById('sessionSidebar').classList.toggle('collapsed')" title="切换会话列表">${SVG.sidebar}</button>
             <span class="chat-header-title">${c?esc(c.title):'新建对话'}</span>
-            <span class="source-badge">${esc(state.chatModelOverride==='auto'?'自动 · '+effectiveChatModelName():(getModelById(state.chatModelOverride)?.name||state.model.model))}</span>
-            <span class="source-badge">${esc(activeProfile?.name||'默认助手')}</span>
+            <span class="source-badge agent-header-badge">${esc(activeProfile?.name||'默认助手')}</span>
           </div>
           <div class="header-actions">
             <button class="header-knowledge-btn header-toggle-panel-btn" onclick="openKnowledgePanel()" title="打开知识库" aria-label="打开知识库">
@@ -1103,7 +1130,7 @@ function renderChatAgentPopup(){
     const active=state.activeProfile===p.id;
     const model=p.modelId==='auto'?'自动':(getModelById(p.modelId)?.name||p.model||'未设置');
     const skillCount=(p.skillIds||[]).length;
-    return `<button class="chat-agent-item${active?' active':''}${disabled?' disabled':''}" onclick="selectChatProfile('${esc(p.id)}')">
+    return `<button class="chat-agent-item${active?' active':''}${disabled?' disabled':''}" onclick="newChatWithProfile('${esc(p.id)}')">
       ${profileAvatarHtml(p,'chat-agent-avatar')}
       <span class="chat-agent-main"><strong>${esc(p.name||'未命名 Agent')}</strong><small>${disabled?'已关闭':esc(model)}${skillCount?` · ${skillCount} 技能`:''}</small></span>
     </button>`;
@@ -1184,29 +1211,21 @@ function selectModel(m){
   renderPage();
 }
 
-function selectChatProfile(id){
+async function newChatWithProfile(id){
   const profiles=getProfiles();
-  const requested=profiles.find(p=>p.id===id);
-  if(requested?.enabled===false){
-    toast('这个 Agent 已关闭，不能在对话中启用','info');
-    return;
-  }
-  state.activeProfile=id||'default';
-  const p=getActiveProfile();
-  const c=currentChat();
-  if(c&&!isCliChat(c)){
-    c.agentId=p?.id||'';
-    c.agentName=p?.name||'';
-    apiPut('/api/chats/'+encodeURIComponent(c.id),{agentId:c.agentId,agentName:c.agentName});
-  }
+  const requested=profiles.find(p=>p.id===id) || getActiveProfile();
+  if(requested?.enabled===false){toast('Agent is disabled','info');return}
+  state.activeProfile=requested?.id||'default';
   save();
-  closeAllInputPopups();
   const popup=$('#chatAgentPopup');
   if(popup) popup.style.display='none';
-  toast('已切换 Agent: '+(p?.name||'默认助手'),'success');
-  renderPage();
+  await newChat(requested);
 }
-
+function selectChatProfile(id){
+  const c=currentChat();
+  if(c && c.agentId){toast('This chat is locked to its Agent. Create a new chat to switch Agent.','info');return}
+  newChatWithProfile(id);
+}
 function selectedProfileSkills(profile){
   if(!profile) return [];
   const ids=Array.isArray(profile.skillIds)?profile.skillIds:[];
@@ -1225,12 +1244,26 @@ function getModelById(id){
 function scenarioModel(scene){
   const cfg=activeModelsConfig();
   const id=cfg.scenarios?.[scene] || cfg.scenarios?.chat || state.model.model || '';
+  const model=getModelById(id);
+  return model?.id || id || '';
+}
+function scenarioModelName(scene){
+  const id=scenarioModel(scene);
   return getModelById(id)?.name || id || '';
+}
+async function setScenarioModel(scene,id){
+  const cfg=activeModelsConfig();
+  cfg.scenarios={...(cfg.scenarios||{})};
+  if(id) cfg.scenarios[scene]=id;
+  else delete cfg.scenarios[scene];
+  await persistModelsConfig(cfg);
+  toast('应用场景模型已更新','success');
+  renderPage();
 }
 function effectiveChatModelName(){
   const p=getActiveProfile();
-  if(p?.modelId && p.modelId!=='auto') return getModelById(p.modelId)?.name || p.model || scenarioModel('chat');
-  return scenarioModel('chat') || '未配置模型';
+  if(p?.modelId && p.modelId!=='auto') return getModelById(p.modelId)?.name || p.model || scenarioModelName('chat');
+  return scenarioModelName('chat') || '未配置模型';
 }
 
 function benchmarkScore(model){
@@ -1411,13 +1444,15 @@ function refreshHistBody(){
     const cls=sourceTagClass(src);
     const label=sourceTagLabel(src);
     const lastMsg=c.messages?.length?stripArtifactTagsForPreview(c.messages[c.messages.length-1].content||'').slice(0,50)||'':'暂无消息';
+    const chatDate=formatChatDate(c);
+    const chatFullDate=formatChatDate(c,'full');
     const readonly=isCliChat(c);
     const sel=histPopupSelected.has(c.id);
     return `<div class="hist-popup-item${sel?' selected':''}" data-id="${c.id}">
       <input type="checkbox" ${sel?'checked':''} onclick="event.stopPropagation();toggleHistPopupSelect('${c.id}')">
       <div class="hist-popup-item-info" onclick="selectChatFromHist('${c.id}')">
         <div class="hist-popup-item-title">${c.pinned?'📌 ':''}${esc(c.title)}</div>
-        <div class="hist-popup-item-preview">${esc(lastMsg)}</div>
+        <div class="hist-popup-item-preview" title="${esc(lastMsg)} · ${esc(chatFullDate)}">${esc(chatFullDate)}</div>
       </div>
       <div class="hist-popup-item-meta">
         <span class="source-tag ${cls}">${label}</span>
@@ -1474,8 +1509,14 @@ function histSelectAll(){
   if(btn) btn.style.display=histPopupSelected.size>0?'inline-flex':'none';
 }
 
-function renderSessionList(){
-  const sorted = [...state.chats].sort(compareChatCreatedAsc);
+function renderSessionSearch(query){
+  const box=$('#sessionItems');
+  if(box) box.innerHTML=renderSessionList(query||'');
+}
+
+function renderSessionList(query=''){
+  const q=String(query||'').trim().toLowerCase();
+  const sorted = [...state.chats].filter(c=>!q || String(c.title||'').toLowerCase().includes(q) || String(c.agentName||'').toLowerCase().includes(q) || String(c.preview||'').toLowerCase().includes(q)).sort(compareChatCreatedAsc);
   const groups={webui:[],terminal:[]};
   sorted.forEach(c=>{
     groups[isCliChat(c)?'terminal':'webui'].push(c);
@@ -1488,13 +1529,15 @@ function renderSessionList(){
       list.map(c=>{
         const readonly=isCliChat(c);
         const preview=c.messages?.length?stripArtifactTagsForPreview(c.messages[c.messages.length-1].content||''):(c.preview||'暂无消息');
-        return `<div class="session-item${state.currentChat===c.id?' active':''}">
+        const chatDate=formatChatDate(c);
+        const chatFullDate=formatChatDate(c,'full');
+        return `<div class="session-item${state.currentChat===c.id?' active':''}" title="${esc(chatFullDate)}">
         <div class="session-item-body" onclick="selectChat('${c.id}')">
           <div class="session-card-main">
             <div class="session-card-top">
               <span class="s-title">${c.pinned?'📌 ':''}${esc(c.title)}</span>
             </div>
-            <span class="s-preview">${esc(preview)}</span>
+            <span class="s-preview" title="${esc(preview)} · ${esc(chatFullDate)}"><span class="session-agent-tag">${esc(c.agentName||profileForChat(c)?.name||'Agent')}</span>${esc(chatDate)}</span>
           </div>
         </div>
         <div class="session-more-wrap">
@@ -1544,8 +1587,8 @@ function sessionAgentForChat(c){
 function sessionModelForChat(c,agent){
   if(isCliChat(c)) return c?._model||c?.model||'CLI';
   if(c?._model||c?.model) return c._model||c.model;
-  if(agent?.modelId&&agent.modelId!=='auto') return getModelById(agent.modelId)?.name||agent.model||scenarioModel('chat');
-  return scenarioModel('chat')||state.model.model||'自动';
+  if(agent?.modelId&&agent.modelId!=='auto') return getModelById(agent.modelId)?.name||agent.model||scenarioModelName('chat');
+  return scenarioModelName('chat')||state.model.model||'自动';
 }
 
 function stripArtifactTagsForPreview(raw){
@@ -1772,7 +1815,8 @@ function renderMsg(m){
   const imagePromptHtml = m.role==='assistant' && m.imageGeneration ? renderImagePromptPanel(m.imageGeneration) : '';
   const imageLoadingHtml = m.role==='assistant' && m._streaming && m.imageGeneration?.status==='loading' ? renderImageGenerationLoadingCard(m.imageGeneration) : '';
   const streamDots = m._streaming && !imageLoadingHtml ? '<span class="msg-streaming"><span></span><span></span><span></span></span>' : '';
-  return `<div class="msg ${m.role} animate-in" id="msg_${msgId}">
+  const msgFullDate=formatChatDate(m,'full');
+  return `<div class="msg ${m.role} animate-in" id="msg_${msgId}" title="${esc(msgFullDate)}">
     <div class="msg-main">
       ${thinkingHtml}
       ${toolCallsHtml}
@@ -1929,10 +1973,12 @@ function renderMessageActions(m){
   const chatId = esc(currentChat()?.id || currentChat()?._id || '');
   const likeActive = active === 'like' ? ' active' : '';
   const dislikeActive = active === 'dislike' ? ' active' : '';
+  const msgTime = formatChatDate(m, 'full');
   return `<div class="msg-actions" data-msg-key="${esc(key)}">
-    <button type="button" class="msg-action-btn" onclick="copyMessageContent('${esc(key)}')" title="复制" aria-label="复制">${COPY_ICON}</button>
-    <button type="button" class="msg-action-btn like-action${likeActive}" onclick="setMessageFeedback('${chatId}','${esc(key)}','like')" title="喜欢" aria-label="喜欢">${likeActive ? LIKE_FILLED_ICON : LIKE_ICON}</button>
-    <button type="button" class="msg-action-btn dislike-action${dislikeActive}" onclick="setMessageFeedback('${chatId}','${esc(key)}','dislike')" title="不喜欢" aria-label="不喜欢">${dislikeActive ? DISLIKE_FILLED_ICON : DISLIKE_ICON}</button>
+    <button type="button" class="msg-action-btn" onclick="copyMessageContent('${esc(key)}')" title="??" aria-label="??">${COPY_ICON}</button>
+    <button type="button" class="msg-action-btn like-action${likeActive}" onclick="setMessageFeedback('${chatId}','${esc(key)}','like')" title="??" aria-label="??">${likeActive ? LIKE_FILLED_ICON : LIKE_ICON}</button>
+    <button type="button" class="msg-action-btn dislike-action${dislikeActive}" onclick="setMessageFeedback('${chatId}','${esc(key)}','dislike')" title="???" aria-label="???">${dislikeActive ? DISLIKE_FILLED_ICON : DISLIKE_ICON}</button>
+    <span class="msg-action-time" title="${esc(msgTime)}">${esc(msgTime)}</span>
   </div>`;
 }
 
@@ -2267,24 +2313,23 @@ async function syncCurrentChat(chatId){
   }catch(e){}
 }
 
-async function newChat(){
-  const profile=getActiveProfile();
-  const data = await apiPost('/api/chats', { title: '新建对话', agentId: profile?.id||'', agentName: profile?.name||'' });
+async function newChat(profileArg){
+  const profile=normalizeProfile(profileArg||getActiveProfile());
+  const payload=agentChatPayload(profile);
+  const data = await apiPost('/api/chats', payload);
   if (data) {
-    state.chats.push({ id: data.id, title: data.title, source:data.source||'WebUI', messages: [], updatedAt: data.updatedAt, createdAt:data.createdAt, agentId: profile?.id||'' });
+    state.chats.push({ id: data.id, title: data.title, source:data.source||'WebUI', messages: [], updatedAt: data.updatedAt, createdAt:data.createdAt, agentId: data.agentId||profile?.id||'', agentName:data.agentName||profile?.name||'', agentSnapshot:data.agentSnapshot, lockedAgent:true });
     state.chatFullData[data.id] = data;
     state.currentChat = data.id;
     state._artifactNeedsHydrate = true;
   } else {
-    // fallback: local-only
-    const c = { id: 'c'+Date.now(), title: '新建对话', source:'WebUI', messages: [], updatedAt: Date.now(), createdAt:Date.now(), agentId: profile?.id||'' };
+    const c = { id: 'c'+Date.now(), title: '\u65b0\u5efa\u5bf9\u8bdd', source:'WebUI', messages: [], updatedAt: Date.now(), createdAt:Date.now(), agentId: profile?.id||'', agentName:profile?.name||'', agentSnapshot:agentSnapshotForProfile(profile), lockedAgent:true };
     state.chats.push(c);
     state.currentChat = c.id;
     state._artifactNeedsHydrate = true;
   }
   renderPage();
 }
-
 async function selectChat(id){
   const sessionScrollTop=$('#sessionItems')?.scrollTop || 0;
   const artifactShell=document.querySelector('#artifactShell.open');
@@ -3770,11 +3815,11 @@ function gcAddAgent(){
 function getProfiles(){
   if(!_profilesCache){
     _profilesCache=LS.get('hermes.profiles',[
-      {id:'default',name:'默认助手',modelId:'auto',model:scenarioModel('chat'),systemPrompt:'',color:'var(--c-block-lime)'},
-      {id:'coder',name:'代码专家',modelId:activeModelsConfig().scenarios?.reasoning||'auto',model:scenarioModel('reasoning'),systemPrompt:'你是一位资深代码专家，擅长代码审查、重构和架构设计。',color:'var(--c-block-lilac)'},
-      {id:'pm',name:'产品经理',modelId:activeModelsConfig().scenarios?.reasoning||'auto',model:scenarioModel('reasoning'),systemPrompt:'你是一位产品经理，擅长需求拆解、验收标准和产品方案。',color:'var(--c-block-cream)'},
-      {id:'designer',name:'设计顾问',modelId:activeModelsConfig().scenarios?.chat||'auto',model:scenarioModel('chat'),systemPrompt:'你是一位设计顾问，关注视觉层级、交互细节和用户体验。',color:'var(--c-block-mint)'},
-      {id:'researcher',name:'研究员',modelId:activeModelsConfig().scenarios?.reasoning||'auto',model:scenarioModel('reasoning'),systemPrompt:'你是一位研究员，擅长资料整理、分析和长文总结。',color:'var(--c-block-coral)'},
+      {id:'default',name:'默认助手',modelId:'auto',model:scenarioModelName('chat'),systemPrompt:'',color:'var(--c-block-lime)'},
+      {id:'coder',name:'代码专家',modelId:activeModelsConfig().scenarios?.reasoning||'auto',model:scenarioModelName('reasoning'),systemPrompt:'你是一位资深代码专家，擅长代码审查、重构和架构设计。',color:'var(--c-block-lilac)'},
+      {id:'pm',name:'产品经理',modelId:activeModelsConfig().scenarios?.reasoning||'auto',model:scenarioModelName('reasoning'),systemPrompt:'你是一位产品经理，擅长需求拆解、验收标准和产品方案。',color:'var(--c-block-cream)'},
+      {id:'designer',name:'设计顾问',modelId:activeModelsConfig().scenarios?.chat||'auto',model:scenarioModelName('chat'),systemPrompt:'你是一位设计顾问，关注视觉层级、交互细节和用户体验。',color:'var(--c-block-mint)'},
+      {id:'researcher',name:'研究员',modelId:activeModelsConfig().scenarios?.reasoning||'auto',model:scenarioModelName('reasoning'),systemPrompt:'你是一位研究员，擅长资料整理、分析和长文总结。',color:'var(--c-block-coral)'},
     ]);
     _profilesCache=_profilesCache.map(p=>normalizeProfile(p));
     LS.set('hermes.profiles',_profilesCache);
@@ -3790,6 +3835,21 @@ function normalizeProfile(profile){
   if(!p.color) p.color='var(--c-block-lime)';
   if(!p.avatar) p.avatar='';
   return p;
+}
+
+function agentDirs(profile){
+  const id = String(profile?.id || 'default').replace(/[^A-Za-z0-9_-]+/g,'-').replace(/^-+|-+$/g,'') || 'default';
+  const root = (state.settings.dataRootDir || 'backend/data/workspace') + '/agents/' + id;
+  return { root, soulDir: root + '/soul', memoryDir: root + '/memory', workspaceDir: root + '/workspace', knowledgeDir: root + '/knowledge' };
+}
+function agentSnapshotForProfile(profile){
+  const p=normalizeProfile(profile||getActiveProfile()||{});
+  const dirs=agentDirs(p);
+  return { id:p.id, name:p.name, modelId:p.modelId||'auto', systemPrompt:p.systemPrompt||'', skillIds:p.skillIds||[], ...dirs };
+}
+function agentChatPayload(profile){
+  const snap=agentSnapshotForProfile(profile);
+  return { title:'New Chat', agentId:snap.id, agentName:snap.name, modelId:snap.modelId, profileId:snap.id, profileName:snap.name, profilePrompt:snap.systemPrompt, profileSkillIds:snap.skillIds };
 }
 
 function getActiveProfile(){
@@ -3819,7 +3879,7 @@ gcShowAddAgent=function(){
     <div style="display:grid;gap:12px">
       <label style="font-size:var(--fs-sm);color:var(--c-ink-muted)">选择角色</label>
       <select id="gcAgentProfile" onchange="toggleGcCustomAgent()">
-        ${available.map(p=>`<option value="${p.id}">${esc(p.name)} · ${esc(p.model||scenarioModel('chat'))}</option>`).join('')}
+        ${available.map(p=>`<option value="${p.id}">${esc(p.name)} · ${esc(p.model||scenarioModelName('chat'))}</option>`).join('')}
         <option value="__custom__">自定义分身</option>
       </select>
       <input id="gcAgentName" placeholder="分身名称，留空使用角色名称">
@@ -3852,7 +3912,7 @@ gcAddAgent=function(){
   const colors=['#e53935','#8e24aa','#1e88e5','#43a047','#fb8c00','#00acc1','#6d4c41','#546e7a'];
   state.groupChat.agents[roomId].push({
     id:'a_'+Date.now(),roomId,agentId:'agent_'+Date.now(),profileId:custom?'custom_'+Date.now():profileId,
-    profile:custom?(getModelById(modelId)?.name||scenarioModel('reasoning')):(role.model||scenarioModel('reasoning')),modelId,
+    profile:custom?(getModelById(modelId)?.name||scenarioModelName('reasoning')):(role.model||scenarioModelName('reasoning')),modelId,
     systemPrompt:prompt||role?.systemPrompt||'',
     name,description:desc,color:role?.color||colors[state.groupChat.agents[roomId].length%colors.length],invited:true,
   });
@@ -4867,20 +4927,21 @@ function renderMemoryLibrary(){
 
   return `<div class="memory-view">
     <div class="memory-topbar">
-      <div class="memory-crumb"><span>技能中心</span><span>/</span><strong>记忆储存</strong></div>
+      <div class="memory-crumb"><strong>记忆储存</strong></div>
       <div class="memory-workspace-path">工作区路径：<code>${esc(workspacePath)}</code></div>
       <button class="btn btn-sm btn-secondary" onclick="loadMemoryStore(true)">刷新</button>
-    </div>
-    <div class="memory-subbar">
-      <span>核心记忆 ${stats.coreCount||core.length} 份</span>
-      <span>历史对话文件 ${stats.conversationCount||0} 份</span>
-      <span>AI摘要会把长对话压缩成可复用上下文，原文可随时切换</span>
     </div>
     <div class="memory-library">
       <aside class="memory-sidebar">
         <div class="memory-side-section">
           <div class="memory-side-heading"><div><strong>核心文件</strong><small>引导角色、身份和工具指南。</small></div></div>
           ${coreHtml||'<div class="memory-empty-small">核心记忆初始化中...</div>'}
+        </div>
+        <div class="memory-side-section agent-memory-filter">
+          <div class="memory-side-heading"><div><strong>Agent 记忆</strong><small>按 Agent 查看 soul / memory / workspace。</small></div></div>
+          <div class="memory-agent-list">
+            ${getProfiles().map(p=>`<button class="memory-agent-chip" onclick="openAgentMemory('${esc(p.id)}')">${profileAvatarHtml(p,'chat-agent-avatar')}<span>${esc(p.name)}</span></button>`).join('')}
+          </div>
         </div>
         <div class="memory-side-section fill">
           <div class="memory-side-heading"><div><strong>历史对话文件</strong><small>默认按时间排序，也可按 Agent 推断的类型查看。</small></div></div>
@@ -4917,7 +4978,30 @@ function renderMemoryLibrary(){
   </div>`;
 }
 
+function openAgentMemory(id){
+  const p=getProfiles().find(item=>item.id===id);
+  if(!p) return;
+  const dirs=agentDirs(p);
+  const content=['# '+p.name+' Agent Memory','', '## Soul', dirs.soulDir, '', '## Memory', dirs.memoryDir, '', '## Workspace', dirs.workspaceDir, '', '## Knowledge', dirs.knowledgeDir, '', '> Agent-specific memory files will be stored under these folders.'].join('\n');
+  state.memory.current={id:'agent-'+p.id,type:'agent',title:p.name+' Agent Memory',file:p.name+' Agent Memory',path:dirs.root,content,mtime:Date.now(),size:content.length};
+  state.memory.selectedId='agent-'+p.id;
+  state.memory.selectedType='agent';
+  state.memory.mode='preview';
+  renderPage();
+}
 renderMemory=renderMemoryLibrary;
+
+function rememberMemoryReaderScroll(){
+  const el=document.querySelector('.memory-reader-body');
+  if(el) state.memory.readerScroll=el.scrollTop||0;
+}
+function restoreMemoryReaderScroll(){
+  const top=state.memory.readerScroll||0;
+  requestAnimationFrame(()=>{
+    const el=document.querySelector('.memory-reader-body');
+    if(el) el.scrollTop=top;
+  });
+}
 
 function rememberMemorySidebarScroll(){
   const el=document.querySelector('.memory-sidebar');
@@ -4976,10 +5060,6 @@ async function selectMemoryFile(type,id){
   state.memory.current=item;
   renderPage();
   restoreMemorySidebarScroll();
-  requestAnimationFrame(()=>{
-    const body=document.querySelector('.memory-reader-body');
-    if(body) body.scrollTop=0;
-  });
 }
 function setMemoryMode(mode){
   if(mode==='source'&&state.memory.current?.type==='core'){
@@ -5007,6 +5087,30 @@ async function saveCoreMemory(id){
   state.memory.current=item;
   renderPage();
   toast('核心记忆已保存','success');
+}
+
+function apiFormatLabel(value){
+  const map={
+    'openai-chat':'OpenAI 兼容',
+    'openai-image':'OpenAI 图像',
+    'ollama':'Ollama / 本地',
+    'anthropic_messages':'Anthropic Messages',
+    'anthropic':'Anthropic Messages',
+    'gemini':'Gemini'
+  };
+  return map[value] || value || 'OpenAI 兼容';
+}
+function authTypeLabel(value, customHeader=''){
+  const map={bearer:'Bearer Token','x-api-key':'x-api-key','api-key':'api-key',custom:customHeader||'Custom Header',none:'No Auth'};
+  return map[value] || value || 'Bearer Token';
+}
+function inferModelTags(name){
+  const text=String(name||'').toLowerCase();
+  const tags=[];
+  if(/reason|r1|thinking|o1|o3|o4|deep|推理/.test(text)) tags.push('reasoning');
+  if(/image|vision|draw|sd|dall|flux|midjourney|图|视觉/.test(text)) tags.push(/image|draw|sd|dall|flux|midjourney|生图/.test(text)?'image':'vision');
+  if(!tags.includes('chat')) tags.unshift('chat');
+  return [...new Set(tags)];
 }
 
 function renderModelsLegacy(){
@@ -5212,7 +5316,7 @@ function renderModelsV2Legacy(){
               <option value="anthropic_messages">Anthropic / Messages</option>
               <option value="gemini">Gemini（预留）</option>
             </select>
-            <input id="mBase" placeholder="Base URL" value="${esc(state.model.base||'')}">
+            <input id="mBase" placeholder="Base URL, /v1, or full /v1/chat/completions" value="${esc(state.model.base||'')}">
             <select id="mAuthType" onchange="toggleCustomAuthHeader()">
               <option value="bearer">Bearer Token</option>
               <option value="x-api-key">x-api-key</option>
@@ -5240,332 +5344,125 @@ function renderModelsV2Legacy(){
   </div>`;
 }
 
-// Legacy model page kept only for reference; the active entry is renderModelsV3 below.
-
-async function persistModelsConfig(cfg){
-  const data=await apiPut('/api/models'+modelScopeParam(),cfg);
-  if(data) setActiveModelsConfig(data);
-  return data;
-}
-async function setScenarioModel(scene,id){
+function renderModels(){
   const cfg=activeModelsConfig();
-  cfg.scenarios={...(cfg.scenarios||{}),[scene]:id};
-  if(scene==='chat') cfg.current=id || cfg.current || '';
-  await persistModelsConfig(cfg);
-  if(scene==='chat'){
-    state.chatModelOverride='auto';
-    const item=getModelById(id);
-    if(item) state.model={...state.model,provider:item.provider||'',model:item.name||'',base:item.base||'',key:item.key||''};
-    save();
-  }
-  toast('场景模型已更新','success');
-  renderPage();
+  const lib=Array.isArray(cfg.library)?cfg.library:[];
+  const scenarios=[
+    {key:'chat',title:'普通对话',desc:'默认聊天、日常问答和轻量任务。'},
+    {key:'reasoning',title:'深度推理',desc:'复杂分析、规划和长链路任务。'},
+    {key:'image',title:'图像生成',desc:'绘图、改图和图片 Prompt 工作流。'},
+    {key:'fallback',title:'失败退回',desc:'主模型不可用时自动兜底。'}
+  ];
+  const enabledLib=lib.filter(m=>m.enabled!==false);
+  const optionHtml=(selected)=>'<option value="">选择模型</option>'+enabledLib.map(m=>'<option value="'+esc(m.id)+'"'+(selected===m.id?' selected':'')+'>'+esc(m.name)+' · '+esc(m.provider||'custom')+'</option>').join('');
+  const cards=scenarios.map(item=>{
+    const selected=scenarioModel(item.key);
+    return '<div class="scenario-card"><div><strong>'+esc(item.title)+'</strong><p>'+esc(item.desc)+'</p></div><select onchange="setScenarioModel(\''+item.key+'\',this.value)">'+optionHtml(selected)+'</select></div>';
+  }).join('');
+  const groups={};
+  lib.forEach(m=>{ const k=m.provider||'Custom'; (groups[k]||(groups[k]=[])).push(m); });
+  const modelRow=(m)=>{
+    const enabled=m.enabled!==false;
+    const benchmark=m.benchmark;
+    const benchText=benchmark?.ok ? ('首字 '+Math.round(benchmark.firstTokenMs||0)+'ms · 总计 '+Math.round(benchmark.totalMs||0)+'ms') : (benchmark?.error ? '上次测速失败' : '未测速');
+    const tags=(m.tags||[]).slice(0,4).map(t=>'<span>'+esc(t)+'</span>').join('');
+    return '<div class="model-lib-item model-lib-item-rich '+(enabled?'':'disabled')+'"><label class="toggle model-card-toggle" title="'+(enabled?'停用模型':'启用模型')+'" onclick="event.stopPropagation()"><input type="checkbox" '+(enabled?'checked':'')+' onchange="toggleLibraryModel(\''+esc(m.id)+'\',this.checked)"><span class="toggle-slider"></span></label><div class="model-lib-main"><div class="model-lib-name-row"><strong>'+esc(m.name)+'</strong><span class="model-status-pill '+(enabled?'on':'off')+'">'+(enabled?'启用':'停用')+'</span></div><small>'+esc(m.provider||'custom')+' · '+esc(apiFormatLabel(m.apiFormat||'openai-chat'))+' · '+esc(m.base||'未填写地址')+'</small><div class="model-lib-meta">'+tags+'</div></div><div class="model-lib-actions"><button class="btn btn-xs btn-secondary" id="modelTestBtn_'+domId(m.id)+'" onclick="testLibraryModel(\''+esc(m.id)+'\')">测试</button><button class="btn btn-xs btn-secondary" onclick="editLibraryModel(\''+esc(m.id)+'\')">编辑</button><button class="btn btn-xs btn-ghost danger" onclick="deleteLibraryModel(\''+esc(m.id)+'\')">删除</button></div></div>';
+  };
+  const groupHtml=Object.entries(groups).map(([provider,items])=>'<div class="model-provider-group"><div class="model-provider-title"><strong>'+esc(provider)+'</strong><span>'+items.length+'</span></div>'+items.map(modelRow).join('')+'</div>').join('');
+  return '<div class="models-view"><div class="page-header"><h2>模型配置</h2><div style="display:flex;gap:8px;align-items:center"><span class="model-scope-pill">当前作用域：'+(activeModelScope()==='webui'?'WebUI 快速模式':'Agent 模式')+'</span><button class="btn btn-sm btn-primary" onclick="addModelModal()">添加模型</button></div></div><div class="models-content model-v15-content"><section class="model-panel model-scenario-panel"><h3>应用场景</h3><p>为普通对话、深度推理、图像生成和失败退回分别绑定模型，选择后只影响当前场景。</p><div class="scenario-card-grid">'+cards+'</div></section><div class="model-main-layout"><section class="model-panel model-fetch-panel"><h3>获取模型</h3><p>按 CCswitch 常见方式填写 Provider、API Key 和接口地址，默认按 OpenAI 兼容接口获取模型列表。</p><div class="model-connector-grid"><label><span class="model-field-label">Provider</span><input id="mProvider" placeholder="例如 xiaomi / deepseek / openai" value="'+esc(state.model.provider||'')+'" oninput="applyProviderPreset()"></label><label class="model-field-wide"><span class="model-field-label">API Key</span><input id="mKey" type="password" placeholder="sk-..." value="'+esc(state.model.key||'')+'"></label><label class="model-field-wide"><span class="model-field-label">API 请求地址</span><input id="mBase" placeholder="例如 https://api.openai.com/v1" value="'+esc(state.model.base||'')+'"></label><label><span class="model-field-label">接口格式</span><select id="mApiFormat" onchange="applyApiFormatPreset()"><option value="openai-chat">OpenAI 兼容</option><option value="openai-image">OpenAI 图像</option><option value="ollama">Ollama / 本地</option><option value="anthropic_messages">Anthropic Messages</option><option value="gemini">Gemini</option></select></label><div id="mFormatHint" class="model-format-hint">小米、DeepSeek、OpenAI 兼容服务通常只需要 API Key 与 /v1 地址。</div><button class="btn btn-secondary" id="fetchModelsBtn" onclick="fetchModelsForLibrary()">获取模型</button></div><div id="modelMsg" class="model-msg"></div><div id="fetchModelsList" class="model-fetch-list" style="display:none"><div class="model-fetch-actions"><button class="btn btn-xs btn-secondary" onclick="selectAllFetchModels()">全选</button><button class="btn btn-xs btn-secondary" onclick="deselectAllFetchModels()">清空</button><button class="btn btn-xs btn-primary" onclick="addSelectedFetchedModels()">添加选中</button></div><div id="fetchModelsItems"></div></div></section><section class="model-panel model-library-panel"><h3>模型库</h3><p>模型按 Provider 分组，可测试、编辑和绑定到应用场景。</p><div class="model-lib-list">'+(lib.length?groupHtml:'<div class="model-empty-state"><strong>暂无模型</strong><span>先获取或手动添加一个模型。</span><button class="btn btn-sm btn-primary" onclick="addModelModal()">添加模型</button></div>')+'</div></section></div></div></div>';
 }
 
-async function applyFastestChatModel(){
-  const model=fastestBenchmarkedChatModel();
-  if(!model){toast('请先给聊天模型测速','info');return}
-  await setScenarioModel('chat',model.id);
-  toast(`已切换普通对话为最快模型：${model.name}`,'success');
-}
+function domId(value){return String(value||'').replace(/[^a-zA-Z0-9_-]/g,'_')}
 function toggleLibraryModel(id,on){
   const cfg=activeModelsConfig();
   const item=(cfg.library||[]).find(m=>m.id===id);
   if(item){item.enabled=on;persistModelsConfig(cfg).then(()=>renderPage())}
 }
-function applyApiFormatPreset(){
-  const fmt=$('#mApiFormat')?.value||'openai-chat';
-  const base=$('#mBase');
-  const auth=$('#mAuthType');
+function toggleCustomAuthHeader(prefix='m'){
+  const auth=$('#'+prefix+'AuthType');
+  const input=$('#'+prefix+'AuthHeader');
+  if(input) input.style.display=auth?.value==='custom'?'block':'none';
+}
+function updateModelFormatHint(prefix='m'){
+  const hint=$('#'+prefix+'FormatHint');
+  if(!hint) return;
+  const values=modelFormValues(prefix);
+  const notes=[];
+  if(values.apiFormat==='openai-chat') notes.push('Supports /v1/models and /v1/chat/completions; compatible with Xiaomi MiMo, New API, One API gateways.');
+  if(values.apiFormat==='ollama') notes.push('Ollama usually needs no API Key; default endpoint is http://127.0.0.1:11434.');
+  if(values.apiFormat==='anthropic_messages') notes.push('Claude / Anthropic uses x-api-key and Messages API.');
+  hint.textContent=notes.join(' ');
+}
+function applyApiFormatPreset(prefix='m'){
+  const fmt=$('#'+prefix+'ApiFormat')?.value||'openai-chat';
+  const base=$('#'+prefix+'Base');
+  const auth=$('#'+prefix+'AuthType');
   if(fmt==='ollama'){
     if(base&&!base.value) base.value='http://127.0.0.1:11434';
     if(auth) auth.value='none';
-  }else if(fmt==='openai-chat'){
-    if(auth&&auth.value==='none') auth.value='bearer';
   }else if(fmt==='anthropic'||fmt==='anthropic_messages'){
     if(base&&!base.value) base.value='https://api.anthropic.com';
     if(auth) auth.value='x-api-key';
   }else if(fmt==='gemini'){
     if(base&&!base.value) base.value='https://generativelanguage.googleapis.com';
     if(auth) auth.value='x-api-key';
-  }
-  toggleCustomAuthHeader();
-}
-function toggleCustomAuthHeader(){
-  const input=$('#mAuthHeader');
-  if(input) input.style.display=$('#mAuthType')?.value==='custom'?'block':'none';
-}
-async function fetchModelsForLibrary(){
-  const provider=$('#mProvider')?.value?.trim()||'custom';
-  const base=$('#mBase')?.value?.trim();
-  const key=$('#mKey')?.value||'';
-  const apiFormat=$('#mApiFormat')?.value||'openai-chat';
-  const authType=$('#mAuthType')?.value||'bearer';
-  const authHeader=$('#mAuthHeader')?.value?.trim()||'';
-  const msg=$('#modelMsg');
-  if(!base){toast('请填写 Base URL','error');return}
-  if(msg) msg.textContent='正在获取模型...';
-  const data=await apiPost('/api/models/fetch-remote',{base,key,apiFormat,authType,authHeader});
-  if(!data||!data.models?.length){if(msg) msg.textContent='未找到模型或获取失败';return}
-  state._fetchedModels={provider,base,key,apiFormat,authType,authHeader,models:data.models.map(m=>typeof m==='string'?m:(m.id||m.name||''))};
-  const box=$('#fetchModelsList'), items=$('#fetchModelsItems');
-  if(box) box.style.display='block';
-  if(items) items.innerHTML=state._fetchedModels.models.filter(Boolean).map(name=>`<label class="model-fetch-item"><input type="checkbox" class="fetch-model-cb" value="${esc(name)}" checked><span>${esc(name)}</span></label>`).join('');
-  if(msg) msg.textContent='找到 '+data.models.length+' 个模型';
-  state.model={...state.model,provider,base,key};
-  save();
-}
-function selectAllFetchModels(){document.querySelectorAll('.fetch-model-cb').forEach(c=>c.checked=true)}
-function deselectAllFetchModels(){document.querySelectorAll('.fetch-model-cb').forEach(c=>c.checked=false)}
-async function addSelectedFetchedModels(){
-  const selected=[...document.querySelectorAll('.fetch-model-cb:checked')].map(c=>c.value);
-  const f=state._fetchedModels;
-  if(!f||!selected.length){toast('请先选择模型','info');return}
-  const cfg=activeModelsConfig();
-  const existing=new Map((cfg.library||[]).map(m=>[m.id,m]));
-  selected.forEach(name=>{
-    existing.set(`${f.provider}:${name}`,{id:`${f.provider}:${name}`,provider:f.provider,name,base:f.base,key:f.key,enabled:true,tags:[],apiFormat:f.apiFormat,authType:f.authType,authHeader:f.authHeader});
-  });
-  cfg.library=[...existing.values()];
-  await persistModelsConfig(cfg);
-  toast('已加入 '+selected.length+' 个模型','success');
-  renderPage();
-}
-function addModelModal(){
-  openModelEditor();
-}
-
-function openModelEditor(model){
-  const isEdit=!!model;
-  openModal(`<div style="padding:24px;min-width:460px">
-    <h3 style="margin-bottom:16px;font-size:var(--fs-xl);font-weight:var(--fw-semibold)">${isEdit?'编辑模型':'添加模型'}</h3>
-    <div style="display:grid;gap:12px">
-      <input id="addModelProvider" placeholder="Provider，例如 openai / deepseek / siliconflow" value="${esc(model?.provider||'')}">
-      <input id="addModelName" placeholder="模型名称，例如 claude-sonnet-thinking" value="${esc(model?.name||'')}">
-      <select id="addModelApiFormat">
-        ${['openai-chat','ollama','anthropic_messages','gemini'].map(v=>`<option value="${v}"${(model?.apiFormat||'openai-chat')===v?' selected':''}>${v==='openai-chat'?'OpenAI 兼容 / Chat Completions':v==='ollama'?'Ollama / 本地':v==='anthropic_messages'?'Anthropic / Messages':'Gemini（预留）'}</option>`).join('')}
-      </select>
-      <input id="addModelBase" placeholder="Base URL" value="${esc(model?.base||'')}">
-      <select id="addModelAuthType" onchange="document.getElementById('addModelAuthHeader').style.display=this.value==='custom'?'block':'none'">
-        ${['bearer','x-api-key','api-key','custom','none'].map(v=>`<option value="${v}"${(model?.authType||'bearer')===v?' selected':''}>${v==='bearer'?'Bearer Token':v==='custom'?'自定义 Header':v==='none'?'无需认证':v}</option>`).join('')}
-      </select>
-      <input id="addModelAuthHeader" placeholder="自定义认证 Header" style="${(model?.authType||'bearer')==='custom'?'':'display:none'}" value="${esc(model?.authHeader||'')}">
-      <input id="addModelKey" type="password" placeholder="API Key" value="${esc(model?.key||'')}">
-      <div style="display:flex;gap:8px;justify-content:flex-end"><button class="btn btn-secondary" onclick="closeModal()">取消</button><button class="btn btn-primary" onclick="doSaveModel('${esc(model?.id||'')}')">${isEdit?'保存':'添加'}</button></div>
-    </div>
-  </div>`);
-}
-
-function editLibraryModel(id){
-  const model=getModelById(id);
-  if(!model){toast('模型不存在','error');return}
-  openModelEditor(model);
-}
-
-async function doSaveModel(existingId){
-  const provider=$('#addModelProvider')?.value?.trim()||'custom';
-  const name=$('#addModelName')?.value?.trim();
-  if(!name){toast('请填写模型名称','error');return}
-  const item={id:existingId||`${provider}:${name}`,provider,name,base:$('#addModelBase')?.value?.trim()||'',key:$('#addModelKey')?.value||'',enabled:true,tags:getModelById(existingId)?.tags||[],apiFormat:$('#addModelApiFormat')?.value||'openai-chat',authType:$('#addModelAuthType')?.value||'bearer',authHeader:$('#addModelAuthHeader')?.value?.trim()||''};
-  const data=await apiPost('/api/models/library'+modelScopeParam(),item);
-  if(data){setActiveModelsConfig(data);closeModal();renderPage();toast(existingId?'模型已保存':'模型已添加','success')}
-}
-async function deleteLibraryModel(id){
-  const okConfirm=await askConfirm('确认删除这个模型？如果它正在某个应用场景中使用，会自动清空该场景选择。');
-  if(!okConfirm) return;
-  const data=await fetch(apiBase()+'/api/models/library/'+encodeURIComponent(id)+modelScopeParam(),{method:'DELETE',cache:'no-store',headers:{'Cache-Control':'no-cache'}}).then(r=>r.json()).catch(()=>null);
-  if(data&&data.code===0){setActiveModelsConfig(data.data);renderPage();toast('模型已删除','info')}
-  else toast('删除失败','error');
-}
-async function testLibraryModel(id){
-  const m=getModelById(id);
-  if(!m){toast('模型不存在','error');return}
-  const r=await fetch(apiBase()+'/api/models/test',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({provider:{base:m.base,model:m.name,key:m.key,apiFormat:m.apiFormat,authType:m.authType,authHeader:m.authHeader}})});
-  const j=await r.json().catch(()=>({}));
-  if(j.ok) toast('连接成功: '+m.name,'success');
-  else toast('连接失败: '+(j.error||j.msg||'未知错误'),'error');
-}
-
-function apiFormatLabel(fmt){
-  return fmt==='openai-chat'?'OpenAI 兼容':fmt==='openai-image'?'OpenAI 图片接口':fmt==='ollama'?'Ollama':(fmt==='anthropic'||fmt==='anthropic_messages')?'Anthropic Messages':fmt==='gemini'?'Gemini':(fmt||'未设置');
-}
-function authTypeLabel(type,header=''){
-  if(type==='bearer') return 'Bearer Token';
-  if(type==='custom') return header?`自定义 Header: ${header}`:'自定义 Header';
-  if(type==='none') return '无需认证';
-  return type||'未设置';
-}
-function domId(value){
-  return String(value||'x').replace(/[^a-zA-Z0-9_-]/g,ch=>'_'+ch.charCodeAt(0).toString(16));
-}
-function inferModelTags(name=''){
-  const text=String(name).toLowerCase();
-  const tags=[];
-  if(/r1|reason|thinking|think|推理|思考/.test(text)) tags.push('reasoning');
-  if(/vision|image|draw|sd|dall|flux|midjourney|图像|图片/.test(text)) tags.push('vision');
-  if(!tags.includes('vision')) tags.unshift('chat');
-  return [...new Set(tags)];
-}
-function modelFormValues(prefix='m'){
-  return {
-    provider:$(`#${prefix}Provider`)?.value?.trim()||'',
-    base:$(`#${prefix}Base`)?.value?.trim()||'',
-    key:$(`#${prefix}Key`)?.value||'',
-    apiFormat:$(`#${prefix}ApiFormat`)?.value||'openai-chat',
-    authType:$(`#${prefix}AuthType`)?.value||'bearer',
-    authHeader:$(`#${prefix}AuthHeader`)?.value?.trim()||'',
-  };
-}
-function applyApiFormatPreset(prefix='m'){
-  const fmt=$(`#${prefix}ApiFormat`)?.value||'openai-chat';
-  const provider=$(`#${prefix}Provider`)?.value?.trim()||'';
-  const base=$(`#${prefix}Base`);
-  const auth=$(`#${prefix}AuthType`);
-  if(fmt==='ollama'){
-    if(base&&!base.value) base.value='http://127.0.0.1:11434';
-    if(auth) auth.value='none';
-  }else if(fmt==='openai-chat'){
+  }else{
     if(auth&&auth.value==='none') auth.value='bearer';
-    if(auth&&/new\s*api|one\s*api|中转|gateway/i.test(provider)) auth.value='bearer';
-  }else if(fmt==='openai-image'){
-    if(auth&&auth.value==='none') auth.value='bearer';
-  }else if(fmt==='anthropic'||fmt==='anthropic_messages'){
-    if(auth) auth.value='x-api-key';
-  }else if(fmt==='gemini'){
-    if(auth) auth.value='x-api-key';
   }
   toggleCustomAuthHeader(prefix);
-  updateModelFormatHint(prefix);
+  if(typeof updateModelFormatHint==='function') updateModelFormatHint(prefix);
 }
 function applyProviderPreset(prefix='m'){
-  const provider=$(`#${prefix}Provider`)?.value?.trim()||'';
-  const fmt=$(`#${prefix}ApiFormat`);
-  const auth=$(`#${prefix}AuthType`);
+  const provider=$('#'+prefix+'Provider')?.value||'';
+  const fmt=$('#'+prefix+'ApiFormat');
+  const auth=$('#'+prefix+'AuthType');
   if(/ollama/i.test(provider)){
     if(fmt) fmt.value='ollama';
     if(auth) auth.value='none';
   }else if(/anthropic|claude/i.test(provider)){
     if(fmt) fmt.value='anthropic_messages';
     if(auth) auth.value='x-api-key';
-  }else if(/new\s*api|one\s*api|openai|deepseek|siliconflow|openrouter|中转|gateway/i.test(provider)){
+  }else if(/new\s*api|one\s*api|openai|deepseek|siliconflow|openrouter|xiaomi|mimo|mi\s*model|gateway|relay/i.test(provider)){
     if(fmt) fmt.value='openai-chat';
-    if(auth&&auth.value==='none') auth.value='bearer';
+    if(auth) auth.value='bearer';
   }
   applyApiFormatPreset(prefix);
 }
-function toggleCustomAuthHeader(prefix='m'){
-  const input=$(`#${prefix}AuthHeader`);
-  if(input) input.style.display=$(`#${prefix}AuthType`)?.value==='custom'?'block':'none';
-  updateModelFormatHint(prefix);
-}
-function updateModelFormatHint(prefix='m'){
-  const hint=$(`#${prefix}FormatHint`);
-  if(!hint) return;
-  const {apiFormat,authType}=modelFormValues(prefix);
-  if(apiFormat==='ollama') hint.textContent='Ollama 会测试 Base URL + /api/chat，通常只用于本机 11434。';
-  else if(apiFormat==='openai-chat') hint.textContent=`OpenAI 兼容会测试 Base URL + /v1/chat/completions；认证方式：${authTypeLabel(authType)}。Claude/Kiro 中转模型如对话空回复，改用 Anthropic Messages。`;
-  else if(apiFormat==='openai-image') hint.textContent=`OpenAI 图片接口会用 Base URL + /v1/models 验证连接；文生图请求 /v1/images/generations，上传参考图时优先请求 /v1/images/edits。`;
-  else if(apiFormat==='anthropic'||apiFormat==='anthropic_messages') hint.textContent=`Anthropic Messages 会测试 Base URL + /v1/messages；Claude/Kiro 中转模型建议用这个格式，认证方式通常是 x-api-key。`;
-  else hint.textContent='该格式目前主要是字段预留；如走中转站，请按 Provider 实际协议选择。';
-}
-
-function renderModelsV3(){
-  const cfg=activeModelsConfig();
-  const scope=activeModelScope();
-  const lib=Array.isArray(cfg.library)?cfg.library:[];
-  const enabled=lib.filter(m=>m.enabled!==false);
-  const scenarios=cfg.scenarios||{};
-  const fastestChat=fastestBenchmarkedChatModel();
-  const scenarioRows=[
-    ['chat','普通对话','日常问答和轻量任务。对话页选择“自动”时优先使用这里。','chat'],
-    ['reasoning','深度推理','复杂操作、代码、规划、长链路任务和分身协作。','brain'],
-    ['image','图像生成','图片生成和图生图场景会优先调用这里。','image'],
-    ['fallback','失败退回','普通对话模型失败时自动回退到这里。','shield'],
-  ];
-  const optionHtml=(selected)=>`<option value="">未设置</option>`+enabled.map(m=>`<option value="${esc(m.id)}"${selected===m.id?' selected':''}>${esc(m.name)} · ${esc(m.provider||'custom')}</option>`).join('');
-  const groups=lib.reduce((acc,m)=>{const k=m.provider||'custom';(acc[k]=acc[k]||[]).push(m);return acc},{});
-  const row=m=>`<div class="model-lib-row">
-    <div class="model-lib-main"><div class="model-lib-name">${esc(m.name)}</div><div class="model-lib-meta">${esc(apiFormatLabel(m.apiFormat))} · ${esc(authTypeLabel(m.authType,m.authHeader))} · ${esc(m.base||'未填写 Base URL')}${m.benchmark?` · 首包 ${Number(m.benchmark.firstTokenMs||0)}ms · 总耗时 ${Number(m.benchmark.totalMs||0)}ms`:''}</div></div>
-    <div class="model-lib-tags">${(m.tags||[]).map(t=>`<span>${esc(t)}</span>`).join('')}</div>
-    <div class="model-lib-actions"><button class="btn btn-xs btn-secondary" onclick="editLibraryModel('${esc(m.id)}')">编辑</button><button class="btn btn-xs btn-secondary" id="modelTestBtn_${domId(m.id)}" onclick="testLibraryModel('${esc(m.id)}')">测试</button><button class="btn btn-xs btn-ghost" style="color:var(--c-error)" onclick="deleteLibraryModel('${esc(m.id)}')">删除</button></div>
-  </div>`;
-  const groupHtml=Object.entries(groups).sort(([a],[b])=>a.localeCompare(b)).map(([provider,items])=>`<div class="model-provider-group"><div class="model-provider-head"><strong>${esc(provider)}</strong><span>${items.filter(m=>m.enabled!==false).length}/${items.length} 已启用</span></div>${items.map(row).join('')}</div>`).join('');
-  const scenarioCards=scenarioRows.map(([id,title,desc,icon])=>{
-    const model=getModelById(scenarios[id]);
-    return `<article class="scenario-card"><div class="scenario-card-top"><div class="scenario-icon">${SVG[icon]||SVG.models}</div><div><strong>${title}</strong><span>${desc}</span></div></div><select onchange="setScenarioModel('${id}',this.value)">${optionHtml(scenarios[id])}</select><div class="scenario-current">当前：${model?`${esc(model.name)} · ${esc(model.provider||'custom')}`:'未设置'}</div></article>`;
-  }).join('');
-  return `<div class="models-view">
-    <div class="page-header"><div><h2>模型配置</h2><p class="page-subtitle">按场景选择模型，并在下方维护真实 Provider 与模型库。</p></div><button class="btn btn-sm btn-primary" onclick="addModelModal()">添加模型</button></div>
-    <div class="models-content">
-      <section class="model-panel model-scenario-panel">
-        <div class="model-panel-head"><div><h3>应用场景</h3><p>四类核心场景直接选择模型，一个模型可以复用到多个场景。</p></div><div class="model-fastest-hint"><button class="btn btn-secondary btn-sm" onclick="applyFastestChatModel()" ${fastestChat?'':'disabled'}>使用最快普通模型</button><span>${fastestChat?`测速最快：${esc(fastestChat.name)} · 首包 ${Number(fastestChat.benchmark?.firstTokenMs||0)}ms`:'需要先对模型库里的聊天模型测速'}</span></div></div>
-        <div class="scenario-card-grid">${scenarioCards}</div>
-      </section>
-      <div class="model-layout model-main-layout">
-        <section class="model-panel model-fetch-panel">
-          <h3>获取模型</h3><p>填写 Provider、Base URL 和 Key 后，从远端拉取模型列表。New API / One API / 中转站通常选择 OpenAI 兼容。</p>
-          <div class="model-connector-grid">
-            <label class="model-field"><span class="model-field-label">Provider 名称</span><input id="mProvider" placeholder="如 New API / deepseek / openrouter" value="${esc(state.model.provider||'')}" oninput="applyProviderPreset('m')"></label>
-            <label class="model-field"><span class="model-field-label">接口格式</span><select id="mApiFormat" onchange="applyApiFormatPreset('m')"><option value="openai-chat">OpenAI 兼容 / Chat Completions</option><option value="openai-image">OpenAI 图片接口 / Images</option><option value="ollama">Ollama / 本地</option><option value="anthropic_messages">Anthropic / Messages</option><option value="gemini">Gemini（预留）</option></select></label>
-            <label class="model-field"><span class="model-field-label">API 请求地址</span><input id="mBase" placeholder="如 http://host:3000 或 https://api.xxx.com/v1" value="${esc(state.model.base||'')}"></label>
-            <label class="model-field"><span class="model-field-label">认证方式</span><select id="mAuthType" onchange="toggleCustomAuthHeader('m')"><option value="bearer">Bearer Token</option><option value="x-api-key">x-api-key</option><option value="api-key">api-key</option><option value="custom">自定义 Header</option><option value="none">无需认证</option></select></label>
-            <label class="model-field" id="mAuthHeaderWrap" style="display:none"><span class="model-field-label">自定义 Header</span><input id="mAuthHeader" placeholder="自定义认证 Header"></label>
-            <label class="model-field model-field-wide"><span class="model-field-label">API Key</span><div class="model-secret-field"><input id="mKey" type="password" placeholder="API Key / Token" value="${esc(state.model.key||'')}"><button type="button" class="model-secret-toggle" onclick="toggleSecretInput('mKey',this)" title="显示/隐藏 API Key" aria-label="显示/隐藏 API Key">${SVG.eye}</button></div></label>
-            <div id="mFormatHint" class="model-format-hint"></div><button class="btn btn-secondary" id="fetchModelsBtn" onclick="fetchModelsForLibrary()">获取模型</button></div>
-          <div id="modelMsg" class="model-msg"></div><div id="fetchModelsList" class="model-fetch-list" style="display:none"><div class="model-fetch-actions"><button class="btn btn-xs btn-secondary" onclick="selectAllFetchModels()">全选</button><button class="btn btn-xs btn-secondary" onclick="deselectAllFetchModels()">取消全选</button><button class="btn btn-xs btn-primary" onclick="addSelectedFetchedModels()">加入模型库</button></div><div id="fetchModelsItems"></div></div>
-        </section>
-        <section class="model-panel model-library-panel"><h3>模型库</h3><p>模型库按 Provider 分组，是对话、角色和分身共用的真实配置。</p><div class="model-lib-list">${lib.length?groupHtml:'<div class="model-empty-state"><strong>还没有模型</strong><span>添加或获取真实 Provider 后，这里才会出现可用模型。WebUI 不再预置假数据。</span><button class="btn btn-sm btn-primary" onclick="addModelModal()">添加第一个模型</button></div>'}</div></section>
-      </div>
-    </div>
-  </div>`;
-}
-
-renderModels=renderModelsV3;
-
-async function setScenarioModel(scene,id){
-  const cfg=activeModelsConfig();
-  cfg.scenarios={...(cfg.scenarios||{}),[scene]:id};
-  if(scene==='chat') cfg.current=id || cfg.current || '';
-  await persistModelsConfig(cfg);
-  if(scene==='chat'){
-    state.chatModelOverride='auto';
-    const item=getModelById(id);
-    if(item) state.model={...state.model,provider:item.provider||'',model:item.name||'',base:item.base||'',key:item.key||''};
-    save();
-  }
-  toast('场景模型已更新','success');
-  renderPage();
-}
-function toggleLibraryModel(id,on){
-  const cfg=activeModelsConfig();
-  const item=(cfg.library||[]).find(m=>m.id===id);
-  if(item){item.enabled=on;persistModelsConfig(cfg).then(()=>renderPage())}
+function modelFormValues(prefix='m'){
+  return {
+    provider:$('#'+prefix+'Provider')?.value?.trim()||'custom',
+    base:$('#'+prefix+'Base')?.value?.trim()||'',
+    key:$('#'+prefix+'Key')?.value||'',
+    apiFormat:$('#'+prefix+'ApiFormat')?.value||'openai-chat',
+    authType:$('#'+prefix+'AuthType')?.value||'bearer',
+    authHeader:$('#'+prefix+'AuthHeader')?.value?.trim()||'',
+  };
 }
 async function fetchModelsForLibrary(){
   const values=modelFormValues('m');
   const msg=$('#modelMsg');
   const btn=$('#fetchModelsBtn');
-  if(!values.base){toast('请填写 Base URL','error');return}
-  if(msg) msg.textContent='正在获取模型...';
+  if(!values.base){toast('请填写 API 请求地址','error');return}
+  if(!values.key && values.authType!=='none'){toast('请填写 API Key','error');return}
+  if(msg) msg.textContent='正在获取模型列表...';
   if(btn){btn.disabled=true;btn.textContent='获取中...'}
   try{
     const r=await fetch(apiBase()+'/api/models/fetch-remote',{method:'POST',cache:'no-store',headers:{'Content-Type':'application/json','Cache-Control':'no-cache'},body:JSON.stringify(values)});
     const j=await r.json().catch(()=>({}));
     const data=j.code===0?j.data:null;
     if(!data||!data.models?.length){
-      if(msg) msg.textContent=(j.msg||'未找到模型，请检查 Base URL、API 格式和认证方式。');
+      if(msg) msg.textContent=(j.msg||'没有获取到模型，请检查 API 请求地址、API Key 或服务商兼容格式。');
       return;
     }
-    const provider=values.provider||'custom';
-    state._fetchedModels={...values,provider,models:data.models.map(m=>typeof m==='string'?m:(m.id||m.name||''))};
+    state._fetchedModels={...values,models:data.models.map(m=>typeof m==='string'?m:(m.id||m.name||''))};
     const box=$('#fetchModelsList'), items=$('#fetchModelsItems');
     if(box) box.style.display='block';
     if(items) items.innerHTML=state._fetchedModels.models.filter(Boolean).map(name=>`<label class="model-fetch-item"><input type="checkbox" class="fetch-model-cb" value="${esc(name)}" checked><span>${esc(name)}</span></label>`).join('');
-    if(msg) msg.textContent='找到 '+data.models.length+' 个模型，勾选后加入模型库。';
-    state.model={...state.model,provider,base:values.base,key:values.key};
+    if(msg) msg.textContent='已获取 '+data.models.length+' 个模型，请选择后添加到模型库。';
+    state.model={...state.model,provider:values.provider,base:values.base,key:values.key};
     save();
   }catch(e){
-    if(msg) msg.textContent='获取失败: '+e.message;
+    if(msg) msg.textContent='获取失败： '+e.message;
   }finally{
     if(btn){btn.disabled=false;btn.textContent='获取模型'}
   }
@@ -5573,56 +5470,49 @@ async function fetchModelsForLibrary(){
 async function addSelectedFetchedModels(){
   const selected=[...document.querySelectorAll('.fetch-model-cb:checked')].map(c=>c.value);
   const f=state._fetchedModels;
-  if(!f||!selected.length){toast('请先选择模型','info');return}
+  if(!f||!selected.length){toast('请选择要添加的模型','info');return}
   const cfg=activeModelsConfig();
   const existing=new Map((cfg.library||[]).map(m=>[m.id,m]));
   selected.forEach(name=>{
-    existing.set(`${f.provider}:${name}`,{
-      id:`${f.provider}:${name}`,
-      provider:f.provider,
-      name,
-      base:f.base,
-      key:f.key,
-      enabled:true,
-      tags:inferModelTags(name),
-      kind:'chat',
-      apiFormat:f.apiFormat,
-      authType:f.authType,
-      authHeader:f.authHeader,
+    existing.set(f.provider+':'+name,{
+      id:f.provider+':'+name,provider:f.provider,name,base:f.base,key:f.key,enabled:true,
+      tags:inferModelTags(name),kind:'chat',apiFormat:f.apiFormat,authType:f.authType,authHeader:f.authHeader,
     });
   });
   cfg.library=[...existing.values()];
-  cfg.current=cfg.current||`${f.provider}:${selected[0]}`;
+  cfg.current=cfg.current||f.provider+':'+selected[0];
   cfg.scenarios={...(cfg.scenarios||{})};
-  if(!cfg.scenarios.chat) cfg.scenarios.chat=`${f.provider}:${selected[0]}`;
+  if(!cfg.scenarios.chat) cfg.scenarios.chat=f.provider+':'+selected[0];
   const reasoning=selected.find(n=>inferModelTags(n).includes('reasoning'));
-  if(reasoning&&!cfg.scenarios.reasoning) cfg.scenarios.reasoning=`${f.provider}:${reasoning}`;
+  if(reasoning&&!cfg.scenarios.reasoning) cfg.scenarios.reasoning=f.provider+':'+reasoning;
   await persistModelsConfig(cfg);
-  toast('已加入 '+selected.length+' 个模型','success');
+  toast('已添加 '+selected.length+' 个模型','success');
   renderPage();
 }
 function addModelModal(){openModelEditor()}
 function openModelEditor(model){
   const isEdit=!!model;
   const tags=new Set(model?.tags||[]);
+  const apiOptions=['openai-chat','openai-image','ollama','anthropic_messages','gemini'].map(v=>`<option value="${v}"${(model?.apiFormat||'openai-chat')===v?' selected':''}>${apiFormatLabel(v)}</option>`).join('');
+  const authOptions=['bearer','x-api-key','api-key','custom','none'].map(v=>`<option value="${v}"${(model?.authType||'bearer')===v?' selected':''}>${authTypeLabel(v)}</option>`).join('');
+  const tagOptions=['chat','reasoning','vision','image'].map(t=>`<label><input type="checkbox" class="addModelTag" value="${t}" ${tags.has(t)?'checked':''}>${t}</label>`).join('');
   openModal(`<div class="model-editor-modal">
     <h3>${isEdit?'编辑模型':'添加模型'}</h3>
     <div class="model-editor-grid">
-      <label>Provider<input id="addModelProvider" placeholder="例如 New API / deepseek / openrouter" value="${esc(model?.provider||'')}" oninput="applyProviderPreset('addModel')"></label>
-      <label>模型<input id="addModelName" placeholder="例如 [量]gpt-5.5" value="${esc(model?.name||'')}"></label>
-      <label>API 格式<select id="addModelApiFormat" onchange="applyApiFormatPreset('addModel')">
-        ${['openai-chat','openai-image','ollama','anthropic_messages','gemini'].map(v=>`<option value="${v}"${(model?.apiFormat||'openai-chat')===v?' selected':''}>${apiFormatLabel(v)}</option>`).join('')}
-      </select></label>
-      <label>认证方式<select id="addModelAuthType" onchange="toggleCustomAuthHeader('addModel')">
-        ${['bearer','x-api-key','api-key','custom','none'].map(v=>`<option value="${v}"${(model?.authType||'bearer')===v?' selected':''}>${authTypeLabel(v)}</option>`).join('')}
-      </select></label>
-      <label class="wide">Base URL<input id="addModelBase" placeholder="网关根地址或 /v1 地址" value="${esc(model?.base||'')}"></label>
-      <input id="addModelAuthHeader" class="wide" placeholder="自定义认证 Header" style="${(model?.authType||'bearer')==='custom'?'':'display:none'}" value="${esc(model?.authHeader||'')}">
-      <label class="wide">API Key<input id="addModelKey" type="password" placeholder="API Key / Token" value="${esc(model?.key||'')}"></label>
-      <div class="wide model-tag-editor">
-        <span>用途标签</span>
-        ${['chat','reasoning','vision','image'].map(t=>`<label><input type="checkbox" class="addModelTag" value="${t}" ${tags.has(t)?'checked':''}>${t}</label>`).join('')}
-      </div>
+      <label>Provider<input id="addModelProvider" placeholder="例如 xiaomi / deepseek / openai" value="${esc(model?.provider||'')}" oninput="applyProviderPreset('addModel')"></label>
+      <label>模型名称<input id="addModelName" placeholder="例如 mimo-v2.5-pro" value="${esc(model?.name||'')}"></label>
+      <label class="wide">API Key<input id="addModelKey" type="password" placeholder="sk-..." value="${esc(model?.key||'')}"></label>
+      <label class="wide">API 请求地址<input id="addModelBase" placeholder="例如 https://api.openai.com/v1" value="${esc(model?.base||'')}"></label>
+      <label>接口格式<select id="addModelApiFormat" onchange="applyApiFormatPreset('addModel')">${apiOptions}</select></label>
+      <label>启用状态<select id="addModelEnabled"><option value="1"${model?.enabled!==false?' selected':''}>启用</option><option value="0"${model?.enabled===false?' selected':''}>停用</option></select></label>
+      <details class="wide model-advanced-details">
+        <summary>高级认证设置</summary>
+        <div class="model-editor-grid inner">
+          <label>认证方式<select id="addModelAuthType" onchange="toggleCustomAuthHeader('addModel')">${authOptions}</select></label>
+          <input id="addModelAuthHeader" placeholder="自定义认证 Header" style="${(model?.authType||'bearer')==='custom'?'':'display:none'}" value="${esc(model?.authHeader||'')}">
+        </div>
+      </details>
+      <div class="wide model-tag-editor"><span>用途标签</span>${tagOptions}</div>
       <div id="addModelFormatHint" class="wide model-format-hint"></div>
     </div>
     <div class="model-editor-actions">
@@ -5632,8 +5522,7 @@ function openModelEditor(model){
     </div>
   </div>`);
   setTimeout(()=>updateModelFormatHint('addModel'),0);
-}
-function editLibraryModel(id){
+}function editLibraryModel(id){
   const model=getModelById(id);
   if(!model){toast('模型不存在','error');return}
   openModelEditor(model);
@@ -5643,10 +5532,13 @@ async function doSaveModel(existingId,shouldTest=false){
   const provider=values.provider||'custom';
   const name=$('#addModelName')?.value?.trim();
   if(!name){toast('请填写模型名称','error');return}
+  if(!values.base && values.apiFormat!=='ollama'){toast('请填写 API 请求地址','error');return}
+  if(!values.key && values.authType!=='none'){toast('请填写 API Key','error');return}
   const old=getModelById(existingId)||{};
   const tags=[...document.querySelectorAll('.addModelTag:checked')].map(c=>c.value);
   const id=existingId||`${provider}:${name}`;
-  const item={...old,id,provider,name,base:values.base,key:values.key,enabled:old.enabled!==false,tags:tags.length?tags:inferModelTags(name),kind:'chat',apiFormat:values.apiFormat,authType:values.authType,authHeader:values.authHeader};
+  const enabled=$('#addModelEnabled')?.value!=='0';
+  const item={...old,id,provider,name,base:values.base,key:values.key,enabled,tags:tags.length?tags:inferModelTags(name),kind:'chat',apiFormat:values.apiFormat,authType:values.authType,authHeader:values.authHeader};
   const data=await apiPost('/api/models/library'+modelScopeParam(),item);
   if(data){
     setActiveModelsConfig(data);
@@ -5717,6 +5609,29 @@ async function quickFixOpenAICompat(id){
   renderPage();
   setTimeout(()=>testLibraryModel(id),80);
 }
+async function benchmarkLibraryModel(id){
+  const m=getModelById(id);
+  if(!m){toast('模型不存在','error');return}
+  const btn=$('#modelBenchBtn_'+domId(id));
+  if(btn){btn.disabled=true;btn.textContent='测速中...'}
+  try{
+    const r=await fetch(apiBase()+'/api/models/benchmark',{method:'POST',cache:'no-store',headers:{'Content-Type':'application/json','Cache-Control':'no-cache'},body:JSON.stringify({provider:{provider:m.provider,base:m.base,model:m.name,key:m.key,apiFormat:m.apiFormat,authType:m.authType,authHeader:m.authHeader}})});
+    const result=await r.json().catch(()=>({}));
+    const bench=result.code===0?result.data:result;
+    const cfg=activeModelsConfig();
+    const item=(cfg.library||[]).find(x=>x.id===id);
+    if(item){item.benchmark=bench; const data=await persistModelsConfig(cfg); if(data) setActiveModelsConfig(data);}
+    toast(bench.ok?'测速完成':'测速失败',bench.ok?'success':'error');
+    renderPage();
+    if(!bench.ok) openModal(buildModelTestModal(m,{...bench,hints:bench.hints||['测速失败，请先使用“测试”查看接口连通性。']}));
+  }catch(e){
+    toast('测速失败：'+(e.message||e),'error');
+  }finally{
+    const nextBtn=$('#modelBenchBtn_'+domId(id));
+    if(nextBtn){nextBtn.disabled=false;nextBtn.textContent='测速'}
+  }
+}
+
 async function testLibraryModel(id){
   const m=getModelById(id);
   if(!m){toast('模型不存在','error');return}
@@ -5916,16 +5831,7 @@ async function editChannel(id){
 
 function renderSettings(){
   const promptToggles={webuiRules:true,coreMemory:true,agentRules:true,userSystemPrompt:true,profilePrompt:true,skills:true,knowledgeSearch:true,...(state.settings.promptToggles||{})};
-  const enabledModels=getEnabledModels();
-  const missingModel=!enabledModels.length;
-  const missingDataRoot=!String(state.settings.dataRootDir||state.settings.memoryDir||state.settings.imageDir||state.settings.mdLibraryDir||'').trim();
-  const onboardingHtml=(missingModel||missingDataRoot)?`<div class="settings-section" id="onboarding" style="border-color:var(--c-accent-muted);background:var(--c-accent-soft)">
-    <div class="settings-section-title">首次配置引导</div>
-    ${missingModel?`<div class="settings-item"><div><div class="settings-label">还没有可用模型</div><div class="settings-desc">请先到「模型配置」添加 Provider、Base URL、API Key 和模型名。</div></div><button class="btn btn-secondary" onclick="setSettingsTab('models')">去配置模型</button></div>`:''}
-    ${missingDataRoot?'<div class="settings-item"><div><div class="settings-label">建议配置外部数据目录</div><div class="settings-desc">把记忆、图片、历史和输出文档放到项目外，更新 WebUI 时更安全。</div></div><span style="font-size:var(--fs-sm);color:var(--c-ink-muted)">例如 F:\\\\AI\\\\Hermes Agent\\\\记忆</span></div>':''}
-  </div>`:'';
   const settingsSections=[
-    ['onboarding','配置引导'],
     ['general','通用'],
     ['api','API 配置'],
     ['routing','Agent 路由策略'],
@@ -5947,7 +5853,6 @@ function renderSettings(){
       ${settingsSideNav}
       <section class="settings-main-panel"><div class="settings-panel-fade"><div class="settings-view settings-general-view">
       <div class="settings-content settings-general-content">
-      ${onboardingHtml}
       <div class="settings-section" id="general">
         <div class="settings-section-title">通用</div>
         <div class="settings-item"><div><div class="settings-label">语言</div><div class="settings-desc">界面显示语言</div></div>
@@ -6078,7 +5983,7 @@ function renderSettings(){
       <div class="settings-section" id="system">
         <div class="settings-section-title">系统提示词</div>
         <textarea id="sSys" style="width:100%;min-height:100px;margin-top:8px">${esc(state.settings.systemPrompt)}</textarea>
-        <p style="font-size:var(--fs-sm);color:var(--c-ink-muted);margin-top:8px;line-height:1.6">文档工作台：输出工作文档、AI分享、教程、笔记等长内容时，建议使用 <code>&lt;artifact type="markdown" title="文件名" docType="work|share|tutorial|note"&gt;</code> 包裹完整 Markdown；正文顶部使用 YAML frontmatter，包含 <code>title / folder / type / tags / status / summary</code>。文件夹建议为：工作文档、AI分享、教程、笔记、临时收件箱。</p>
+        
       </div>
       <div id="settingsMsg" style="font-size:var(--fs-sm);color:var(--c-ink-muted);margin-top:8px"></div>
       </div></div></section>
@@ -6140,7 +6045,7 @@ function updateStatusCardHtml(status={}, {checking=false, error=''}={}){
   const stateText=behind>0?'发现远端更新':dirty>0?'存在本地未提交改动':ahead>0?'本地领先远端':'当前代码已是最新状态';
   const stateClass=behind>0?'disconnected':'connected';
   const advice=behind>0
-    ? (status.safeToPull?'可以关闭 WebUI 后执行 update.bat 或 git pull --ff-only。':'建议先处理本地改动，再执行 git pull --ff-only。')
+    ? (status.safeToPull?'可以点击安全更新；完成后重启 WebUI。':'检测到本地改动或分支状态不适合自动更新，建议先提交/备份后再手动更新。')
     : '如果要主动确认 GitHub 最新版本，可点击“检查远端”。';
   return `<div style="flex:1;min-width:0">
     <div class="settings-label">GitHub 更新 · <span class="platform-status ${stateClass}" style="display:inline-flex;align-items:center">${esc(stateText)}</span></div>
@@ -6152,6 +6057,20 @@ function updateStatusCardHtml(status={}, {checking=false, error=''}={}){
   </div>`;
 }
 
+async function applySafeUpdate(){
+  if(!confirm('将执行 git pull --ff-only 和 npm install。仅在没有本地未提交改动时继续，完成后需要重启 WebUI。是否继续？')) return;
+  const card=$('#updateStatusCard');
+  if(card) card.innerHTML=updateStatusCardHtml({}, {checking:true})+'<div style="display:flex;gap:8px;flex-shrink:0"><button class="btn btn-secondary" disabled>更新中...</button></div>';
+  try{
+    const result=await apiPost('/api/system/update-apply', {});
+    toast(result?.message||'更新完成，请重启 WebUI','success');
+    await loadUpdateStatus(false);
+  }catch(err){
+    toast(err.message||String(err),'error');
+    await loadUpdateStatus(false);
+  }
+}
+
 async function loadUpdateStatus(fetchRemote=false, seq){
   const card=$('#updateStatusCard');
   if(!card || !isSettingsPage('settings')) return;
@@ -6159,7 +6078,7 @@ async function loadUpdateStatus(fetchRemote=false, seq){
   try{
     const data=await apiGet('/api/system/update-status'+(fetchRemote?'?fetch=1':''));
     if(!isRenderCurrent(seq) || !isSettingsPage('settings')) return;
-    card.innerHTML=`${updateStatusCardHtml(data||{}, {error:data?'' : '接口没有返回有效数据'})}<div style="display:flex;gap:8px;flex-shrink:0;flex-wrap:wrap;justify-content:flex-end"><button class="btn btn-secondary" onclick="loadUpdateStatus(false)">刷新状态</button><button class="btn btn-secondary" onclick="loadUpdateStatus(true)">检查远端</button><button class="btn btn-secondary" onclick="showUpdateGuide()">查看方法</button></div>`;
+    card.innerHTML=`${updateStatusCardHtml(data||{}, {error:data?'' : '接口没有返回有效数据'})}<div style="display:flex;gap:8px;flex-shrink:0;flex-wrap:wrap;justify-content:flex-end"><button class="btn btn-secondary" onclick="loadUpdateStatus(false)">刷新状态</button><button class="btn btn-secondary" onclick="loadUpdateStatus(true)">检查远端</button><button class="btn btn-primary" onclick="applySafeUpdate()" ${data?.safeToPull?'':'disabled'}>安全更新</button><button class="btn btn-secondary" onclick="showUpdateGuide()">查看方法</button></div>`;
   }catch(err){
     if(!isRenderCurrent(seq) || !isSettingsPage('settings')) return;
     card.innerHTML=`${updateStatusCardHtml({}, {error:err.message||String(err)})}<div style="display:flex;gap:8px;flex-shrink:0;flex-wrap:wrap;justify-content:flex-end"><button class="btn btn-secondary" onclick="loadUpdateStatus(false)">重试</button><button class="btn btn-secondary" onclick="showUpdateGuide()">查看方法</button></div>`;
@@ -6277,6 +6196,15 @@ function saveSettings(){
   });
 }
 
+async function loadAppVersion(){
+  const el=$('#appVersionText');
+  if(!el) return;
+  try{
+    const data=await apiGet('/api/system/update-status');
+    if(data?.packageVersion) el.textContent='V'+data.packageVersion;
+  }catch(_){}
+}
+
 async function pingApi(){
   const dot=$('#statusDot');
   const st=$('#statusText');
@@ -6310,7 +6238,7 @@ let _profilesCache=null;
 function renderProfiles(){
   if(!_profilesCache){
     _profilesCache=LS.get('hermes.profiles',[
-      {id:'default',name:'默认助手',modelId:'auto',model:scenarioModel('chat'),systemPrompt:'',color:'var(--c-block-lime)'},
+      {id:'default',name:'默认助手',modelId:'auto',model:scenarioModelName('chat'),systemPrompt:'',color:'var(--c-block-lime)'},
     ]);
   }
   return `<div class="profiles-view">
@@ -6387,7 +6315,7 @@ function useProfile(id){
   if(!p) return;
   if(p.enabled===false){toast('这个 Agent 已关闭，不能用于对话','info');return}
   state.activeProfile=p.id;
-  state.model.model=p.model||scenarioModel('chat');
+  state.model.model=p.model||scenarioModelName('chat');
   save();toast('已切换到角色: '+p.name,'success');
   if(state.page==='chat') renderPage();
 }
@@ -6543,7 +6471,7 @@ function renderProfilesV2(){
       <div class="profile-grid agent-grid">${profiles.map(p=>{
         const enabled=p.enabled!==false;
         const skillNames=selectedProfileSkills(p).map(s=>s.name).slice(0,3);
-        const model=p.modelId==='auto'?'自动 · '+scenarioModel('chat'):(getModelById(p.modelId)?.name||p.model||'未设置');
+        const model=p.modelId==='auto'?'自动 · '+scenarioModelName('chat'):(getModelById(p.modelId)?.name||p.model||'未设置');
         return `<div class="profile-card agent-card${enabled?'':' disabled'}${state.activeProfile===p.id?' active':''}" onclick="editProfileV2('${p.id}')">
         <div class="agent-card-head">
           ${profileAvatarHtml(p,'profile-avatar')}
@@ -6601,7 +6529,7 @@ function profileModal(profile){
       <label>名称<input id="pfName" placeholder="Agent 名称" value="${esc(p.name)}"></label>
       <label>模型<select id="pfModel">${opts}</select></label>
       <label class="wide">Agent 提示词<textarea id="pfPrompt" placeholder="描述这个 Agent 的身份、能力边界、工作方式…" style="min-height:130px">${esc(p.systemPrompt||'')}</textarea></label>
-      <div class="agent-skill-picker wide">
+      <div class="agent-memory-link-card wide"><div><strong>Agent 记忆与 Soul</strong><small>每个 Agent 拥有独立的 soul、memory、workspace 和 knowledge 目录；具体文件在记忆储存中查看。</small></div><button class="btn btn-xs btn-secondary" onclick="closeModal();navigate('skills');setTimeout(()=>{state.skillsTab='memory';renderPage();setTimeout(()=>openAgentMemory('${esc(p.id||'default')}'),0)},0)">查看记忆</button></div><div class="agent-skill-picker wide">
         <div><strong>可用技能</strong><small>与技能中心保持一致，只会注入被这个 Agent 勾选的技能。</small></div>
         <div class="agent-skill-list">${skillHtml}</div>
       </div>
@@ -6617,7 +6545,7 @@ function doAddProfileV2(){
   const name=$('#pfName')?.value?.trim();
   if(!name){toast('请填写角色名称','error');return}
   const modelId=$('#pfModel')?.value||'auto';
-  const model=getModelById(modelId)?.name||scenarioModel('chat');
+  const model=getModelById(modelId)?.name||scenarioModelName('chat');
   const colors=['var(--c-block-lime)','var(--c-block-lilac)','var(--c-block-cream)','var(--c-block-mint)','var(--c-block-coral)'];
   _profilesCache=getProfiles();
   const skillIds=[...document.querySelectorAll('.agent-skill-option input:checked')].map(i=>i.value);
@@ -6628,7 +6556,7 @@ function doEditProfileV2(id){
   const p=getProfiles().find(x=>x.id===id); if(!p) return;
   p.name=$('#pfName')?.value?.trim()||p.name;
   p.modelId=$('#pfModel')?.value||'auto';
-  p.model=getModelById(p.modelId)?.name||scenarioModel('chat');
+  p.model=getModelById(p.modelId)?.name||scenarioModelName('chat');
   p.enabled=$('#pfEnabled')?.checked!==false;
   p.skillIds=[...document.querySelectorAll('.agent-skill-option input:checked')].map(i=>i.value);
   p.systemPrompt=$('#pfPrompt')?.value?.trim()||'';

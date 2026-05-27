@@ -183,7 +183,9 @@
   let currentFilePath = '';
   let currentTab = 'preview';
   let viewVersionIndex = -1;
-  let historyMode = 'all';
+  let historyMode = 'category:outputs';
+  let historyCategoryMenuOpen = false;
+  let historyCategoryMenuPos = null;
   let historyData = null;
   let historyPreview = null;
   let localEditContext = null;
@@ -353,6 +355,7 @@
       <div class="doc-library-head-main">
         <div>
           <h3>知识库</h3>
+          <p class="doc-library-subtitle">默认展示输出文档，其他沉淀分类可从右侧展开。</p>
         </div>
         <div class="doc-library-stats">
           <span>${esc(resultText)}</span>
@@ -1207,7 +1210,11 @@
       <span class="artifact-version-text" id="artifactVersionText"></span>
     </div>
     <div class="artifact-toolbar-actions">
-      <button type="button" class="artifact-library-btn artifact-tooltip" data-tip="打开知识库" aria-label="打开知识库" onclick="HermesArtifact.showHistory()">${renderToolbarIcon('library')}<span>知识库</span></button>
+      <div class="artifact-library-wrap">
+        <button type="button" class="artifact-library-btn artifact-tooltip" data-tip="\u6253\u5f00\u77e5\u8bc6\u5e93" aria-label="\u6253\u5f00\u77e5\u8bc6\u5e93" onclick="HermesArtifact.showHistory()">${renderToolbarIcon('library')}<span>\u77e5\u8bc6\u5e93</span></button>
+        <button type="button" class="artifact-library-caret artifact-tooltip" data-tip="\u9009\u62e9\u77e5\u8bc6\u5206\u7c7b" aria-label="\u9009\u62e9\u77e5\u8bc6\u5206\u7c7b" onclick="HermesArtifact.toggleHistoryCategoryMenu()">${renderToolbarIcon('chevron-down')}</button>
+        <div class="doc-library-more-menu artifact-library-menu" id="artifactLibraryMenu" style="display:none"></div>
+      </div>
       <button type="button" class="artifact-icon-btn artifact-refresh-btn artifact-tooltip" id="artifactRefreshBtn" data-tip="刷新" aria-label="刷新" onclick="HermesArtifact.refreshCurrentView()">${renderToolbarIcon('refresh')}</button>
       <button type="button" class="artifact-icon-btn artifact-tooltip" data-tip="关闭面板" aria-label="关闭面板" onclick="HermesArtifact.setLayout('chat')">${renderToolbarIcon('close')}</button>
     </div>
@@ -1275,6 +1282,11 @@
       if (!event.target.closest('.history-card-menu') && !event.target.closest('.history-card-more')) {
         document.querySelectorAll('.history-card-menu.open').forEach(menu => menu.classList.remove('open'));
       }
+      if (!event.target.closest('.artifact-library-wrap') && historyCategoryMenuOpen) {
+        historyCategoryMenuOpen = false;
+        const libraryMenu = $('#artifactLibraryMenu');
+        if (libraryMenu) libraryMenu.style.display = 'none';
+      }
     });
     document.addEventListener('keydown', (event) => {
       if (event.key === 'Escape') {
@@ -1282,6 +1294,9 @@
         const menu = $('#artifactHistoryMoreMenu');
         if (menu) menu.classList.remove('open');
         document.querySelectorAll('.history-card-menu.open').forEach(item => item.classList.remove('open'));
+        historyCategoryMenuOpen = false;
+        const libraryMenu = $('#artifactLibraryMenu');
+        if (libraryMenu) libraryMenu.style.display = 'none';
       }
     });
   }
@@ -1371,6 +1386,15 @@
       </div>`;
   }
 
+  function renderToolbarCategoryMenu(moreCategories, tags, all) {
+    const menu = $('#artifactLibraryMenu');
+    if (!menu) return;
+    const categoryButtons = (moreCategories || []).map(item => `<button class="${historyMode === 'category:'+item.id ? 'active' : ''}" onclick="HermesArtifact.setHistoryMode('category:${esc(item.id)}')">${esc(item.label || item.folder)}<span>${(item.files || []).length}</span></button>`).join('');
+    const tagLabel = '\u6807\u7b7e';
+    const allLabel = '\u5168\u90e8';
+    menu.innerHTML = categoryButtons + `<button class="${historyMode === 'tag' ? 'active' : ''}" onclick="HermesArtifact.setHistoryMode('tag')">${tagLabel}<span>${(tags || []).length}</span></button><button class="${historyMode === 'all' ? 'active' : ''}" onclick="HermesArtifact.setHistoryMode('all')">${allLabel}<span>${(all || []).length}</span></button>`;
+    menu.style.display = historyCategoryMenuOpen ? 'flex' : 'none';
+  }
   function renderHistoryList() {
     const hist = $('#artifactHistory');
     if (!hist || !historyData) return;
@@ -1401,16 +1425,16 @@
     const all = historyData.filesFlat || [];
     const folders = (historyData.folders || []).filter(group => (group.files || []).length > 0);
     const tags = historyData.tags || [];
-    const folderTabs = folders.map(group => {
-      const name = group.name || group.folder || '其他';
-      const mode = 'folder:' + name;
-      return `<button class="${historyMode === mode ? 'active' : ''}" onclick="HermesArtifact.setHistoryMode('folder:${encodeURIComponent(name)}')" aria-pressed="${historyMode === mode ? 'true' : 'false'}">${esc(name)}<span class="history-tab-count">${(group.files || []).length}</span></button>`;
-    }).join('');
-    const tabs = `<div class="artifact-history-tabs doc-library-tabs">
-      <button class="${historyMode === 'all' ? 'active' : ''}" onclick="HermesArtifact.setHistoryMode('all')" aria-pressed="${historyMode === 'all' ? 'true' : 'false'}">全部<span class="history-tab-count">${(all).length}</span></button>
-      ${folderTabs}
-      <button class="${historyMode === 'tag' ? 'active' : ''}" onclick="HermesArtifact.setHistoryMode('tag')" aria-pressed="${historyMode === 'tag' ? 'true' : 'false'}">标签<span class="history-tab-count">${tags.length}</span></button>
+    const categories = historyData.vaultCategories || [];
+    const outputCategory = categories.find(item => item.id === 'outputs') || { id: 'outputs', label: '输出文档', folder: '输出文档', files: all.filter(f => ['输出文档','工作文档','AI分享','教程','笔记'].includes(f.folder)) };
+    const currentCategoryId = String(historyMode || '').startsWith('category:') ? String(historyMode).slice(9) : 'outputs';
+    const currentCategory = categories.find(item => item.id === currentCategoryId) || outputCategory;
+    const moreCategories = categories.filter(item => item.id !== 'outputs');
+    renderToolbarCategoryMenu(moreCategories, tags, all);
+    const categoryTabs = `<div class="artifact-history-tabs doc-library-tabs">
+      <button class="${historyMode === 'category:outputs' ? 'active' : ''}" onclick="HermesArtifact.setHistoryMode('category:outputs')" aria-pressed="${historyMode === 'category:outputs' ? 'true' : 'false'}">输出文档<span class="history-tab-count">${(outputCategory.files || []).length}</span></button>
     </div>`;
+    const tabs = categoryTabs;
     const libraryHead = renderDocLibraryHeader(all, folders, tags);
     if (!all.length) {
       hist.innerHTML = libraryHead + tabs + renderDocListEmpty();
@@ -1428,13 +1452,12 @@
       }).join('') || renderDocListEmpty('当前标签下还没有文档。') : renderDocListEmpty('还没有带标签的文档。'));
       return;
     }
-    if (String(historyMode || '').startsWith('folder:')) {
-      const selectedFolder = decodeURIComponent(String(historyMode).slice(7));
-      const group = folders.find(item => (item.name || item.folder) === selectedFolder);
-      const files = (group ? (group.files || []) : []);
+    if (String(historyMode || '').startsWith('category:')) {
+      const files = currentCategory.files || [];
+      const title = currentCategory.label || currentCategory.folder || '输出文档';
       hist.innerHTML = libraryHead + tabs + `<div class="history-month-group">
-        <div class="history-month-title">${esc(selectedFolder)} (${files.length})</div>
-        <div class="history-cards">${files.length ? files.map(renderHistoryCard).join('') : renderDocListEmpty('这个文件夹还没有文档。')}</div>
+        <div class="history-month-title">${esc(title)} (${files.length})</div>
+        <div class="history-cards">${files.length ? files.map(renderHistoryCard).join('') : renderDocListEmpty('这个分类还没有文档。')}</div>
       </div>`;
       return;
     }
@@ -1447,6 +1470,19 @@
   function setHistoryMode(mode) {
     historyMode = mode;
     historyPreview = null;
+    historyCategoryMenuOpen = false;
+    historyCategoryMenuPos = null;
+    renderHistoryList();
+  }
+  function toggleHistoryCategoryMenu() {
+    if (currentTab !== 'history') {
+      historyCategoryMenuOpen = true;
+      historyCategoryMenuPos = null;
+      showHistory();
+      return;
+    }
+    historyCategoryMenuOpen = !historyCategoryMenuOpen;
+    historyCategoryMenuPos = null;
     renderHistoryList();
   }
 
@@ -1922,6 +1958,7 @@
     backToHistoryList,
     backFromDocumentHeader,
     setHistoryMode,
+    toggleHistoryCategoryMenu,
     insertLocalEditPrompt,
     getLocalEditContext,
     clearLocalEditContext,

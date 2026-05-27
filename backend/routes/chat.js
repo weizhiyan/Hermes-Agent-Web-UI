@@ -9,6 +9,7 @@ const { readCoreMemoryPrompt, readAgentRulesPrompt } = require('../services/memo
 const { redactSecrets, sanitizeAny, sanitizeChat } = require('../services/security');
 const { discoverExternalSkills, samePath, normalizeFsPath } = require('../services/skillDiscovery');
 const modalBus = require('./modal');
+const { captureKnowledge } = require('../services/knowledgeCapture');
 
 const router = express.Router();
 const KEY = 'chats';
@@ -206,6 +207,52 @@ ${raw.slice(-tail).trim()}`;
   return { text: clipped, truncated: true, originalChars: raw.length };
 }
 
+
+function normalizeAgentSnapshot(body = {}) {
+  const agentId = String(body.agentId || body.profileId || 'default').trim() || 'default';
+  const agentName = String(body.agentName || body.profileName || (agentId === 'default' ? '\u9ed8\u8ba4\u52a9\u624b' : agentId)).slice(0, 120);
+  const skillIds = Array.isArray(body.profileSkillIds || body.skillIds) ? (body.profileSkillIds || body.skillIds).map(String) : [];
+  const dirs = paths.ensureAgentDirs(agentId);
+  return {
+    id: agentId,
+    name: agentName,
+    modelId: String(body.modelId || body.model || 'auto'),
+    systemPrompt: String(body.profilePrompt || body.systemPrompt || '').slice(0, 6000),
+    skillIds,
+    soulDir: dirs.soulDir,
+    memoryDir: dirs.memoryDir,
+    workspaceDir: dirs.workspaceDir,
+    knowledgeDir: dirs.knowledgeDir,
+    capturedAt: new Date().toISOString(),
+  };
+}
+
+function autoCaptureKnowledge(chat, userMsg, assistantContent) {
+  const question = String(userMsg && userMsg.content || '').trim();
+  const answer = String(assistantContent || '').trim();
+  if (!question || !answer || /^error[:?]/i.test(answer)) return;
+  const title = (chat && chat.title && chat.title !== question.slice(0, 24)) ? chat.title : question.slice(0, 40);
+  try {
+    captureKnowledge({
+      title,
+      folder: 'questions',
+      type: 'question',
+      kind: 'question',
+      tags: ['auto-capture', 'raw-question', chat?.agentId ? ('agent-' + chat.agentId) : 'agent-default'],
+      source: 'chat',
+      status: 'auto',
+      question,
+      answer,
+      context: chat && chat.id ? ('chatId: ' + chat.id) : '',
+      chatId: chat && chat.id ? chat.id : '',
+      agentId: chat && chat.agentId ? chat.agentId : '',
+      agentName: chat && chat.agentName ? chat.agentName : '',
+    });
+  } catch (error) {
+    try { appendSystemLog({ type: 'knowledge', level: 'warn', msg: 'auto capture failed: ' + error.message, chatId: chat && chat.id }); } catch {}
+  }
+}
+
 function promptToggles(settings = {}) {
   return {
     webuiRules: true,
@@ -304,12 +351,15 @@ router.get('/', (req, res) => {
 
 router.post('/', (req, res) => {
   const now = Date.now();
+  const agentSnapshot = normalizeAgentSnapshot(req.body || {});
   const chat = {
     id: crypto.randomUUID(),
-    title: req.body.title || '新对话',
+    title: req.body.title || '新建对话',
     model: req.body.model || 'hermes-agent',
-    agentId: req.body.agentId || '',
-    agentName: req.body.agentName || '',
+    agentId: agentSnapshot.id,
+    agentName: agentSnapshot.name,
+    agentSnapshot,
+    lockedAgent: true,
     source: req.body.source || 'WebUI',
     messages: [],
     createdAt: now,
@@ -384,8 +434,10 @@ router.put('/:id', (req, res) => {
   if (!chat) return res.fail('chat not found', 404, 404);
   if (req.body.title) chat.title = req.body.title;
   if (req.body.pinned !== undefined) chat.pinned = Boolean(req.body.pinned);
-  if (req.body.agentId !== undefined) chat.agentId = String(req.body.agentId || '');
-  if (req.body.agentName !== undefined) chat.agentName = String(req.body.agentName || '');
+  if (!chat.lockedAgent) {
+    if (req.body.agentId !== undefined) chat.agentId = String(req.body.agentId || '');
+    if (req.body.agentName !== undefined) chat.agentName = String(req.body.agentName || '');
+  }
   chat.updatedAt = Date.now();
   saveAll(list);
   res.ok(sanitizeChat(chat));
@@ -450,10 +502,14 @@ router.post('/:id/messages', async (req, res) => {
     })).filter(item => item.id || item.url || item.publicUrl);
   }
   chat.messages.push(userMsg);
-  if (req.body.profileId) chat.agentId = String(req.body.profileId);
-  if (req.body.profileName) chat.agentName = String(req.body.profileName).slice(0, 120);
+  if (!chat.agentSnapshot) chat.agentSnapshot = normalizeAgentSnapshot({ ...req.body, agentId: chat.agentId || req.body.profileId, agentName: chat.agentName || req.body.profileName });
+  chat.agentId = chat.agentSnapshot.id;
+  chat.agentName = chat.agentSnapshot.name;
+  chat.lockedAgent = true;
 
-  const requestedSkillIds = Array.isArray(req.body.profileSkillIds) ? req.body.profileSkillIds.map(String) : [];
+  const requestedSkillIds = Array.isArray(chat.agentSnapshot.skillIds) && chat.agentSnapshot.skillIds.length
+    ? chat.agentSnapshot.skillIds.map(String)
+    : (Array.isArray(req.body.profileSkillIds) ? req.body.profileSkillIds.map(String) : []);
   const storedSkills = store.read('skills', []);
   const externalSkills = discoverExternalSkills().map(skill => {
     const old = storedSkills.find(item => item && (item.id === skill.id || samePath(item.path, skill.path) || item.name === skill.name));
@@ -505,8 +561,20 @@ router.post('/:id/messages', async (req, res) => {
   const agentRulesPrompt = readAgentRulesPrompt({ includeKnowledgeBase: needsKnowledgeBaseRules(userMsg.content) });
   if (toggles.agentRules) addSystemPart('Agent 规则', agentRulesPrompt, { source: 'rules', knowledgeBase: needsKnowledgeBaseRules(userMsg.content) });
   if (toggles.userSystemPrompt) addSystemPart('用户系统提示', settings.systemPrompt, { source: 'settings' });
-  if (toggles.profilePrompt && (req.body.profilePrompt || req.body.profileName)) {
-    addSystemPart(`Agent Profile: ${String(req.body.profileName || req.body.profileId || '未命名').slice(0, 80)}`, `[当前 Agent: ${String(req.body.profileName || req.body.profileId || '未命名').slice(0, 80)}]\n${String(req.body.profilePrompt || '').slice(0, 6000)}`, { source: 'profile' });
+  const activeAgentSnapshot = chat.agentSnapshot || normalizeAgentSnapshot(req.body || {});
+  if (toggles.profilePrompt && (activeAgentSnapshot.systemPrompt || activeAgentSnapshot.name)) {
+    const agentLabel = String(activeAgentSnapshot.name || activeAgentSnapshot.id || 'agent').slice(0, 80);
+    const agentPrompt = [
+      '[Current Agent: ' + agentLabel + ']',
+      String(activeAgentSnapshot.systemPrompt || '').slice(0, 6000),
+      '',
+      '[Agent workspace]',
+      'soul: ' + (activeAgentSnapshot.soulDir || ''),
+      'memory: ' + (activeAgentSnapshot.memoryDir || ''),
+      'workspace: ' + (activeAgentSnapshot.workspaceDir || ''),
+      'knowledge: ' + (activeAgentSnapshot.knowledgeDir || ''),
+    ].join('\n');
+    addSystemPart('Agent Profile: ' + agentLabel, agentPrompt, { source: 'profile', agentId: activeAgentSnapshot.id });
   }
   if (toggles.skills) skills.forEach(s => {
     const limited = limitPromptText(s.prompt);
@@ -721,6 +789,7 @@ router.post('/:id/messages', async (req, res) => {
     if ((chat.title === '新对话' || chat.title === '未命名对话') && userMsg.content) chat.title = userMsg.content.slice(0, 24);
     saveAll(list);
     try { writeMarkdown(chat); } catch {}
+    try { autoCaptureKnowledge(chat, userMsg, assistantContent); } catch {}
     appendSystemLog({
       type: 'task',
       level: errorFull ? 'error' : 'info',

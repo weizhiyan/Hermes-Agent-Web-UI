@@ -54,6 +54,46 @@ function mdLibraryRoot() {
   return resolveConfiguredPath(cfg.mdLibraryDir || process.env.HERMES_MD_LIBRARY_DIR, path.join(dataRoot(), 'output-md'));
 }
 
+function safeAgentId(value = 'default') {
+  const clean = String(value || 'default').trim().replace(/[^A-Za-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 64);
+  return clean || 'default';
+}
+
+function agentsRoot() {
+  return path.join(dataRoot(), 'agents');
+}
+
+function agentRoot(agentId = 'default') {
+  return path.join(agentsRoot(), safeAgentId(agentId));
+}
+
+function agentSoulDir(agentId = 'default') {
+  return path.join(agentRoot(agentId), 'soul');
+}
+
+function agentMemoryDir(agentId = 'default') {
+  return path.join(agentRoot(agentId), 'memory');
+}
+
+function agentWorkspaceDir(agentId = 'default') {
+  return path.join(agentRoot(agentId), 'workspace');
+}
+
+function agentKnowledgeDir(agentId = 'default') {
+  return path.join(agentRoot(agentId), 'knowledge');
+}
+
+function ensureAgentDirs(agentId = 'default') {
+  [agentRoot(agentId), agentSoulDir(agentId), agentMemoryDir(agentId), agentWorkspaceDir(agentId), agentKnowledgeDir(agentId)].forEach(ensureDir);
+  return {
+    root: agentRoot(agentId),
+    soulDir: agentSoulDir(agentId),
+    memoryDir: agentMemoryDir(agentId),
+    workspaceDir: agentWorkspaceDir(agentId),
+    knowledgeDir: agentKnowledgeDir(agentId),
+  };
+}
+
 function ensureDir(dir) {
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
   return dir;
@@ -69,6 +109,7 @@ function ensureWorkspaceDirs() {
     imageInputDir(),
     imageOutputDir(),
     mdLibraryRoot(),
+    agentsRoot(),
   ].forEach(ensureDir);
 }
 
@@ -93,6 +134,14 @@ module.exports = {
   imageInputDir,
   imageOutputDir,
   mdLibraryRoot,
+  safeAgentId,
+  agentsRoot,
+  agentRoot,
+  agentSoulDir,
+  agentMemoryDir,
+  agentWorkspaceDir,
+  agentKnowledgeDir,
+  ensureAgentDirs,
   ensureDir,
   ensureWorkspaceDirs,
   roots,
