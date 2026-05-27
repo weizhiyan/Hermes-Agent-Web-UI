@@ -40,8 +40,10 @@ function shQuote(value) {
 }
 
 function providerArg(provider = '') {
-  const p = String(provider || '').trim().toLowerCase();
+  const raw = String(provider || '').trim();
+  const p = raw.toLowerCase();
   if (!p) return '';
+  if (/[\u4e2d\u8f6c]|gateway|relay|new\s*api|one\s*api/i.test(raw)) return 'webui_relay';
   return p.replace(/[^a-z0-9_-]/g, '');
 }
 
@@ -62,7 +64,7 @@ const NATIVE_HERMES_PROVIDERS = new Set([
 function hermesProviderName(selectedModel, activeProvider = '') {
   const base = String(selectedModel?.base || '').trim().toLowerCase();
   const apiMode = hermesApiMode(selectedModel || {});
-  if (apiMode === 'anthropic_messages' || base.includes('api.anthropic.com')) return 'anthropic';
+  if (base.includes('api.anthropic.com')) return 'anthropic';
   if (base.includes('api.deepseek.com')) return 'deepseek';
   if (base.includes('openrouter.ai')) return 'openrouter';
   if (base.includes('api.openai.com')) return 'openai';
@@ -73,9 +75,12 @@ function hermesProviderName(selectedModel, activeProvider = '') {
   if (base.includes('api.x.ai')) return 'xai';
 
   const active = providerArg(activeProvider || '');
+  if (active === 'webui_relay') return active;
   if (NATIVE_HERMES_PROVIDERS.has(active)) return active;
   const selectedProvider = providerArg(selectedModel?.provider || '');
+  if (selectedProvider === 'webui_relay') return selectedProvider;
   if (NATIVE_HERMES_PROVIDERS.has(selectedProvider)) return selectedProvider;
+  if (selectedModel?.base && selectedModel?.key) return 'webui_relay';
   return '';
 }
 
@@ -92,6 +97,74 @@ function hermesBaseUrl(selectedModel = {}) {
     base = base.replace(/\/v1$/i, '');
   }
   return base;
+}
+
+function requestModelName(selectedModel = {}) {
+  return String(selectedModel?.model || selectedModel?.name || '').trim();
+}
+
+function cleanUrl(value = '') {
+  return String(value || '').replace(/\s+/g, '').replace(/\/+$/, '');
+}
+
+function relayBaseUrl() {
+  return cleanUrl(process.env.WEBUI_RELAY_BASE_URL || `http://127.0.0.1:${process.env.PORT || 3381}/v1`);
+}
+
+function wslRelayBaseUrl() {
+  if (process.env.WEBUI_WSL_RELAY_BASE_URL) return cleanUrl(process.env.WEBUI_WSL_RELAY_BASE_URL);
+  try {
+    const result = spawnSync('wsl', ['-e', 'bash', '-lc', 'ip route | awk \'/default/ {print $3; exit}\''], {
+      encoding: 'utf8',
+      windowsHide: true,
+      timeout: 3000,
+    });
+    const host = String(result.stdout || '').replace(/\s+/g, '');
+    if (host) return cleanUrl(`http://${host}:${process.env.PORT || 3381}/v1`);
+  } catch (_) {}
+  return relayBaseUrl();
+}
+
+function wslWebUiBaseUrl() {
+  return wslRelayBaseUrl().replace(/\/v1$/i, '');
+}
+
+function sanitizeHermesConfigText(text = '') {
+  return String(text || '').replace(/http:\/\/([^\s"']+):(\d+)\s+\/v1/g, 'http://$1:$2/v1');
+}
+
+function sanitizeWslHermesAuth() {
+  try {
+    spawnSync('wsl', ['-e', 'bash', '-lc', `python3 - <<'PY'
+import json
+from pathlib import Path
+p=Path.home()/'.hermes'/'auth.json'
+if p.exists():
+    try:
+        data=json.loads(p.read_text())
+        def walk(x):
+            if isinstance(x, dict):
+                for k,v in list(x.items()):
+                    if k == 'base_url' and isinstance(v, str):
+                        x[k]=v.replace(' ', '')
+                    else:
+                        walk(v)
+            elif isinstance(x, list):
+                for item in x:
+                    walk(item)
+        walk(data)
+        p.write_text(json.dumps(data, ensure_ascii=False, indent=2))
+    except Exception:
+        pass
+PY`], { encoding: 'utf8', windowsHide: true, timeout: 5000 });
+  } catch (_) {}
+}
+
+function hermesProviderBaseUrl(selectedModel = {}, options = {}) {
+  if (!NATIVE_HERMES_PROVIDERS.has(options.providerName || '') && selectedModel?.base && selectedModel?.key) {
+    return options.wsl ? wslRelayBaseUrl() : relayBaseUrl();
+  }
+  return hermesBaseUrl(selectedModel);
 }
 
 function readHermesConfigFile() {
@@ -135,10 +208,65 @@ function replaceSection(lines, sectionName, newSectionLines) {
   return [...lines.slice(0, bounds.start), ...newSectionLines, ...lines.slice(bounds.end)];
 }
 
-function upsertCustomProvider(text, providerName, selectedModel) {
-  const base = hermesBaseUrl(selectedModel);
+function yamlScalar(value = '') {
+  return JSON.stringify(String(value || ''));
+}
+
+function upsertProvider(text, providerName, selectedModel, options = {}) {
+  const base = hermesProviderBaseUrl(selectedModel, { ...options, providerName });
   const apiMode = hermesApiMode(selectedModel);
-  const modelName = String(selectedModel?.name || selectedModel?.model || '').trim();
+  const modelName = requestModelName(selectedModel);
+  const providerBlock = [
+    providerName + ':',
+    '  name: ' + yamlScalar(providerName),
+    '  api: ' + yamlScalar(base),
+    '  api_key: ' + yamlScalar(selectedModel.key),
+    '  transport: ' + yamlScalar(apiMode),
+    ...(modelName ? ['  default_model: ' + yamlScalar(modelName)] : []),
+  ];
+
+  const lines = String(text || '').replace(/\r\n/g, '\n').split('\n');
+  const section = sectionBounds(lines, 'providers');
+  if (!section) {
+    const modelSection = sectionBounds(lines, 'model');
+    const insertAt = modelSection ? modelSection.start : 0;
+    return [
+      ...lines.slice(0, insertAt),
+      'providers:',
+      ...providerBlock.map(line => '  ' + line),
+      '',
+      ...lines.slice(insertAt),
+    ].join('\n');
+  }
+
+  const body = lines.slice(section.start + 1, section.end);
+  const blocks = [];
+  let current = [];
+  for (const line of body) {
+    if (/^\s{2}[A-Za-z0-9_-]+:\s*$/.test(line) && current.length) {
+      blocks.push(current);
+      current = [line];
+    } else if (current.length || /^\s{2}[A-Za-z0-9_-]+:\s*$/.test(line)) {
+      current.push(line);
+    }
+  }
+  if (current.length) blocks.push(current);
+
+  const targetHead = '  ' + providerName + ':';
+  const replacement = providerBlock.map(line => '  ' + line);
+  const targetIdx = blocks.findIndex(block => String(block[0] || '').trim() === providerName + ':');
+  if (targetIdx >= 0) blocks[targetIdx] = replacement;
+  else blocks.push(replacement);
+
+  const rebuilt = ['providers:'];
+  for (const item of blocks) rebuilt.push(...item);
+  return [...lines.slice(0, section.start), ...rebuilt, ...lines.slice(section.end)].join('\n');
+}
+
+function upsertCustomProvider(text, providerName, selectedModel, options = {}) {
+  const base = hermesProviderBaseUrl(selectedModel, { ...options, providerName });
+  const apiMode = hermesApiMode(selectedModel);
+  const modelName = requestModelName(selectedModel);
   const providerBlock = [
     '- name: ' + providerName,
     '  base_url: ' + base,
@@ -188,36 +316,56 @@ function minimalHermesConfig() {
     'providers: {}',
     'fallback_providers: []',
     'credential_pool_strategies: {}',
-    'toolsets: []',
+    'toolsets:',
+    '- hermes-cli',
     'agent:',
     '  max_turns: 90',
   ].join('\n');
 }
 
-function mergedHermesConfigText(providerName, selectedModel, existing = '') {
-  let updatedConfig = existing || minimalHermesConfig();
+function mergedHermesConfigText(providerName, selectedModel, existing = '', options = {}) {
+  let updatedConfig = sanitizeHermesConfigText(existing || minimalHermesConfig());
   if (!NATIVE_HERMES_PROVIDERS.has(providerName)) {
-    updatedConfig = upsertCustomProvider(updatedConfig, providerName, selectedModel);
+    updatedConfig = upsertProvider(updatedConfig, providerName, selectedModel, options);
+    updatedConfig = upsertCustomProvider(updatedConfig, providerName, selectedModel, options);
   }
   const lines = updatedConfig.replace(/\r\n/g, '\n').split('\n');
-  const modelName = String(selectedModel?.name || selectedModel?.model || '').trim();
+  const modelName = requestModelName(selectedModel);
   const modelSection = ['model:', '  provider: ' + providerName];
   if (modelName) modelSection.push('  default: ' + JSON.stringify(modelName));
-  return replaceSection(lines, 'model', modelSection).join('\n');
+  if (modelName && !NATIVE_HERMES_PROVIDERS.has(providerName)) modelSection.push('  api_mode: ' + hermesApiMode(selectedModel));
+  return sanitizeHermesConfigText(replaceSection(lines, 'model', modelSection).join('\n'));
 }
 
 function syncHermesProviderConfig(providerName, selectedModel) {
   if (!providerName || !selectedModel?.base || !selectedModel?.key) return;
-  if (!NATIVE_HERMES_PROVIDERS.has(providerName)) return;
   try {
     const dir = path.join(process.env.USERPROFILE || process.env.HOME || '', '.hermes');
     if (!dir) return;
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
     const file = path.join(dir, 'config.yaml');
-    fs.writeFileSync(file, mergedHermesConfigText(providerName, selectedModel, readHermesConfigFile()), 'utf8');
+    fs.writeFileSync(file, mergedHermesConfigText(providerName, selectedModel, readHermesConfigFile(), { wsl: false }), 'utf8');
   } catch (_) {
     // Best effort only; env vars still carry the selected model for the running process.
   }
+}
+
+
+function wslExportEnv(env = {}) {
+  const keys = [
+    'OPENAI_API_KEY',
+    'OPENAI_BASE_URL',
+    'ANTHROPIC_API_KEY',
+    'ANTHROPIC_TOKEN',
+    'ANTHROPIC_BASE_URL',
+    'ANTHROPIC_API_BASE',
+    'DEEPSEEK_API_KEY',
+    'DEEPSEEK_BASE_URL',
+  ];
+  return keys
+    .filter(key => env[key])
+    .map(key => 'export ' + key + '=' + shQuote(env[key]) + '; ')
+    .join('');
 }
 
 function wslPathForWindowsFile(filePath) {
@@ -229,13 +377,13 @@ function wslPathForWindowsFile(filePath) {
 
 function syncWslHermesProviderConfig(providerName, selectedModel) {
   if (!providerName || !selectedModel?.base || !selectedModel?.key) return '';
-  if (!NATIVE_HERMES_PROVIDERS.has(providerName)) return '';
+  sanitizeWslHermesAuth();
   const tmpDir = path.join(process.cwd(), '.claude');
   if (!fs.existsSync(tmpDir)) fs.mkdirSync(tmpDir, { recursive: true });
   const tmpName = 'hermes_config_' + crypto.randomBytes(4).toString('hex') + '.yaml';
   const tmpFile = path.join(tmpDir, tmpName);
   const existingConfig = readWslHermesConfigFile() || readHermesConfigFile();
-  fs.writeFileSync(tmpFile, mergedHermesConfigText(providerName, selectedModel, existingConfig), 'utf8');
+  fs.writeFileSync(tmpFile, mergedHermesConfigText(providerName, selectedModel, existingConfig, { wsl: true }), 'utf8');
   return tmpFile;
 }
 
@@ -352,7 +500,7 @@ async function* hermesStream(prompt, history, modelCfg, fullCfg = {}) {
     ? hermesProviderName(selectedModel, fullCfg._activeProvider)
     : providerArg(fullCfg._activeProvider || '');
   syncHermesProviderConfig(providerName, selectedModel);
-  yield { type: 'perf', stage: 'provider-config-ready', ms: Date.now() - perfStart, provider: providerName || '', model: modelName || '', selected: !!selectedModel };
+  yield { type: 'perf', stage: 'provider-config-ready', ms: Date.now() - perfStart, provider: providerName || '', model: modelName || '', selected: !!selectedModel, apiFormat: selectedModel?.apiFormat || '', hasKey: !!selectedModel?.key, hasBase: !!selectedModel?.base };
   let child;
   let tmpFile = null;
   let wslConfigFile = null;
@@ -366,11 +514,13 @@ async function* hermesStream(prompt, history, modelCfg, fullCfg = {}) {
       delete customEnv.ANTHROPIC_API_KEY;
     } else if (providerName === 'anthropic' || hermesApiMode(selectedModel) === 'anthropic_messages') {
       customEnv.ANTHROPIC_API_KEY = selectedModel.key;
+      customEnv.ANTHROPIC_TOKEN = selectedModel.key;
       delete customEnv.OPENAI_API_KEY;
       delete customEnv.DEEPSEEK_API_KEY;
     } else {
       customEnv.OPENAI_API_KEY = selectedModel.key;
       delete customEnv.ANTHROPIC_API_KEY;
+      delete customEnv.ANTHROPIC_TOKEN;
       delete customEnv.DEEPSEEK_API_KEY;
     }
   }
@@ -382,16 +532,21 @@ async function* hermesStream(prompt, history, modelCfg, fullCfg = {}) {
       delete customEnv.ANTHROPIC_BASE_URL;
     } else if (providerName === 'anthropic' || hermesApiMode(selectedModel) === 'anthropic_messages') {
       customEnv.ANTHROPIC_BASE_URL = selectedBaseUrl;
+      customEnv.ANTHROPIC_API_BASE = selectedBaseUrl;
       delete customEnv.OPENAI_BASE_URL;
       delete customEnv.DEEPSEEK_BASE_URL;
     } else {
       customEnv.OPENAI_BASE_URL = selectedBaseUrl;
       delete customEnv.ANTHROPIC_BASE_URL;
+      delete customEnv.ANTHROPIC_API_BASE;
       delete customEnv.DEEPSEEK_BASE_URL;
     }
   }
   if (!selectedModel) {
-    if (fullCfg.anthropic?.key) customEnv.ANTHROPIC_API_KEY = fullCfg.anthropic.key;
+    if (fullCfg.anthropic?.key) {
+      customEnv.ANTHROPIC_API_KEY = fullCfg.anthropic.key;
+      customEnv.ANTHROPIC_TOKEN = fullCfg.anthropic.key;
+    }
     if (fullCfg.openai?.key) customEnv.OPENAI_API_KEY = fullCfg.openai.key;
     if (fullCfg.openai?.base) customEnv.OPENAI_BASE_URL = fullCfg.openai.base;
     if (fullCfg.deepseek?.key) customEnv.DEEPSEEK_API_KEY = fullCfg.deepseek.key;
@@ -410,15 +565,17 @@ async function* hermesStream(prompt, history, modelCfg, fullCfg = {}) {
     if (hermesCmd.type === 'wsl') {
       wslConfigFile = syncWslHermesProviderConfig(providerName, selectedModel);
       let cmd;
+      const envExportCmd = wslExportEnv(customEnv);
       const syncConfigCmd = wslConfigFile
-        ? `export PATH="$HOME/.local/bin:$HOME/bin:/usr/local/bin:/usr/bin:/bin:$PATH"; mkdir -p ~/.hermes && cp ${shQuote(wslPathForWindowsFile(wslConfigFile))} ~/.hermes/config.yaml && `
-        : 'export PATH="$HOME/.local/bin:$HOME/bin:/usr/local/bin:/usr/bin:/bin:$PATH"; ';
+        ? `export PATH="$HOME/.local/bin:$HOME/bin:/usr/local/bin:/usr/bin:/bin:$PATH"; ${envExportCmd}mkdir -p ~/.hermes && cp ${shQuote(wslPathForWindowsFile(wslConfigFile))} ~/.hermes/config.yaml && `
+        : `export PATH="$HOME/.local/bin:$HOME/bin:/usr/local/bin:/usr/bin:/bin:$PATH"; ${envExportCmd}`;
       if (tmpFile) {
         const posixPath = '.claude/' + path.basename(tmpFile);
         cmd = `${syncConfigCmd}hermes chat -q "$(< ${posixPath})" -Q`;
       } else {
         cmd = `${syncConfigCmd}hermes chat -q ${shQuote(fullPrompt)} -Q`;
       }
+      cmd += ' --toolsets hermes-cli --accept-hooks --yolo';
       if (providerName) cmd += ` --provider ${shQuote(providerName)}`;
       if (modelName) cmd += ` -m ${shQuote(modelName)}`;
       if (resumeSessionId) cmd += ` --resume ${shQuote(resumeSessionId)}`;
@@ -431,6 +588,7 @@ async function* hermesStream(prompt, history, modelCfg, fullCfg = {}) {
       yield { type: 'perf', stage: 'cli-spawned', ms: Date.now() - perfStart, command: 'wsl', promptFile: !!tmpFile };
     } else {
       const args = ['chat', '-q', fullPrompt, '-Q'];
+      args.push('--toolsets', 'hermes-cli', '--accept-hooks', '--yolo');
       if (providerName) args.push('--provider', providerName);
       if (modelName) args.push('-m', modelName);
       if (resumeSessionId) args.push('--resume', resumeSessionId);

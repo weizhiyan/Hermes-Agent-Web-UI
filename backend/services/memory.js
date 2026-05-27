@@ -75,7 +75,11 @@ const DEFAULT_AGENT_KNOWLEDGE_RULES = `# Hermes WebUI 知识库与 Markdown 文�
 
 ## Frontmatter 建议
 
-适合保存的 Markdown 文档可在开头加入 title、type、tags、created、source 等 frontmatter。`;
+适合保存的 Markdown 文档可在开头加入 title、type、tags、created、source 等 frontmatter。
+
+## WebUI 输出落盘规则
+
+当生成可归档 Markdown 文档时，必须先写入 MD 输出库（settings.mdLibraryDir，默认 output-md），再回复 artifact 标签。最终回复只能包含 artifact 标签本身，不要在标签前后附加说明文字。history-md 只用于聊天记录导出，不用于保存用户生成文档。`;
 
 const CORE_FILES = [
   {

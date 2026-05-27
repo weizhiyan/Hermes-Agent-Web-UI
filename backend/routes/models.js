@@ -3,6 +3,7 @@ const store = require('../services/store');
 
 const router = express.Router();
 const KEY = 'models';
+const SCOPES = ['webui', 'agent'];
 
 const DEFAULTS = {
   params: { temperature: 0.7, maxTokens: 4096, topP: 1 },
@@ -179,38 +180,75 @@ function normalizeScenarios(scenarios = {}, library = []) {
   };
 }
 
-function load() {
-  let cfg = store.read(KEY, null);
-  if (!cfg) {
-    const empty = { ...DEFAULTS, params: { ...DEFAULTS.params }, scenarios: { ...DEFAULTS.scenarios }, library: [] };
-    store.write(KEY, empty);
-    return empty;
-  }
-  let dirty = false;
-  if (!cfg.params) { cfg.params = { ...DEFAULTS.params }; dirty = true; }
-  if (!cfg.scenarios) { cfg.scenarios = { ...DEFAULTS.scenarios }; dirty = true; }
-  const lib = normalizeLibrary(cfg);
-  if (JSON.stringify(lib) !== JSON.stringify(cfg.library)) { cfg.library = lib; dirty = true; }
-  const scenarios = normalizeScenarios(cfg.scenarios, lib);
-  if (JSON.stringify(scenarios) !== JSON.stringify(cfg.scenarios)) { cfg.scenarios = scenarios; dirty = true; }
-  if (cfg.current && !lib.some(m => m.id === cfg.current || m.name === cfg.current)) { cfg.current = ''; dirty = true; }
-  if (dirty) store.write(KEY, cfg);
+function blankConfig() {
+  return { ...DEFAULTS, params: { ...DEFAULTS.params }, scenarios: { ...DEFAULTS.scenarios }, library: [] };
+}
+
+function isScopedRoot(cfg = {}) {
+  return cfg && typeof cfg === 'object' && (cfg.webui || cfg.agent);
+}
+
+function requestedScope(req) {
+  const scope = String(req.query.scope || req.body?.scope || '').toLowerCase();
+  return SCOPES.includes(scope) ? scope : '';
+}
+
+function normalizeConfig(cfg = {}) {
+  cfg = { ...blankConfig(), ...(cfg || {}), params: { ...DEFAULTS.params, ...(cfg.params || {}) }, scenarios: { ...DEFAULTS.scenarios, ...(cfg.scenarios || {}) } };
+  cfg.library = normalizeLibrary(cfg);
+  cfg.scenarios = normalizeScenarios(cfg.scenarios, cfg.library);
+  if (cfg.current && !cfg.library.some(m => m.id === cfg.current || m.name === cfg.current)) cfg.current = '';
   return cfg;
 }
 
-router.get('/', (req, res) => res.ok(load()));
+function loadAll() {
+  let root = store.read(KEY, null);
+  if (!root) {
+    const next = { webui: blankConfig(), agent: blankConfig() };
+    store.write(KEY, next);
+    return next;
+  }
+  if (!isScopedRoot(root)) {
+    const migrated = normalizeConfig(root);
+    const next = { webui: migrated, agent: migrated };
+    store.write(KEY, next);
+    return next;
+  }
+  const next = {
+    webui: normalizeConfig(root.webui || root.default || root),
+    agent: normalizeConfig(root.agent || root.webui || root.default || root),
+  };
+  if (JSON.stringify(next) !== JSON.stringify(root)) store.write(KEY, next);
+  return next;
+}
+
+function load(scope = 'webui') {
+  return loadAll()[SCOPES.includes(scope) ? scope : 'webui'];
+}
+
+function saveScope(scope, cfg) {
+  const root = loadAll();
+  root[SCOPES.includes(scope) ? scope : 'webui'] = normalizeConfig(cfg);
+  store.write(KEY, root);
+  return root[SCOPES.includes(scope) ? scope : 'webui'];
+}
+
+router.get('/', (req, res) => {
+  const scope = requestedScope(req);
+  res.ok(scope ? load(scope) : loadAll());
+});
 
 router.put('/', (req, res) => {
-  const merged = { ...load(), ...req.body };
-  merged.library = normalizeLibrary(merged);
-  merged.scenarios = normalizeScenarios(merged.scenarios || DEFAULTS.scenarios, merged.library);
-  if (merged.current && !merged.library.some(m => m.id === merged.current || m.name === merged.current)) merged.current = '';
-  store.write(KEY, merged);
-  res.ok(merged);
+  const scope = requestedScope(req) || 'webui';
+  const body = { ...(req.body || {}) };
+  delete body.scope;
+  const merged = { ...load(scope), ...body };
+  res.ok(saveScope(scope, merged));
 });
 
 router.post('/library', (req, res) => {
-  const cfg = load();
+  const scope = requestedScope(req) || 'webui';
+  const cfg = load(scope);
   const item = req.body || {};
   if (!item.name) return res.fail('model name required', 400, 400);
   const id = item.id || `${item.provider || 'custom'}:${item.name}`;
@@ -232,12 +270,12 @@ router.post('/library', (req, res) => {
   cfg.library = normalizeLibrary({ ...cfg, library: next });
   cfg.scenarios = normalizeScenarios(cfg.scenarios || DEFAULTS.scenarios, cfg.library);
   if (!cfg.current && cfg.library.length) cfg.current = cfg.library[0].id;
-  store.write(KEY, cfg);
-  res.ok(cfg);
+  res.ok(saveScope(scope, cfg));
 });
 
 router.delete('/library/:id', (req, res) => {
-  const cfg = load();
+  const scope = requestedScope(req) || 'webui';
+  const cfg = load(scope);
   cfg.library = cfg.library.filter(m => m.id !== req.params.id);
   for (const [scene, id] of Object.entries(cfg.scenarios || {})) {
     if (id === req.params.id) cfg.scenarios[scene] = '';

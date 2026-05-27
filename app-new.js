@@ -56,6 +56,7 @@ const SVG={
   image:namedSvg('图片',16,'<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="8.5" cy="9.5" r="1.5"/><path d="M21 15l-4.5-4.5L10 17l-2.5-2.5L3 19"/></svg>'),
   sidebar:'<svg width="20" height="20" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M16.623 2.01758C18.1418 2.01763 19.373 3.24883 19.373 4.76758V15.2324C19.373 16.7512 18.1418 17.9824 16.623 17.9824H3.37695C1.85817 17.9824 0.626953 16.7512 0.626953 15.2324V4.76758C0.626953 3.2488 1.85817 2.01758 3.37695 2.01758H16.623ZM3.37695 3.51758C2.6866 3.51758 2.12695 4.07722 2.12695 4.76758V15.2324C2.12695 15.9228 2.6866 16.4824 3.37695 16.4824H16.623C17.3134 16.4824 17.873 15.9227 17.873 15.2324V4.76758C17.873 4.07726 17.3134 3.51763 16.623 3.51758H3.37695ZM4.57227 5.28711C4.98625 5.28737 5.32227 5.62306 5.32227 6.03711V13.9629C5.32227 14.3769 4.98625 14.7126 4.57227 14.7129C4.15805 14.7129 3.82227 14.3771 3.82227 13.9629V6.03711C3.82227 5.6229 4.15805 5.28711 4.57227 5.28711Z" fill="currentColor"/></svg>',
   command:namedSvg('命令',16,'<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="m4 7 5 5-5 5"/><path d="M11 17h9"/></svg>'),
+  eye:namedSvg('查看',16,'<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z"/><circle cx="12" cy="12" r="3"/></svg>'),
   panelExpand:namedSvg('知识库',16,'<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>'),
   brain:'<svg width="18" height="18" viewBox="0 0 18 18" fill="none" xmlns="http://www.w3.org/2000/svg"><g clip-path="url(#brainClip)"><path d="M7.1385 16.5C6.77104 15.3016 6.21668 14.4083 5.47541 13.8199C4.3635 12.9373 2.59681 13.4858 1.94422 12.5755C1.29162 11.6652 2.40143 9.99111 2.79088 9.00332C3.18032 8.01557 1.29817 7.6663 1.51791 7.38587C1.66441 7.19893 2.61552 6.65946 4.37126 5.76749C4.87013 2.9225 6.7128 1.5 9.89933 1.5C14.679 1.5 16.5 5.55223 16.5 8.12957C16.5 10.7069 14.295 13.4836 11.154 14.0822C10.8732 14.4913 11.2783 15.2972 12.3693 16.5" stroke="currentColor" stroke-width="1.13" stroke-linecap="round" stroke-linejoin="round"/><path fill-rule="evenodd" clip-rule="evenodd" d="M7.31153 5.43732C7.06654 6.38769 7.13944 7.055 7.53023 7.43926C7.92101 7.82356 8.58705 8.07485 9.52834 8.19316C9.31478 9.41892 9.57518 9.99399 10.3095 9.91831C11.0438 9.84264 11.485 9.53754 11.6331 9.00294C12.7807 9.32547 13.4027 9.05555 13.499 8.19316C13.6436 6.89956 12.946 5.86764 12.66 5.86764C12.374 5.86764 11.6331 5.83284 11.6331 5.43732C11.6331 5.04177 10.7676 4.81831 9.98648 4.81831C9.20535 4.81831 9.67545 4.29177 8.60284 4.49982C7.88775 4.6385 7.45733 4.95099 7.31153 5.43732Z" stroke="currentColor" stroke-width="1.13" stroke-linejoin="round"/><path d="M11.4372 9.5625C11.0559 9.79916 10.5326 10.1926 10.3122 10.5C9.76137 11.2686 9.31456 11.7365 9.2168 12.228" stroke="currentColor" stroke-width="1.13" stroke-linecap="round"/></g><defs><clipPath id="brainClip"><rect width="18" height="18" fill="white"/></clipPath></defs></svg>',
   attach:'<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48"/></svg>',
@@ -172,7 +173,7 @@ function renderPromptDebugPanel(debug){
     <span style="color:var(--c-ink-muted);font-family:var(--font-mono);flex-shrink:0">${Number(part.chars||0)} 字 / ~${Number(part.approxTokens||0)} tok</span>
   </div>`;
   }).join('');
-  return `<details class="prompt-debug-panel" style="margin-top:10px;border:1px dashed var(--c-hairline);border-radius:10px;padding:8px 10px;color:var(--c-ink-muted);font-size:12px">
+  return `<details class="prompt-debug-panel" style="margin-top:10px;border:1px dashed var(--c-hairline);border-radius:10px;padding:8px 10px;color:var(--c-ink-muted);font-size:var(--fs-sm)">
     <summary style="cursor:pointer;color:var(--c-ink)">Prompt 调试 · ${totalChars} 字 · ~${totalTokens} tok · 历史 ${historyMessages} 条</summary>
     ${matchedSkillsHtml}
     <div style="margin-top:8px;display:flex;flex-direction:column;gap:2px">${rows||'<div>没有额外系统提示词。</div>'}</div>
@@ -268,6 +269,8 @@ const state={
   _loading: true,
   model: LS.get('hermes.model',{provider:'',model:'',base:'',key:'',temperature:0.7,topP:1,maxTokens:4096}),
   modelsConfig: null,
+  modelsConfigRoot: null,
+  modelConfigScope: LS.get('hermes.modelConfigScope','webui'),
   chatModelOverride: LS.get('hermes.chatModelOverride','auto'),
   forceImageGeneration: LS.get('hermes.forceImageGeneration',false),
   pendingImageAttachments: LS.get('hermes.pendingImageAttachments',[]),
@@ -299,12 +302,123 @@ const state={
 };
 if (typeof window !== 'undefined') window.state = state;
 
+function blankModelsConfigClient(){
+  return { params:{temperature:0.7,maxTokens:4096,topP:1}, current:'', library:[], scenarios:{chat:'',reasoning:'',image:'',fallback:''} };
+}
+function isScopedModelsRoot(data){
+  return !!(data && typeof data==='object' && (data.webui || data.agent));
+}
+function normalizeModelsConfigClient(cfg){
+  const defaults=blankModelsConfigClient();
+  return { ...defaults, ...(cfg||{}), params:{...defaults.params,...((cfg||{}).params||{})}, scenarios:{...defaults.scenarios,...((cfg||{}).scenarios||{})}, library:Array.isArray(cfg?.library)?cfg.library:[] };
+}
+function normalizeModelsRootForClient(data){
+  if(isScopedModelsRoot(data)){
+    return { webui:normalizeModelsConfigClient(data.webui || data.agent), agent:normalizeModelsConfigClient(data.agent || data.webui) };
+  }
+  const migrated=normalizeModelsConfigClient(data);
+  return { webui:migrated, agent:JSON.parse(JSON.stringify(migrated)) };
+}
+function activeModelScope(){
+  return state.settings?.quickMode ? 'webui' : 'agent';
+}
+function modelScopeParam(){
+  return '?scope='+encodeURIComponent(activeModelScope());
+}
+function activeModelsConfig(){
+  if(!state.modelsConfigRoot) state.modelsConfigRoot=normalizeModelsRootForClient(state.modelsConfig);
+  const cfg=state.modelsConfigRoot[activeModelScope()] || blankModelsConfigClient();
+  state.modelsConfig=cfg;
+  return cfg;
+}
+function setActiveModelsConfig(cfg){
+  if(!state.modelsConfigRoot) state.modelsConfigRoot=normalizeModelsRootForClient(state.modelsConfig);
+  const next=normalizeModelsConfigClient(cfg);
+  state.modelsConfigRoot[activeModelScope()]=next;
+  state.modelsConfig=next;
+  return next;
+}
+function syncStateModelFromModelsConfig(cfg=activeModelsConfig()){
+  const lib=Array.isArray(cfg.library)?cfg.library:[];
+  const currentId=cfg.current || cfg.scenarios?.chat || '';
+  const current=lib.find(m=>m.id===currentId||m.name===currentId) || lib.find(m=>m.enabled!==false);
+  if(!current) return;
+  state.model={
+    provider: current.provider || '',
+    model: current.name || '',
+    base: current.base || '',
+    key: current.key || '',
+    temperature: cfg.params?.temperature || state.model.temperature || 0.7,
+    topP: cfg.params?.topP || state.model.topP || 1,
+    maxTokens: cfg.params?.maxTokens || state.model.maxTokens || 4096,
+  };
+}
+function setModelConfigScope(scope){
+  state.modelConfigScope = scope==='agent' ? 'agent' : 'webui';
+  LS.set('hermes.modelConfigScope', state.modelConfigScope);
+  activeModelsConfig();
+  syncStateModelFromModelsConfig();
+  renderPage();
+}
+
 const NAV=[
   {id:'chat',label:'对话',icon:'chat'},
   {id:'groupChat',label:'分身',icon:'group'},
   {id:'skill',label:'小脑瓜',icon:'brain'},
   {id:'settingsPage',label:'设置',icon:'settings'},
 ];
+
+let renderSeq = 0;
+let navFrame = 0;
+
+function currentRenderSeq(){
+  return Number($('#mainContent')?.dataset.renderSeq || 0);
+}
+
+function isRenderCurrent(seq){
+  return !seq || currentRenderSeq() === Number(seq);
+}
+
+function isSkillPage(tab){
+  return state.page === 'skill' && (!tab || skillCenterTab === tab);
+}
+
+function isSettingsPage(tab){
+  return state.page === 'settingsPage' && (!tab || settingsTab === tab);
+}
+
+function renderAppNow(){
+  renderSidebar();
+  renderPage();
+  toggleMobileSidebar(false);
+}
+
+function scheduleAppRender(){
+  if(navFrame) cancelAnimationFrame(navFrame);
+  navFrame = requestAnimationFrame(() => {
+    navFrame = 0;
+    renderAppNow();
+  });
+}
+
+function setSkillTab(tab){
+  skillCenterTab = tab || 'skills';
+  state.page = 'skill';
+  scheduleAppRender();
+}
+
+function setSettingsTab(tab){
+  settingsTab = tab || 'settings';
+  state.page = 'settingsPage';
+  scheduleAppRender();
+}
+
+function scrollSettingsSection(id, btn){
+  const root = document.querySelector('.settings-general-content');
+  const target = document.getElementById(id);
+  if(root && target) root.scrollTo({top: Math.max(0, target.offsetTop - 12), behavior: 'smooth'});
+  document.querySelectorAll('.settings-side-link').forEach(item=>item.classList.toggle('active', item===btn || item.dataset.target===id));
+}
 
 function save(){
   LS.set('hermes.theme',state.theme);
@@ -322,10 +436,17 @@ function save(){
 }
 
 function navigate(page){
-  state.page=page;
-  renderSidebar();
-  renderPage();
-  toggleMobileSidebar(false);
+  hideNavTooltip();
+  if(['settings','models','logs','files','gateways','usage'].includes(page)){
+    settingsTab=page;
+    state.page='settingsPage';
+  }else if(['skills','channels','memory','jobs','profiles'].includes(page)){
+    skillCenterTab=page;
+    state.page='skill';
+  }else{
+    state.page=page;
+  }
+  scheduleAppRender();
 }
 
 function toggleTheme(){
@@ -384,6 +505,8 @@ function hideNavTooltip(){
 function renderPage(){
   const main=$('#mainContent');
   if(!main) return;
+  const seq = ++renderSeq;
+  main.dataset.renderSeq = String(seq);
   if(state.page==='skill'){
     main.innerHTML=renderSkillPage();
   } else if(state.page==='settingsPage'){
@@ -393,20 +516,22 @@ function renderPage(){
   } else {
     main.innerHTML=renderChat();
   }
-  afterRender();
+  afterRender(seq);
 }
 
-function afterRender(){
+function afterRender(seq){
+  if(!isRenderCurrent(seq)) return;
   if(state.page==='chat') initChat();
   if(state.page==='terminal') initTerminal();
-  if(state.page==='skill' && skillCenterTab==='memory' && !state.memory.data && !state.memory.loading && !state.memory.failed) loadMemoryStore();
-  if(state.page==='settingsPage') { loadCliStatusCard(); loadUpdateStatus(false); }
+  if(isSkillPage('memory') && !state.memory.data && !state.memory.loading && !state.memory.failed) loadMemoryStore(false, seq);
+  if(isSettingsPage()) { loadCliStatusCard(false, seq); loadUpdateStatus(false, seq); }
   if(AgentAsk.isOpen()) AgentAsk._render();
 
   enhanceMessageMarkdown(document.getElementById('mainContent'));
 
   if(state.page==='chat' && typeof HermesArtifact !== 'undefined') {
     requestAnimationFrame(() => {
+      if(!isRenderCurrent(seq) || state.page !== 'chat') return;
       try {
         HermesArtifact.initWorkbench();
         if (state._artifactNeedsHydrate) {
@@ -425,11 +550,11 @@ function renderChat(){
   const pendingImages=state.pendingImageAttachments||[];
   const editRef=state.imageEditReference;
   const setupTips=[];
-  if(!getEnabledModels().length) setupTips.push({title:'配置模型',desc:'还没有可用模型，先添加 Provider、Base URL、API Key 和模型名。',action:"state.page='models';renderPage()",label:'去模型配置'});
+  if(!getEnabledModels().length) setupTips.push({title:'配置模型',desc:'还没有可用模型，先添加 Provider、Base URL、API Key 和模型名。',action:"setSettingsTab('models')",label:'去模型配置'});
   if(!String(state.settings.dataRootDir||state.settings.memoryDir||state.settings.imageDir||state.settings.mdLibraryDir||'').trim()) setupTips.push({title:'配置外部数据目录',desc:'建议把记忆、图片、历史和输出文档放到项目外部，方便更新和迁移。',action:"state.page='settings';renderPage()",label:'去设置'});
   const setupHtml=setupTips.length?`<div class="setup-guide-card" style="max-width:720px;margin:24px auto 0;padding:16px;border:1px solid var(--c-accent-muted);border-radius:16px;background:var(--c-accent-soft);display:flex;flex-direction:column;gap:10px">
     <strong>首次使用建议先完成配置</strong>
-    ${setupTips.map(item=>`<div style="display:flex;gap:12px;align-items:center;justify-content:space-between"><div><div style="font-weight:600">${esc(item.title)}</div><div style="font-size:12px;color:var(--c-ink-muted)">${esc(item.desc)}</div></div><button class="btn btn-secondary btn-sm" onclick="${item.action}">${esc(item.label)}</button></div>`).join('')}
+    ${setupTips.map(item=>`<div style="display:flex;gap:12px;align-items:center;justify-content:space-between"><div><div style="font-weight:var(--fw-semibold)">${esc(item.title)}</div><div style="font-size:var(--fs-sm);color:var(--c-ink-muted)">${esc(item.desc)}</div></div><button class="btn btn-secondary btn-sm" onclick="${item.action}">${esc(item.label)}</button></div>`).join('')}
   </div>`:'';
   return `
     <div class="chat-panel">
@@ -495,9 +620,9 @@ function renderChat(){
             <textarea id="chatInput" rows="1" placeholder="输入消息…" onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendMessage()}" oninput="autoResizeInput(this)"></textarea>
             <div class="chat-input-toolbar">
               <div class="chat-input-left">
-                <button class="input-action-btn toolbar-pill" onclick="document.getElementById('fileInput').click()" title="上传文件">${SVG.attach} 上传</button>
+                <button class="input-action-btn toolbar-icon-btn" onclick="document.getElementById('fileInput').click()" title="上传文件" aria-label="上传文件">${SVG.attach}</button>
                 <div class="image-tool-wrap" onmouseenter="scheduleShowImageToolSwitch()" onmouseleave="scheduleHideImageToolSwitch()">
-                  <button class="input-action-btn image-gen-toggle${state.forceImageGeneration?' active':''}" onclick="insertImagePrompt()" title="${state.forceImageGeneration?'直连生图已开启：发送会跳过 Agent':'插入生成图像提示词，让 Agent 处理生图'}">${SVG.image} 图像</button>
+                  <button class="input-action-btn toolbar-icon-btn image-gen-toggle${state.forceImageGeneration?' active':''}" onclick="insertImagePrompt()" title="${state.forceImageGeneration?'直连生图已开启：发送会跳过 Agent':'插入生成图像提示词，让 Agent 处理生图'}" aria-label="图像">${SVG.image}</button>
                   <div class="image-tool-pop" id="imageToolPop" onmouseenter="showImageToolSwitch()" onmouseleave="scheduleHideImageToolSwitch()">
                     <div>
                       <strong>跳过 Agent 直连生图</strong>
@@ -509,11 +634,11 @@ function renderChat(){
                     </label>
                   </div>
                 </div>
-                <button class="input-action-btn toolbar-pill" onclick="toggleCommandPopup()" title="打开命令面板" id="commandPopupBtn">${SVG.command} 命令</button>
-                <button class="input-action-btn toolbar-pill" onclick="toggleSkillPopup()" title="技能" id="skillPopupBtn">${SVG.skills} 技能</button>
+                <button class="input-action-btn toolbar-icon-btn" onclick="toggleCommandPopup()" title="打开命令面板" aria-label="打开命令面板" id="commandPopupBtn">${SVG.command}</button>
+                <button class="input-action-btn toolbar-icon-btn" onclick="toggleSkillPopup()" title="技能" aria-label="技能" id="skillPopupBtn">${SVG.skills}</button>
               </div>
               <div class="chat-input-right">
-                <button class="input-action-btn" onclick="toggleModelPopup()" title="选择模型" id="modelPopupBtn" style="font-size:11px;font-family:var(--font-mono);width:auto;padding:0 8px">${esc(state.chatModelOverride==='auto'?'自动':(getModelById(state.chatModelOverride)?.name||state.model.model))}</button>
+                <button class="input-action-btn" onclick="toggleModelPopup()" title="选择模型" id="modelPopupBtn" style="font-size:var(--fs-xs);font-family:var(--font-mono);width:auto;padding:0 8px">${esc(state.chatModelOverride==='auto'?'自动':(getModelById(state.chatModelOverride)?.name||state.model.model))}</button>
                 <button class="send-btn${state.isStreaming?' stop':''}" id="sendBtn" onclick="${state.isStreaming?'stopGeneration()':'sendMessage()'}" title="${state.isStreaming?'终止任务':'发送'}">${state.isStreaming?'<span class="stop-square"></span>':SVG.send}</button>
               </div>
             </div>
@@ -555,7 +680,7 @@ function renderSkillPage(){
   return `
     <div style="display:flex;flex-direction:column;height:100%">
       <div class="tabs" style="padding:0 24px">
-        ${tabs.map(t=>`<div class="tab${active===t.id?' active':''}" onclick="skillCenterTab='${t.id}';document.getElementById('mainContent').innerHTML=renderSkillPage();afterRender()">${SVG[t.icon]} ${t.label}</div>`).join('')}
+        ${tabs.map(t=>`<div class="tab${active===t.id?' active':''}" onclick="setSkillTab('${t.id}')">${SVG[t.icon]} ${t.label}</div>`).join('')}
       </div>
       <div style="flex:1;overflow-y:auto">
         ${(renderers[active]||renderSkills)()}
@@ -576,9 +701,9 @@ function renderSettingsPage(){
   return `
     <div style="display:flex;flex-direction:column;height:100%">
       <div class="tabs" style="padding:0 24px">
-        ${tabs.map(t=>`<div class="tab${active===t.id?' active':''}" onclick="settingsTab='${t.id}';document.getElementById('mainContent').innerHTML=renderSettingsPage();afterRender()">${SVG[t.icon]} ${t.label}</div>`).join('')}
+        ${tabs.map(t=>`<div class="tab${active===t.id?' active':''}" onclick="setSettingsTab('${t.id}')">${SVG[t.icon]} ${t.label}</div>`).join('')}
       </div>
-      <div style="flex:1;overflow-y:auto">
+      <div style="flex:1;overflow:hidden;min-height:0">
         ${(renderers[active]||renderSettings)()}
       </div>
     </div>`;
@@ -897,7 +1022,7 @@ function localCommandModelList(){
   if(!models.length) return '<p>还没有启用模型，请先到「设置 > 模型配置」添加 Provider 和模型。</p>';
   return `<div style="display:flex;flex-direction:column;gap:8px;margin-top:10px">${models.map(m=>`
     <button class="model-popup-item" style="display:flex;width:100%;text-align:left" onclick="selectModel('${esc(m.id)}');closeModal();toast('已切换模型：${esc(m.name)}','success')">
-      <span>${esc(m.name)}</span><span style="margin-left:auto;color:var(--c-ink-muted);font-size:11px">${esc(m.provider||'')}</span>
+      <span>${esc(m.name)}</span><span style="margin-left:auto;color:var(--c-ink-muted);font-size:var(--fs-xs)">${esc(m.provider||'')}</span>
     </button>`).join('')}</div>`;
 }
 
@@ -910,7 +1035,7 @@ function handleLocalHermesCommand(text){
     openModal(`<div style="padding:24px;min-width:min(560px,92vw)">
       <h3 style="margin:0 0 12px">Hermes 命令</h3>
       <div class="settings-desc" style="line-height:1.8">这些命令会优先在 WebUI 本地处理，避免不必要地请求模型。</div>
-      <div style="display:grid;gap:8px;margin-top:14px">${HERMES_COMMANDS.map(item=>`<div><code>${esc(item.cmd)}</code> · <strong>${esc(item.title)}</strong><br><span style="color:var(--c-ink-muted);font-size:12px">${esc(item.desc)}</span></div>`).join('')}</div>
+      <div style="display:grid;gap:8px;margin-top:14px">${HERMES_COMMANDS.map(item=>`<div><code>${esc(item.cmd)}</code> · <strong>${esc(item.title)}</strong><br><span style="color:var(--c-ink-muted);font-size:var(--fs-sm)">${esc(item.desc)}</span></div>`).join('')}</div>
       <div style="display:flex;justify-content:flex-end;margin-top:18px"><button class="btn btn-primary" onclick="closeModal()">知道了</button></div>
     </div>`);
     return true;
@@ -962,7 +1087,7 @@ function toggleModelPopup(){
       const models=getEnabledModels();
       body.innerHTML=`<div class="model-popup-item${state.chatModelOverride==='auto'?' active':''}" onclick="selectModel('auto')">自动（按场景）</div>`+
         (models.length
-          ? models.map(m=>`<div class="model-popup-item${state.chatModelOverride===m.id?' active':''}" onclick="selectModel('${esc(m.id)}')">${esc(m.name)} <span style="margin-left:auto;color:var(--c-ink-muted);font-size:11px">${esc(m.provider)}</span></div>`).join('')
+          ? models.map(m=>`<div class="model-popup-item${state.chatModelOverride===m.id?' active':''}" onclick="selectModel('${esc(m.id)}')">${esc(m.name)} <span style="margin-left:auto;color:var(--c-ink-muted);font-size:var(--fs-xs)">${esc(m.provider)}</span></div>`).join('')
           : '<div class="empty-text" style="padding:12px">还没有可用模型，请先到设置 > 模型配置添加真实 Provider。</div>');
     }
     placeInputPopup(popup,$('#modelPopupBtn'),'right');
@@ -1089,15 +1214,17 @@ function selectedProfileSkills(profile){
 }
 
 function getEnabledModels(){
-  const cfg=state.modelsConfig||{};
+  const cfg=activeModelsConfig();
   const lib=Array.isArray(cfg.library)?cfg.library:[];
   return lib.filter(m=>m.enabled!==false);
 }
 function getModelById(id){
-  return (state.modelsConfig?.library||[]).find(m=>m.id===id||m.name===id);
+  const cfg=activeModelsConfig();
+  return (cfg.library||[]).find(m=>m.id===id||m.name===id);
 }
 function scenarioModel(scene){
-  const id=state.modelsConfig?.scenarios?.[scene] || state.modelsConfig?.scenarios?.chat || state.model.model || '';
+  const cfg=activeModelsConfig();
+  const id=cfg.scenarios?.[scene] || cfg.scenarios?.chat || state.model.model || '';
   return getModelById(id)?.name || id || '';
 }
 function effectiveChatModelName(){
@@ -1621,6 +1748,7 @@ function renderMsg(m){
 
   let artifactRefsHtml='';
   let previewActionHtml='';
+  let localEditActionHtml='';
   let fileCardsHtml='';
   if(m.role==='assistant'&&typeof HermesArtifact!=='undefined'){
     const p=HermesArtifact.parseHermesStream(content);
@@ -1632,6 +1760,9 @@ function renderMsg(m){
     // 有简单 chip 时隐藏上方的富卡片，保留小卡片即可
     fileCardsHtml=artifactRefsHtml?'':renderMarkdownFileCards(m);
     previewActionHtml=buildPreviewActionHtml(m.content||content);
+    if(m.localEditContextId && !m._streaming){
+      localEditActionHtml=`<div class="local-edit-apply-row"><button type="button" class="local-edit-apply-btn" onclick="applyAssistantReplyToLocalEdit('${esc(m._msgId||'')}','${esc(m.localEditContextId)}')">应用到选区</button></div>`;
+    }
   }
   const modelBadge = '';
   const isLongUserMessage=m.role==='user' && (String(content||'').length>900 || String(content||'').split(/\r?\n/).length>14);
@@ -1645,7 +1776,7 @@ function renderMsg(m){
     <div class="msg-main">
       ${thinkingHtml}
       ${toolCallsHtml}
-      <div class="msg-bubble markdown-body${longClass}">${stepHtml}${imageLoadingHtml}${imagePromptHtml}${content?formatMsg(content):''}${renderMessageAttachments(m.attachments)}${fileCardsHtml}${artifactRefsHtml}${previewActionHtml}${modelBadge}${streamDots}${expandBtn}</div>
+      <div class="msg-bubble markdown-body${longClass}">${stepHtml}${imageLoadingHtml}${imagePromptHtml}${content?formatMsg(content):''}${renderMessageAttachments(m.attachments)}${fileCardsHtml}${artifactRefsHtml}${previewActionHtml}${localEditActionHtml}${modelBadge}${streamDots}${expandBtn}</div>
       ${renderMessageActions(m)}
     </div>
   </div>`;
@@ -1942,11 +2073,11 @@ function enhanceMessageMarkdown(root){
     wrapper.appendChild(table);
     wrapper.addEventListener('wheel',(event)=>{
       if(Math.abs(event.deltaY)<=Math.abs(event.deltaX)) return;
-      const scroller=wrapper.closest('.messages-area,.artifact-body,.artifact-history,.artifact-preview,.modal') || document.scrollingElement;
+      if(wrapper.scrollWidth>Math.ceil(wrapper.clientWidth) && Math.abs(event.deltaX)>0) return;
+      const scroller=wrapper.closest('.messages-area,.artifact-body,.artifact-history,.modal') || document.scrollingElement;
       if(!scroller || scroller===wrapper) return;
       scroller.scrollTop += event.deltaY;
-      event.preventDefault();
-    },{passive:false});
+    },{passive:true});
   });
   root.querySelectorAll('img').forEach(img=>{
     if(img.closest('.image-preview-wrap')) return;
@@ -1976,7 +2107,6 @@ function enhanceMessageMarkdown(root){
   });
   groupImageOnlyBlocks(root);
   root.querySelectorAll('pre').forEach(pre => {
-    if (pre.classList.contains('image-prompt-code')) return;
     if (pre.querySelector('.copy-code-btn') || pre.parentElement.classList.contains('code-block-wrapper')) return;
 
     const wrapper = document.createElement('div');
@@ -2353,7 +2483,7 @@ function renderImagePromptPanel(imageGeneration={}){
     : (hasOptimized && prompt!==source ? '图像提示词' : '最终提示词');
   const skill=imageGeneration.optimizeSkill ? ` · ${imageGeneration.optimizeSkill}` : '';
   return `<div class="image-prompt-panel">
-    <div class="image-prompt-panel-title"><span>${title}${esc(skill)}</span><button type="button" class="image-prompt-copy" onclick="copyText(this.closest('.image-prompt-panel')?.querySelector('.image-prompt-code')?.innerText||'','已复制提示词')" title="复制提示词" aria-label="复制提示词">${COPY_ICON}</button></div>
+    <div class="image-prompt-panel-title"><span>${title}${esc(skill)}</span></div>
     <pre class="image-prompt-code"><code>${esc(prompt)}</code></pre>
   </div>`;
 }
@@ -2584,9 +2714,24 @@ async function sendMessage(){
 
   // Add user message to local state immediately; send attachment context to Agent separately from visible bubble.
   const agentAttachmentContext=imageAttachmentAgentText(pendingImages);
-  const contentWithAttachments=txt+agentAttachmentContext;
+  const localEditContext=typeof HermesArtifact!=='undefined' && typeof HermesArtifact.getLocalEditContext==='function'
+    ? HermesArtifact.getLocalEditContext()
+    : null;
+  const localEditAgentContext=localEditContext ? [
+    '\n\n<webui_local_edit_context>',
+    '任务类型：知识库文档局部编辑',
+    `文档标题：${localEditContext.title||'当前知识库文档'}`,
+    `文档路径：${localEditContext.path||'当前 Artifact 尚未保存'}`,
+    `选区来源：${localEditContext.mode==='source'?'代码模式':'预览模式'}`,
+    '要求：只返回可替换原选区的最终片段，不要重写全文；如果需要操作文件，请只替换该选区并保存到同一路径。',
+    '选区内容：',
+    localEditContext.selectedText||'',
+    '</webui_local_edit_context>'
+  ].join('\n') : '';
+  const contentWithAttachments=txt+agentAttachmentContext+localEditAgentContext;
   const userMsgId = 'u_' + Date.now();
   const userMsg = {role:'user',content:txt,agentContent:contentWithAttachments,ts:Date.now(),attachments:pendingImages,_msgId:userMsgId};
+  if(localEditContext) userMsg.localEditContext=localEditContext;
   c.messages.push(userMsg);
   if(c.title==='新建对话') c.title=(txt||'图片任务').slice(0,24);
   c.updatedAt=Date.now();
@@ -2599,6 +2744,7 @@ async function sendMessage(){
 
   const msgId = '' + Date.now();
   const assistantMsg = { role: 'assistant', content: '', thinking: '', toolCalls: [], processEvents: [{ type: 'queued' }], _msgId: msgId, _streaming: true, ts: Date.now() };
+  if(localEditContext) assistantMsg.localEditContextId=localEditContext.id;
   c.messages.push(assistantMsg);
 
   const streamController = new AbortController();
@@ -2635,6 +2781,7 @@ async function sendMessage(){
     profileName:profile?.name||'默认助手',
     profilePrompt:profile?.systemPrompt||'',
     profileSkillIds:profile?.skillIds||[],
+    localEditContext,
   }, {
     signal: streamController.signal,
     onPerf(data) {
@@ -2916,6 +3063,37 @@ function renderMsgUpdate(msgId, msg) {
   }
 }
 
+function cleanLocalEditReplacement(text){
+  let value=String(text||'').trim();
+  value=value.replace(/<think>[\s\S]*?<\/think>/gi,'').trim();
+  const artifactMatch=value.match(/<artifact\s+[^>]*>[\s\S]*?<\/artifact>/i);
+  if(artifactMatch && typeof HermesArtifact!=='undefined'){
+    const parsed=HermesArtifact.parseHermesStream(value);
+    const last=(parsed.completedArtifacts||[]).slice(-1)[0];
+    if(last?.content) value=last.content.trim();
+    else value=(parsed.visibleText||value).trim();
+  }
+  const fenced=value.match(/^```(?:markdown|md|text)?\s*\n([\s\S]*?)\n```$/i);
+  if(fenced) value=fenced[1].trim();
+  return value;
+}
+
+async function applyAssistantReplyToLocalEdit(msgId, contextId){
+  const chat=currentChat();
+  const msg=(chat?.messages||[]).find(item=>String(item._msgId||item.id||'')===String(msgId||''));
+  const replacement=cleanLocalEditReplacement(msg?.content||'');
+  if(!replacement){ toast('没有可应用的回复内容','warning'); return; }
+  if(typeof HermesArtifact==='undefined'||typeof HermesArtifact.applyLocalEditReplacement!=='function'){
+    toast('知识库编辑器未就绪','warning');
+    return;
+  }
+  try{
+    await HermesArtifact.applyLocalEditReplacement(replacement, contextId);
+  }catch(e){
+    toast(e?.message||'应用到选区失败','error');
+  }
+}
+
 function flushMsgUpdates() {
   const perfStart = hermesPerfEnabled() ? (performance.now ? performance.now() : Date.now()) : 0;
   const updates = _pendingMsgUpdates;
@@ -2932,6 +3110,7 @@ function flushMsgUpdates() {
         }
         let refs = '';
         let previewAction = '';
+        let localEditAction = '';
         let fileCards = '';
         const stepHtml = msg.step ? `<div class="msg-step-indicator">Step ${msg.step}</div>` : '';
         const isStreaming = !!msg._streaming;
@@ -2956,6 +3135,9 @@ function flushMsgUpdates() {
             previewAction = buildPreviewActionHtml(msg.content || content);
             fileCards = refs ? '' : renderMarkdownFileCards(msg);
           }
+          if (msg.localEditContextId && !isStreaming) {
+            localEditAction = `<div class="local-edit-apply-row"><button type="button" class="local-edit-apply-btn" onclick="applyAssistantReplyToLocalEdit('${esc(msg._msgId||'')}','${esc(msg.localEditContextId)}')">应用到选区</button></div>`;
+          }
         }
         const modelBadge = '';
         const promptDebugHtml = msg.role==='assistant' ? renderPromptDebugPanel(msg.promptDebug) : '';
@@ -2965,7 +3147,7 @@ function flushMsgUpdates() {
         const bodyHtml = isStreaming && content && !fileCards && !refs
           ? `<div>${esc(content).replace(/\n/g,'<br>')}</div>`
           : (content ? formatMsg(content) : '');
-        bubble.innerHTML = stepHtml + imageLoadingHtml + imagePromptHtml + bodyHtml + renderMessageAttachments(msg.attachments) + fileCards + refs + previewAction + promptDebugHtml + modelBadge + streamDots;
+        bubble.innerHTML = stepHtml + imageLoadingHtml + imagePromptHtml + bodyHtml + renderMessageAttachments(msg.attachments) + fileCards + refs + previewAction + localEditAction + promptDebugHtml + modelBadge + streamDots;
         if (!isStreaming || fileCards || refs) enhanceMessageMarkdown(bubble);
       }
       // Update thinking / process block
@@ -3465,33 +3647,33 @@ function gcShowCreateRoom(){
   const code=Math.random().toString(36).substring(2,8).toUpperCase();
   openModal(`
     <div style="padding:24px;min-width:360px">
-      <h3 style="margin-bottom:16px;font-size:18px;font-weight:600">创建分身房间</h3>
+      <h3 style="margin-bottom:16px;font-size:var(--fs-xl);font-weight:var(--fw-semibold)">创建分身房间</h3>
       <div style="display:flex;flex-direction:column;gap:12px">
         <div>
-          <label style="font-size:12px;color:var(--c-ink-muted);margin-bottom:4px;display:block">你的昵称 *</label>
-          <input id="gcNewNick" style="width:100%;padding:8px 12px;border-radius:var(--r-md);border:1px solid var(--c-hairline);background:var(--c-canvas);color:var(--c-ink);font-size:14px" value="${esc(state.groupChat.userName)}" placeholder="输入昵称">
+          <label style="font-size:var(--fs-sm);color:var(--c-ink-muted);margin-bottom:4px;display:block">你的昵称 *</label>
+          <input id="gcNewNick" style="width:100%;padding:8px 12px;border-radius:var(--r-md);border:1px solid var(--c-hairline);background:var(--c-canvas);color:var(--c-ink);font-size:var(--fs-base)" value="${esc(state.groupChat.userName)}" placeholder="输入昵称">
         </div>
         <div>
-          <label style="font-size:12px;color:var(--c-ink-muted);margin-bottom:4px;display:block">自我描述</label>
-          <input id="gcNewDesc" style="width:100%;padding:8px 12px;border-radius:var(--r-md);border:1px solid var(--c-hairline);background:var(--c-canvas);color:var(--c-ink);font-size:14px" placeholder="一句话介绍自己">
+          <label style="font-size:var(--fs-sm);color:var(--c-ink-muted);margin-bottom:4px;display:block">自我描述</label>
+          <input id="gcNewDesc" style="width:100%;padding:8px 12px;border-radius:var(--r-md);border:1px solid var(--c-hairline);background:var(--c-canvas);color:var(--c-ink);font-size:var(--fs-base)" placeholder="一句话介绍自己">
         </div>
         <div>
-          <label style="font-size:12px;color:var(--c-ink-muted);margin-bottom:4px;display:block">房间名称 *</label>
-          <input id="gcNewRoomName" style="width:100%;padding:8px 12px;border-radius:var(--r-md);border:1px solid var(--c-hairline);background:var(--c-canvas);color:var(--c-ink);font-size:14px" placeholder="例如：产品讨论">
+          <label style="font-size:var(--fs-sm);color:var(--c-ink-muted);margin-bottom:4px;display:block">房间名称 *</label>
+          <input id="gcNewRoomName" style="width:100%;padding:8px 12px;border-radius:var(--r-md);border:1px solid var(--c-hairline);background:var(--c-canvas);color:var(--c-ink);font-size:var(--fs-base)" placeholder="例如：产品讨论">
         </div>
         <div>
-          <label style="font-size:12px;color:var(--c-ink-muted);margin-bottom:4px;display:block">邀请码</label>
+          <label style="font-size:var(--fs-sm);color:var(--c-ink-muted);margin-bottom:4px;display:block">邀请码</label>
           <div style="display:flex;gap:8px">
-            <input id="gcNewInvite" style="flex:1;padding:8px 12px;border-radius:var(--r-md);border:1px solid var(--c-hairline);background:var(--c-canvas);color:var(--c-ink);font-size:14px;font-family:var(--font-mono)" value="${code}">
+            <input id="gcNewInvite" style="flex:1;padding:8px 12px;border-radius:var(--r-md);border:1px solid var(--c-hairline);background:var(--c-canvas);color:var(--c-ink);font-size:var(--fs-base);font-family:var(--font-mono)" value="${code}">
             <button class="btn btn-secondary btn-sm" onclick="document.getElementById('gcNewInvite').value=Math.random().toString(36).substring(2,8).toUpperCase()">刷新</button>
           </div>
         </div>
         <div style="border-top:1px solid var(--c-hairline);padding-top:12px;margin-top:4px">
-          <div style="font-size:12px;color:var(--c-ink-muted);margin-bottom:8px;cursor:pointer" onclick="this.nextElementSibling.style.display=this.nextElementSibling.style.display==='none'?'flex':'none'">▶ 压缩设置</div>
+          <div style="font-size:var(--fs-sm);color:var(--c-ink-muted);margin-bottom:8px;cursor:pointer" onclick="this.nextElementSibling.style.display=this.nextElementSibling.style.display==='none'?'flex':'none'">▶ 压缩设置</div>
           <div style="display:none;flex-direction:column;gap:8px">
-            <div><label style="font-size:12px;color:var(--c-ink-muted)">触发阈值 (tokens)</label><input id="gcNewTrigger" type="number" style="width:100%;padding:6px 10px;border-radius:var(--r-sm);border:1px solid var(--c-hairline);background:var(--c-canvas);color:var(--c-ink);font-size:13px" value="100000"></div>
-            <div><label style="font-size:12px;color:var(--c-ink-muted)">最大历史 (tokens)</label><input id="gcNewMaxHist" type="number" style="width:100%;padding:6px 10px;border-radius:var(--r-sm);border:1px solid var(--c-hairline);background:var(--c-canvas);color:var(--c-ink);font-size:13px" value="32000"></div>
-            <div><label style="font-size:12px;color:var(--c-ink-muted)">保留最近消息数</label><input id="gcNewTail" type="number" style="width:100%;padding:6px 10px;border-radius:var(--r-sm);border:1px solid var(--c-hairline);background:var(--c-canvas);color:var(--c-ink);font-size:13px" value="20"></div>
+            <div><label style="font-size:var(--fs-sm);color:var(--c-ink-muted)">触发阈值 (tokens)</label><input id="gcNewTrigger" type="number" style="width:100%;padding:6px 10px;border-radius:var(--r-sm);border:1px solid var(--c-hairline);background:var(--c-canvas);color:var(--c-ink);font-size:var(--fs-md)" value="100000"></div>
+            <div><label style="font-size:var(--fs-sm);color:var(--c-ink-muted)">最大历史 (tokens)</label><input id="gcNewMaxHist" type="number" style="width:100%;padding:6px 10px;border-radius:var(--r-sm);border:1px solid var(--c-hairline);background:var(--c-canvas);color:var(--c-ink);font-size:var(--fs-md)" value="32000"></div>
+            <div><label style="font-size:var(--fs-sm);color:var(--c-ink-muted)">保留最近消息数</label><input id="gcNewTail" type="number" style="width:100%;padding:6px 10px;border-radius:var(--r-sm);border:1px solid var(--c-hairline);background:var(--c-canvas);color:var(--c-ink);font-size:var(--fs-md)" value="20"></div>
           </div>
         </div>
         <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:8px">
@@ -3535,22 +3717,22 @@ function gcShowAddAgent(){
   const available=profiles.filter(p=>!existingProfiles.includes(p));
   openModal(`
     <div style="padding:24px;min-width:360px">
-      <h3 style="margin-bottom:16px;font-size:18px;font-weight:600">添加分身</h3>
+      <h3 style="margin-bottom:16px;font-size:var(--fs-xl);font-weight:var(--fw-semibold)">添加分身</h3>
       <div style="display:flex;flex-direction:column;gap:12px">
         <div>
-          <label style="font-size:12px;color:var(--c-ink-muted);margin-bottom:4px;display:block">选择 Profile *</label>
-          <select id="gcAgentProfile" style="width:100%;padding:8px 12px;border-radius:var(--r-md);border:1px solid var(--c-hairline);background:var(--c-canvas);color:var(--c-ink);font-size:14px">
+          <label style="font-size:var(--fs-sm);color:var(--c-ink-muted);margin-bottom:4px;display:block">选择 Profile *</label>
+          <select id="gcAgentProfile" style="width:100%;padding:8px 12px;border-radius:var(--r-md);border:1px solid var(--c-hairline);background:var(--c-canvas);color:var(--c-ink);font-size:var(--fs-base)">
             ${available.map(p=>`<option value="${p}">${p}</option>`).join('')}
             ${available.length===0?'<option disabled>所有 Profile 已添加</option>':''}
           </select>
         </div>
         <div>
-          <label style="font-size:12px;color:var(--c-ink-muted);margin-bottom:4px;display:block">分身名称 *</label>
-          <input id="gcAgentName" style="width:100%;padding:8px 12px;border-radius:var(--r-md);border:1px solid var(--c-hairline);background:var(--c-canvas);color:var(--c-ink);font-size:14px" placeholder="给分身起个名字">
+          <label style="font-size:var(--fs-sm);color:var(--c-ink-muted);margin-bottom:4px;display:block">分身名称 *</label>
+          <input id="gcAgentName" style="width:100%;padding:8px 12px;border-radius:var(--r-md);border:1px solid var(--c-hairline);background:var(--c-canvas);color:var(--c-ink);font-size:var(--fs-base)" placeholder="给分身起个名字">
         </div>
         <div>
-          <label style="font-size:12px;color:var(--c-ink-muted);margin-bottom:4px;display:block">描述</label>
-          <input id="gcAgentDesc" style="width:100%;padding:8px 12px;border-radius:var(--r-md);border:1px solid var(--c-hairline);background:var(--c-canvas);color:var(--c-ink);font-size:14px" placeholder="一句话描述 Agent 的能力">
+          <label style="font-size:var(--fs-sm);color:var(--c-ink-muted);margin-bottom:4px;display:block">描述</label>
+          <input id="gcAgentDesc" style="width:100%;padding:8px 12px;border-radius:var(--r-md);border:1px solid var(--c-hairline);background:var(--c-canvas);color:var(--c-ink);font-size:var(--fs-base)" placeholder="一句话描述 Agent 的能力">
         </div>
         <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:8px">
           <button class="btn btn-secondary" onclick="closeModal()">取消</button>
@@ -3589,10 +3771,10 @@ function getProfiles(){
   if(!_profilesCache){
     _profilesCache=LS.get('hermes.profiles',[
       {id:'default',name:'默认助手',modelId:'auto',model:scenarioModel('chat'),systemPrompt:'',color:'var(--c-block-lime)'},
-      {id:'coder',name:'代码专家',modelId:state.modelsConfig?.scenarios?.reasoning||'auto',model:scenarioModel('reasoning'),systemPrompt:'你是一位资深代码专家，擅长代码审查、重构和架构设计。',color:'var(--c-block-lilac)'},
-      {id:'pm',name:'产品经理',modelId:state.modelsConfig?.scenarios?.reasoning||'auto',model:scenarioModel('reasoning'),systemPrompt:'你是一位产品经理，擅长需求拆解、验收标准和产品方案。',color:'var(--c-block-cream)'},
-      {id:'designer',name:'设计顾问',modelId:state.modelsConfig?.scenarios?.chat||'auto',model:scenarioModel('chat'),systemPrompt:'你是一位设计顾问，关注视觉层级、交互细节和用户体验。',color:'var(--c-block-mint)'},
-      {id:'researcher',name:'研究员',modelId:state.modelsConfig?.scenarios?.reasoning||'auto',model:scenarioModel('reasoning'),systemPrompt:'你是一位研究员，擅长资料整理、分析和长文总结。',color:'var(--c-block-coral)'},
+      {id:'coder',name:'代码专家',modelId:activeModelsConfig().scenarios?.reasoning||'auto',model:scenarioModel('reasoning'),systemPrompt:'你是一位资深代码专家，擅长代码审查、重构和架构设计。',color:'var(--c-block-lilac)'},
+      {id:'pm',name:'产品经理',modelId:activeModelsConfig().scenarios?.reasoning||'auto',model:scenarioModel('reasoning'),systemPrompt:'你是一位产品经理，擅长需求拆解、验收标准和产品方案。',color:'var(--c-block-cream)'},
+      {id:'designer',name:'设计顾问',modelId:activeModelsConfig().scenarios?.chat||'auto',model:scenarioModel('chat'),systemPrompt:'你是一位设计顾问，关注视觉层级、交互细节和用户体验。',color:'var(--c-block-mint)'},
+      {id:'researcher',name:'研究员',modelId:activeModelsConfig().scenarios?.reasoning||'auto',model:scenarioModel('reasoning'),systemPrompt:'你是一位研究员，擅长资料整理、分析和长文总结。',color:'var(--c-block-coral)'},
     ]);
     _profilesCache=_profilesCache.map(p=>normalizeProfile(p));
     LS.set('hermes.profiles',_profilesCache);
@@ -3633,9 +3815,9 @@ gcShowAddAgent=function(){
   const existing=(state.groupChat.agents[room.id]||[]).map(a=>a.profileId);
   const available=profiles.filter(p=>!existing.includes(p.id));
   openModal(`<div style="padding:24px;min-width:420px">
-    <h3 style="margin-bottom:16px;font-size:18px;font-weight:600">添加分身</h3>
+    <h3 style="margin-bottom:16px;font-size:var(--fs-xl);font-weight:var(--fw-semibold)">添加分身</h3>
     <div style="display:grid;gap:12px">
-      <label style="font-size:12px;color:var(--c-ink-muted)">选择角色</label>
+      <label style="font-size:var(--fs-sm);color:var(--c-ink-muted)">选择角色</label>
       <select id="gcAgentProfile" onchange="toggleGcCustomAgent()">
         ${available.map(p=>`<option value="${p.id}">${esc(p.name)} · ${esc(p.model||scenarioModel('chat'))}</option>`).join('')}
         <option value="__custom__">自定义分身</option>
@@ -3709,23 +3891,23 @@ function gcShowSettings(){
 
   openModal(`
     <div style="padding:24px;min-width:400px;max-height:80vh;overflow-y:auto">
-      <h3 style="margin-bottom:16px;font-size:18px;font-weight:600">房间设置</h3>
+      <h3 style="margin-bottom:16px;font-size:var(--fs-xl);font-weight:var(--fw-semibold)">房间设置</h3>
       <div style="display:flex;flex-direction:column;gap:16px">
         <div>
-          <div style="font-size:13px;font-weight:480;margin-bottom:8px">房间信息</div>
-          <div style="font-size:13px;color:var(--c-ink-muted)">名称：${esc(room.name)}</div>
-          <div style="font-size:13px;color:var(--c-ink-muted)">邀请码：<code style="font-family:var(--font-mono);background:var(--c-surface2);padding:2px 6px;border-radius:var(--r-sm)">${esc(room.inviteCode||'无')}</code></div>
+          <div style="font-size:var(--fs-md);font-weight:var(--fw-medium);margin-bottom:8px">房间信息</div>
+          <div style="font-size:var(--fs-md);color:var(--c-ink-muted)">名称：${esc(room.name)}</div>
+          <div style="font-size:var(--fs-md);color:var(--c-ink-muted)">邀请码：<code style="font-family:var(--font-mono);background:var(--c-surface2);padding:2px 6px;border-radius:var(--r-sm)">${esc(room.inviteCode||'无')}</code></div>
         </div>
         <div>
-          <div style="font-size:13px;font-weight:480;margin-bottom:8px">Agent 列表 (${agents.length})</div>
-          ${agentsHtml||'<div style="font-size:13px;color:var(--c-ink-muted)">暂无 Agent</div>'}
+          <div style="font-size:var(--fs-md);font-weight:var(--fw-medium);margin-bottom:8px">Agent 列表 (${agents.length})</div>
+          ${agentsHtml||'<div style="font-size:var(--fs-md);color:var(--c-ink-muted)">暂无 Agent</div>'}
         </div>
         <div>
-          <div style="font-size:13px;font-weight:480;margin-bottom:8px">压缩配置</div>
+          <div style="font-size:var(--fs-md);font-weight:var(--fw-medium);margin-bottom:8px">压缩配置</div>
           <div style="display:flex;flex-direction:column;gap:8px">
-            <div><label style="font-size:12px;color:var(--c-ink-muted)">触发阈值</label><input id="gcSetTrigger" type="number" style="width:100%;padding:6px 10px;border-radius:var(--r-sm);border:1px solid var(--c-hairline);background:var(--c-canvas);color:var(--c-ink);font-size:13px" value="${room.triggerTokens||100000}"></div>
-            <div><label style="font-size:12px;color:var(--c-ink-muted)">最大历史</label><input id="gcSetMaxHist" type="number" style="width:100%;padding:6px 10px;border-radius:var(--r-sm);border:1px solid var(--c-hairline);background:var(--c-canvas);color:var(--c-ink);font-size:13px" value="${room.maxHistoryTokens||32000}"></div>
-            <div><label style="font-size:12px;color:var(--c-ink-muted)">保留消息数</label><input id="gcSetTail" type="number" style="width:100%;padding:6px 10px;border-radius:var(--r-sm);border:1px solid var(--c-hairline);background:var(--c-canvas);color:var(--c-ink);font-size:13px" value="${room.tailMessageCount||20}"></div>
+            <div><label style="font-size:var(--fs-sm);color:var(--c-ink-muted)">触发阈值</label><input id="gcSetTrigger" type="number" style="width:100%;padding:6px 10px;border-radius:var(--r-sm);border:1px solid var(--c-hairline);background:var(--c-canvas);color:var(--c-ink);font-size:var(--fs-md)" value="${room.triggerTokens||100000}"></div>
+            <div><label style="font-size:var(--fs-sm);color:var(--c-ink-muted)">最大历史</label><input id="gcSetMaxHist" type="number" style="width:100%;padding:6px 10px;border-radius:var(--r-sm);border:1px solid var(--c-hairline);background:var(--c-canvas);color:var(--c-ink);font-size:var(--fs-md)" value="${room.maxHistoryTokens||32000}"></div>
+            <div><label style="font-size:var(--fs-sm);color:var(--c-ink-muted)">保留消息数</label><input id="gcSetTail" type="number" style="width:100%;padding:6px 10px;border-radius:var(--r-sm);border:1px solid var(--c-hairline);background:var(--c-canvas);color:var(--c-ink);font-size:var(--fs-md)" value="${room.tailMessageCount||20}"></div>
           </div>
         </div>
         <div style="display:flex;gap:8px;justify-content:space-between;margin-top:8px">
@@ -3930,7 +4112,7 @@ function gcOnInput(textarea){
     <div class="gc-mention-item${i===0?' active':''}" onclick="gcInsertMention('${esc(a.name)}')">
       <div class="gc-mention-avatar" style="background:${a.color}">${esc(a.name.charAt(0))}</div>
       <span>${esc(a.name)}</span>
-      <span style="font-size:11px;color:var(--c-ink-muted);margin-left:auto">${esc(a.profile)}</span>
+      <span style="font-size:var(--fs-xs);color:var(--c-ink-muted);margin-left:auto">${esc(a.profile)}</span>
     </div>
   `).join('');
   menu.classList.add('show');
@@ -3973,7 +4155,7 @@ function openGcMarkdownPreview(id){
   if(!content) return;
   openModal(`<div style="padding:0;min-width:min(920px,92vw);max-width:92vw;max-height:86vh;display:flex;flex-direction:column">
     <div style="display:flex;align-items:center;justify-content:space-between;padding:14px 18px;border-bottom:1px solid var(--c-hairline)">
-      <h3 style="font-size:16px;font-weight:700">分身 Markdown 预览</h3>
+      <h3 style="font-size:var(--fs-lg);font-weight:var(--fw-bold)">分身 Markdown 预览</h3>
       <button class="history-popup-close" onclick="closeModal()">${SVG.x}</button>
     </div>
     <div class="artifact-preview markdown-body" style="padding:22px;overflow:auto">${renderMessageMarkdown(content)}</div>
@@ -3996,7 +4178,7 @@ function gcToggleRooms(){
 
 function renderSearch(){
   return `<div class="search-view">
-    <div class="page-header" style="cursor:pointer" onclick="this.nextElementSibling.classList.toggle('expanded')"><h2>搜索 <span style="font-size:12px;color:var(--c-ink-muted);margin-left:6px">▶</span></h2>
+    <div class="page-header" style="cursor:pointer" onclick="this.nextElementSibling.classList.toggle('expanded')"><h2>搜索 <span style="font-size:var(--fs-sm);color:var(--c-ink-muted);margin-left:6px">▶</span></h2>
       <div class="search-wrap">${SVG.search}<input class="search-input" id="searchInput" placeholder="搜索对话、技能、设置…" oninput="doSearch(this.value)"></div>
     </div>
     <div class="search-content" id="searchResults">
@@ -4053,11 +4235,11 @@ function renderJobs(){
 }
 function addJob(){
   openModal(`<div style="padding:24px;min-width:380px">
-    <h3 style="margin-bottom:16px;font-size:18px;font-weight:600">新建任务</h3>
+    <h3 style="margin-bottom:16px;font-size:var(--fs-xl);font-weight:var(--fw-semibold)">新建任务</h3>
     <div style="display:flex;flex-direction:column;gap:12px">
-      <div><label style="font-size:12px;color:var(--c-ink-muted);margin-bottom:4px;display:block">任务名称</label><input id="jobName" style="width:100%;padding:8px 12px;border-radius:var(--r-md);border:1px solid var(--c-hairline);background:var(--c-canvas);color:var(--c-ink);font-size:14px" placeholder="例如：每日代码审查"></div>
-      <div><label style="font-size:12px;color:var(--c-ink-muted);margin-bottom:4px;display:block">Cron 表达式</label><input id="jobSchedule" style="width:100%;padding:8px 12px;border-radius:var(--r-md);border:1px solid var(--c-hairline);background:var(--c-canvas);color:var(--c-ink);font-size:14px;font-family:var(--font-mono)" placeholder="0 9 * * *" value="0 9 * * *"></div>
-      <div style="font-size:12px;color:var(--c-ink-muted)">常用：每天9点 <code>0 9 * * *</code> · 每周五17点 <code>0 17 * * 5</code> · 每小时 <code>0 * * * *</code></div>
+      <div><label style="font-size:var(--fs-sm);color:var(--c-ink-muted);margin-bottom:4px;display:block">任务名称</label><input id="jobName" style="width:100%;padding:8px 12px;border-radius:var(--r-md);border:1px solid var(--c-hairline);background:var(--c-canvas);color:var(--c-ink);font-size:var(--fs-base)" placeholder="例如：每日代码审查"></div>
+      <div><label style="font-size:var(--fs-sm);color:var(--c-ink-muted);margin-bottom:4px;display:block">Cron 表达式</label><input id="jobSchedule" style="width:100%;padding:8px 12px;border-radius:var(--r-md);border:1px solid var(--c-hairline);background:var(--c-canvas);color:var(--c-ink);font-size:var(--fs-base);font-family:var(--font-mono)" placeholder="0 9 * * *" value="0 9 * * *"></div>
+      <div style="font-size:var(--fs-sm);color:var(--c-ink-muted)">常用：每天9点 <code>0 9 * * *</code> · 每周五17点 <code>0 17 * * 5</code> · 每小时 <code>0 * * * *</code></div>
       <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:8px">
         <button class="btn btn-secondary" onclick="closeModal()">取消</button>
         <button class="btn btn-primary" onclick="doAddJob()">创建</button>
@@ -4183,7 +4365,7 @@ function renderSkills(){
       </div>
       <div class="skill-files">
         <h4>技能文件 <button class="btn btn-xs btn-secondary" style="margin-left:8px" onclick="refreshSkillFiles('${sel.id}')">刷新文件</button></h4>
-        <div class="skill-file-list">${filesHtml||'<div style="font-size:13px;color:var(--c-ink-muted)">无附件</div>'}</div>
+        <div class="skill-file-list">${filesHtml||'<div style="font-size:var(--fs-md);color:var(--c-ink-muted)">无附件</div>'}</div>
       </div>
       <div id="skFileContent"></div>
       `;
@@ -4356,7 +4538,7 @@ function skViewFile(skillId,fileName){
   el.innerHTML=`<div style="margin-top:16px">
     <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
       <button class="btn btn-secondary btn-sm" onclick="document.getElementById('skFileContent').innerHTML=''">← 返回</button>
-      <span style="font-size:13px;color:var(--c-ink-muted)">${esc(s.name)} / ${esc(fileName)}</span>
+      <span style="font-size:var(--fs-md);color:var(--c-ink-muted)">${esc(s.name)} / ${esc(fileName)}</span>
     </div>
     <div class="skill-content">${esc(content)}</div>
   </div>`;
@@ -4365,36 +4547,36 @@ function skViewFile(skillId,fileName){
 function skAdd(){
   openModal(`
     <div style="padding:24px;min-width:420px">
-      <h3 style="margin-bottom:16px;font-size:18px;font-weight:600">添加技能</h3>
+      <h3 style="margin-bottom:16px;font-size:var(--fs-xl);font-weight:var(--fw-semibold)">添加技能</h3>
       <div style="display:flex;flex-direction:column;gap:12px">
         <div>
-          <label style="font-size:12px;color:var(--c-ink-muted);margin-bottom:4px;display:block">上传技能文件</label>
+          <label style="font-size:var(--fs-sm);color:var(--c-ink-muted);margin-bottom:4px;display:block">上传技能文件</label>
           <div style="border:2px dashed var(--c-hairline);border-radius:var(--r-lg);padding:24px;text-align:center;cursor:pointer;transition:all var(--transition-fast)" onclick="document.getElementById('skFileInput').click()" onmouseover="this.style.borderColor='var(--c-accent)'" onmouseout="this.style.borderColor='var(--c-hairline)'">
             <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="var(--c-ink-muted)" stroke-width="1.5" style="margin:0 auto 8px"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
-            <div style="font-size:13px;color:var(--c-ink-muted)">点击上传 .md / .yaml / .json 技能文件</div>
-            <div id="skFileName" style="font-size:12px;color:var(--c-accent);margin-top:4px"></div>
+            <div style="font-size:var(--fs-md);color:var(--c-ink-muted)">点击上传 .md / .yaml / .json 技能文件</div>
+            <div id="skFileName" style="font-size:var(--fs-sm);color:var(--c-accent);margin-top:4px"></div>
           </div>
           <input type="file" id="skFileInput" style="display:none" accept=".md,.yaml,.yml,.json" onchange="document.getElementById('skFileName').textContent=this.files[0]?.name||''">
         </div>
         <div>
-          <label style="font-size:12px;color:var(--c-ink-muted);margin-bottom:4px;display:block">技能名称 *</label>
-          <input id="skAddName" style="width:100%;padding:8px 12px;border-radius:var(--r-md);border:1px solid var(--c-hairline);background:var(--c-canvas);color:var(--c-ink);font-size:14px" placeholder="例如：代码评审">
+          <label style="font-size:var(--fs-sm);color:var(--c-ink-muted);margin-bottom:4px;display:block">技能名称 *</label>
+          <input id="skAddName" style="width:100%;padding:8px 12px;border-radius:var(--r-md);border:1px solid var(--c-hairline);background:var(--c-canvas);color:var(--c-ink);font-size:var(--fs-base)" placeholder="例如：代码评审">
         </div>
         <div>
-          <label style="font-size:12px;color:var(--c-ink-muted);margin-bottom:4px;display:block">描述（留空则AI自动生成）</label>
-          <textarea id="skAddDesc" style="width:100%;padding:8px 12px;border-radius:var(--r-md);border:1px solid var(--c-hairline);background:var(--c-canvas);color:var(--c-ink);font-size:14px;min-height:60px;resize:vertical" placeholder="描述技能的功能和用途"></textarea>
+          <label style="font-size:var(--fs-sm);color:var(--c-ink-muted);margin-bottom:4px;display:block">描述（留空则AI自动生成）</label>
+          <textarea id="skAddDesc" style="width:100%;padding:8px 12px;border-radius:var(--r-md);border:1px solid var(--c-hairline);background:var(--c-canvas);color:var(--c-ink);font-size:var(--fs-base);min-height:60px;resize:vertical" placeholder="描述技能的功能和用途"></textarea>
         </div>
         <div>
-          <label style="font-size:12px;color:var(--c-ink-muted);margin-bottom:4px;display:block">分类</label>
-          <input id="skAddCat" style="width:100%;padding:8px 12px;border-radius:var(--r-md);border:1px solid var(--c-hairline);background:var(--c-canvas);color:var(--c-ink);font-size:14px" placeholder="例如：开发" value="自定义">
+          <label style="font-size:var(--fs-sm);color:var(--c-ink-muted);margin-bottom:4px;display:block">分类</label>
+          <input id="skAddCat" style="width:100%;padding:8px 12px;border-radius:var(--r-md);border:1px solid var(--c-hairline);background:var(--c-canvas);color:var(--c-ink);font-size:var(--fs-base)" placeholder="例如：开发" value="自定义">
         </div>
         <div>
-          <label style="font-size:12px;color:var(--c-ink-muted);margin-bottom:4px;display:block">触发词</label>
-          <input id="skAddTriggers" style="width:100%;padding:8px 12px;border-radius:var(--r-md);border:1px solid var(--c-hairline);background:var(--c-canvas);color:var(--c-ink);font-size:14px" placeholder="例如：代码、bug、重构">
+          <label style="font-size:var(--fs-sm);color:var(--c-ink-muted);margin-bottom:4px;display:block">触发词</label>
+          <input id="skAddTriggers" style="width:100%;padding:8px 12px;border-radius:var(--r-md);border:1px solid var(--c-hairline);background:var(--c-canvas);color:var(--c-ink);font-size:var(--fs-base)" placeholder="例如：代码、bug、重构">
         </div>
         <div>
-          <label style="font-size:12px;color:var(--c-ink-muted);margin-bottom:4px;display:block">优先级</label>
-          <input id="skAddPriority" type="number" min="0" max="100" value="50" style="width:120px;padding:8px 12px;border-radius:var(--r-md);border:1px solid var(--c-hairline);background:var(--c-canvas);color:var(--c-ink);font-size:14px">
+          <label style="font-size:var(--fs-sm);color:var(--c-ink-muted);margin-bottom:4px;display:block">优先级</label>
+          <input id="skAddPriority" type="number" min="0" max="100" value="50" style="width:120px;padding:8px 12px;border-radius:var(--r-md);border:1px solid var(--c-hairline);background:var(--c-canvas);color:var(--c-ink);font-size:var(--fs-base)">
         </div>
         <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:8px">
           <button class="btn btn-secondary" onclick="closeModal()">取消</button>
@@ -4448,27 +4630,27 @@ function skEdit(id){
   const triggers=Array.isArray(s.triggers)?s.triggers.join('、'):String(s.triggers||'');
   openModal(`
     <div style="padding:24px;min-width:380px">
-      <h3 style="margin-bottom:16px;font-size:18px;font-weight:600">编辑技能</h3>
+      <h3 style="margin-bottom:16px;font-size:var(--fs-xl);font-weight:var(--fw-semibold)">编辑技能</h3>
       <div style="display:flex;flex-direction:column;gap:12px">
         <div>
-          <label style="font-size:12px;color:var(--c-ink-muted);margin-bottom:4px;display:block">技能名称</label>
-          <input id="skEditName" style="width:100%;padding:8px 12px;border-radius:var(--r-md);border:1px solid var(--c-hairline);background:var(--c-canvas);color:var(--c-ink);font-size:14px" value="${esc(s.name)}">
+          <label style="font-size:var(--fs-sm);color:var(--c-ink-muted);margin-bottom:4px;display:block">技能名称</label>
+          <input id="skEditName" style="width:100%;padding:8px 12px;border-radius:var(--r-md);border:1px solid var(--c-hairline);background:var(--c-canvas);color:var(--c-ink);font-size:var(--fs-base)" value="${esc(s.name)}">
         </div>
         <div>
-          <label style="font-size:12px;color:var(--c-ink-muted);margin-bottom:4px;display:block">描述</label>
-          <textarea id="skEditDesc" style="width:100%;padding:8px 12px;border-radius:var(--r-md);border:1px solid var(--c-hairline);background:var(--c-canvas);color:var(--c-ink);font-size:14px;min-height:60px;resize:vertical">${esc(s.description)}</textarea>
+          <label style="font-size:var(--fs-sm);color:var(--c-ink-muted);margin-bottom:4px;display:block">描述</label>
+          <textarea id="skEditDesc" style="width:100%;padding:8px 12px;border-radius:var(--r-md);border:1px solid var(--c-hairline);background:var(--c-canvas);color:var(--c-ink);font-size:var(--fs-base);min-height:60px;resize:vertical">${esc(s.description)}</textarea>
         </div>
         <div>
-          <label style="font-size:12px;color:var(--c-ink-muted);margin-bottom:4px;display:block">分类</label>
-          <input id="skEditCat" style="width:100%;padding:8px 12px;border-radius:var(--r-md);border:1px solid var(--c-hairline);background:var(--c-canvas);color:var(--c-ink);font-size:14px" value="${esc(s.category)}">
+          <label style="font-size:var(--fs-sm);color:var(--c-ink-muted);margin-bottom:4px;display:block">分类</label>
+          <input id="skEditCat" style="width:100%;padding:8px 12px;border-radius:var(--r-md);border:1px solid var(--c-hairline);background:var(--c-canvas);color:var(--c-ink);font-size:var(--fs-base)" value="${esc(s.category)}">
         </div>
         <div>
-          <label style="font-size:12px;color:var(--c-ink-muted);margin-bottom:4px;display:block">触发词</label>
-          <input id="skEditTriggers" style="width:100%;padding:8px 12px;border-radius:var(--r-md);border:1px solid var(--c-hairline);background:var(--c-canvas);color:var(--c-ink);font-size:14px" value="${esc(triggers)}" placeholder="例如：设计、UI、弹窗">
+          <label style="font-size:var(--fs-sm);color:var(--c-ink-muted);margin-bottom:4px;display:block">触发词</label>
+          <input id="skEditTriggers" style="width:100%;padding:8px 12px;border-radius:var(--r-md);border:1px solid var(--c-hairline);background:var(--c-canvas);color:var(--c-ink);font-size:var(--fs-base)" value="${esc(triggers)}" placeholder="例如：设计、UI、弹窗">
         </div>
         <div>
-          <label style="font-size:12px;color:var(--c-ink-muted);margin-bottom:4px;display:block">优先级</label>
-          <input id="skEditPriority" type="number" min="0" max="100" style="width:120px;padding:8px 12px;border-radius:var(--r-md);border:1px solid var(--c-hairline);background:var(--c-canvas);color:var(--c-ink);font-size:14px" value="${esc(s.priority||0)}">
+          <label style="font-size:var(--fs-sm);color:var(--c-ink-muted);margin-bottom:4px;display:block">优先级</label>
+          <input id="skEditPriority" type="number" min="0" max="100" style="width:120px;padding:8px 12px;border-radius:var(--r-md);border:1px solid var(--c-hairline);background:var(--c-canvas);color:var(--c-ink);font-size:var(--fs-base)" value="${esc(s.priority||0)}">
         </div>
         <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:8px">
           <button class="btn btn-secondary" onclick="closeModal()">取消</button>
@@ -4498,8 +4680,8 @@ function skDelete(id){
   if(s.source==='builtin'){toast('内置技能不可删除','error');return}
   openModal(`
     <div style="padding:24px;min-width:320px">
-      <h3 style="margin-bottom:12px;font-size:18px;font-weight:600">确认删除</h3>
-      <p style="font-size:14px;color:var(--c-ink-muted);margin-bottom:20px">确定要删除技能 "${esc(s.name)}" 吗？此操作不可撤销。</p>
+      <h3 style="margin-bottom:12px;font-size:var(--fs-xl);font-weight:var(--fw-semibold)">确认删除</h3>
+      <p style="font-size:var(--fs-base);color:var(--c-ink-muted);margin-bottom:20px">确定要删除技能 "${esc(s.name)}" 吗？此操作不可撤销。</p>
       <div style="display:flex;gap:8px;justify-content:flex-end">
         <button class="btn btn-secondary" onclick="closeModal()">取消</button>
         <button class="btn btn-primary" style="background:var(--c-error)" onclick="skDoDelete('${id}')">删除</button>
@@ -4572,16 +4754,16 @@ function renderMemory(){
       <div class="memory-sections">
         <div class="memory-section">
           <div class="section-header"><div class="section-title-row"><span class="section-icon">${SVG.memory}</span><span class="section-title">核心记忆</span><button class="btn btn-xs btn-ghost" onclick="editMemory('core')" style="margin-left:auto">编辑</button></div></div>
-          <div class="section-body"><pre style="white-space:pre-wrap;font-family:var(--font-mono);font-size:13px">${state.memories.core||'<span class="empty-text">暂无核心记忆</span>'}</pre></div>
+          <div class="section-body"><pre style="white-space:pre-wrap;font-family:var(--font-mono);font-size:var(--fs-md)">${state.memories.core||'<span class="empty-text">暂无核心记忆</span>'}</pre></div>
         </div>
         <div class="memory-section">
           <div class="section-header"><div class="section-title-row"><span class="section-icon">${SVG.chat}</span><span class="section-title">上下文记忆</span><button class="btn btn-xs btn-ghost" onclick="editMemory('context')" style="margin-left:auto">编辑</button></div></div>
-          <div class="section-body"><pre style="white-space:pre-wrap;font-family:var(--font-mono);font-size:13px">${state.memories.context||'<span class="empty-text">暂无上下文记忆</span>'}</pre></div>
+          <div class="section-body"><pre style="white-space:pre-wrap;font-family:var(--font-mono);font-size:var(--fs-md)">${state.memories.context||'<span class="empty-text">暂无上下文记忆</span>'}</pre></div>
         </div>
         <div class="memory-section">
           <div class="section-header"><div class="section-title-row"><span class="section-icon">${SVG.history}</span><span class="section-title">情景记忆</span><button class="btn btn-xs btn-ghost" onclick="addMemoryEpisode()" style="margin-left:auto">添加</button></div></div>
           <div class="section-body">
-            ${state.memories.episodes&&state.memories.episodes.length?state.memories.episodes.map((e,i)=>`<div style="padding:8px 0;border-bottom:1px solid var(--c-hairline-soft);display:flex;justify-content:space-between;align-items:start"><div style="flex:1"><div style="font-size:13px">${esc(e.content)}</div><div style="font-size:11px;color:var(--c-ink-muted)">${new Date(e.ts).toLocaleString()}</div></div><button class="btn btn-xs btn-ghost" style="color:var(--c-error);flex-shrink:0" onclick="deleteMemoryEpisode(${i})">删除</button></div>`).join(''):'<span class="empty-text">暂无情景记忆</span>'}
+            ${state.memories.episodes&&state.memories.episodes.length?state.memories.episodes.map((e,i)=>`<div style="padding:8px 0;border-bottom:1px solid var(--c-hairline-soft);display:flex;justify-content:space-between;align-items:start"><div style="flex:1"><div style="font-size:var(--fs-md)">${esc(e.content)}</div><div style="font-size:var(--fs-xs);color:var(--c-ink-muted)">${new Date(e.ts).toLocaleString()}</div></div><button class="btn btn-xs btn-ghost" style="color:var(--c-error);flex-shrink:0" onclick="deleteMemoryEpisode(${i})">删除</button></div>`).join(''):'<span class="empty-text">暂无情景记忆</span>'}
           </div>
         </div>
       </div>
@@ -4592,8 +4774,8 @@ function editMemory(field){
   const label=field==='core'?'核心记忆':'上下文记忆';
   const val=state.memories[field]||'';
   openModal(`<div style="padding:24px;min-width:420px">
-    <h3 style="margin-bottom:16px;font-size:18px;font-weight:600">编辑${label}</h3>
-    <textarea id="memEditVal" style="width:100%;min-height:200px;padding:12px;border-radius:var(--r-md);border:1px solid var(--c-hairline);background:var(--c-canvas);color:var(--c-ink);font-size:14px;font-family:var(--font-mono);resize:vertical">${esc(val)}</textarea>
+    <h3 style="margin-bottom:16px;font-size:var(--fs-xl);font-weight:var(--fw-semibold)">编辑${label}</h3>
+    <textarea id="memEditVal" style="width:100%;min-height:200px;padding:12px;border-radius:var(--r-md);border:1px solid var(--c-hairline);background:var(--c-canvas);color:var(--c-ink);font-size:var(--fs-base);font-family:var(--font-mono);resize:vertical">${esc(val)}</textarea>
     <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px">
       <button class="btn btn-secondary" onclick="closeModal()">取消</button>
       <button class="btn btn-primary" onclick="saveMemoryField('${field}')">保存</button>
@@ -4606,8 +4788,8 @@ function saveMemoryField(field){
 }
 function addMemoryEpisode(){
   openModal(`<div style="padding:24px;min-width:380px">
-    <h3 style="margin-bottom:16px;font-size:18px;font-weight:600">添加情景记忆</h3>
-    <textarea id="memEpVal" style="width:100%;min-height:100px;padding:12px;border-radius:var(--r-md);border:1px solid var(--c-hairline);background:var(--c-canvas);color:var(--c-ink);font-size:14px;resize:vertical" placeholder="输入要记住的内容…"></textarea>
+    <h3 style="margin-bottom:16px;font-size:var(--fs-xl);font-weight:var(--fw-semibold)">添加情景记忆</h3>
+    <textarea id="memEpVal" style="width:100%;min-height:100px;padding:12px;border-radius:var(--r-md);border:1px solid var(--c-hairline);background:var(--c-canvas);color:var(--c-ink);font-size:var(--fs-base);resize:vertical" placeholder="输入要记住的内容…"></textarea>
     <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px">
       <button class="btn btn-secondary" onclick="closeModal()">取消</button>
       <button class="btn btn-primary" onclick="doAddMemoryEpisode()">添加</button>
@@ -4670,7 +4852,7 @@ function renderMemoryLibrary(){
     </div>`:'<div class="memory-empty-small">还没有对话 Markdown。发送一次对话后会自动生成。</div>';
   const typeConversationHtml=typeGroups.length?typeGroups.map(group=>`
     <div class="memory-month">
-      <div class="memory-month-title">${esc(group.type)} <span>${group.files.length}</span></div>
+      <div class="memory-month-title">${esc(group.type)} <span>${(group.files||[]).length}</span></div>
       ${(group.files||[]).map(conversationCard).join('')}
     </div>`).join(''):'<div class="memory-empty-small">类型分类等待 Agent 归纳。当前还没有可分类的 Markdown。</div>';
   const conversationHtml=conversationView==='type'?typeConversationHtml:allConversationHtml;
@@ -4757,7 +4939,7 @@ function setMemoryConversationView(view){
   restoreMemorySidebarScroll();
 }
 
-async function loadMemoryStore(force){
+async function loadMemoryStore(force, seq){
   if(force) state.memory.failed=false;
   if(state.memory.data&&!force) return state.memory.data;
   state.memory.loading=true;
@@ -4836,35 +5018,35 @@ function renderModelsLegacy(){
     <div class="page-header"><h2>模型配置</h2></div>
     <div class="models-content" style="padding:24px;max-width:800px">
       <div class="card" style="margin-bottom:24px">
-        <h3 style="font-size:16px;font-weight:600;margin-bottom:16px">当前配置</h3>
+        <h3 style="font-size:var(--fs-lg);font-weight:var(--fw-semibold);margin-bottom:16px">当前配置</h3>
         <div style="display:grid;gap:12px">
           <div style="display:flex;gap:12px">
-            <div style="flex:1"><label style="font-size:12px;color:var(--c-ink-muted)">Provider</label><input id="mProvider" list="providerList" value="${esc(state.model.provider||'openai')}" style="width:100%;margin-top:4px" oninput="onProviderInput()">
+            <div style="flex:1"><label style="font-size:var(--fs-sm);color:var(--c-ink-muted)">Provider</label><input id="mProvider" list="providerList" value="${esc(state.model.provider||'openai')}" style="width:100%;margin-top:4px" oninput="onProviderInput()">
             <datalist id="providerList">${providers.map(p=>`<option value="${p.name.toLowerCase()}">`).join('')}</datalist></div>
-            <div style="flex:1;display:flex;gap:6px;align-items:flex-end"><div style="flex:1"><label style="font-size:12px;color:var(--c-ink-muted)">模型</label><input id="mModel" list="modelList" value="${esc(state.model.model)}" style="width:100%;margin-top:4px">
+            <div style="flex:1;display:flex;gap:6px;align-items:flex-end"><div style="flex:1"><label style="font-size:var(--fs-sm);color:var(--c-ink-muted)">模型</label><input id="mModel" list="modelList" value="${esc(state.model.model)}" style="width:100%;margin-top:4px">
             <datalist id="modelList">${providerModels.map(m=>`<option value="${m}">`).join('')}</datalist></div>
             <button class="btn btn-secondary btn-sm" onclick="fetchModelsForCurrent()" title="获取模型" style="height:38px;flex-shrink:0">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M21 12a9 9 0 11-6.219-8.56"/><polyline points="21 3 21 9 15 9"/></svg>
               获取
             </button></div>
           </div>
-          <div><label style="font-size:12px;color:var(--c-ink-muted)">Base URL</label><input id="mBase" value="${esc(state.model.base)}" style="width:100%;margin-top:4px"></div>
-          <div><label style="font-size:12px;color:var(--c-ink-muted)">API Key</label><input id="mKey" type="password" value="${esc(state.model.key)}" style="width:100%;margin-top:4px"></div>
+          <div><label style="font-size:var(--fs-sm);color:var(--c-ink-muted)">Base URL</label><input id="mBase" value="${esc(state.model.base)}" style="width:100%;margin-top:4px"></div>
+          <div><label style="font-size:var(--fs-sm);color:var(--c-ink-muted)">API Key</label><input id="mKey" type="password" value="${esc(state.model.key)}" style="width:100%;margin-top:4px"></div>
           <div style="display:flex;gap:12px">
-            <div style="flex:1"><label style="font-size:12px;color:var(--c-ink-muted)">Temperature <span id="tVal">${state.model.temperature}</span></label><input id="mTemp" type="range" min="0" max="2" step="0.1" value="${state.model.temperature}" style="width:100%;margin-top:4px" oninput="document.getElementById('tVal').textContent=this.value"></div>
-            <div style="flex:1"><label style="font-size:12px;color:var(--c-ink-muted)">Top P <span id="pVal">${state.model.topP}</span></label><input id="mTopP" type="range" min="0" max="1" step="0.1" value="${state.model.topP}" style="width:100%;margin-top:4px" oninput="document.getElementById('pVal').textContent=this.value"></div>
-            <div style="flex:1"><label style="font-size:12px;color:var(--c-ink-muted)">Max Tokens</label><input id="mMax" type="number" value="${state.model.maxTokens}" style="width:100%;margin-top:4px"></div>
+            <div style="flex:1"><label style="font-size:var(--fs-sm);color:var(--c-ink-muted)">Temperature <span id="tVal">${state.model.temperature}</span></label><input id="mTemp" type="range" min="0" max="2" step="0.1" value="${state.model.temperature}" style="width:100%;margin-top:4px" oninput="document.getElementById('tVal').textContent=this.value"></div>
+            <div style="flex:1"><label style="font-size:var(--fs-sm);color:var(--c-ink-muted)">Top P <span id="pVal">${state.model.topP}</span></label><input id="mTopP" type="range" min="0" max="1" step="0.1" value="${state.model.topP}" style="width:100%;margin-top:4px" oninput="document.getElementById('pVal').textContent=this.value"></div>
+            <div style="flex:1"><label style="font-size:var(--fs-sm);color:var(--c-ink-muted)">Max Tokens</label><input id="mMax" type="number" value="${state.model.maxTokens}" style="width:100%;margin-top:4px"></div>
           </div>
           <div style="display:flex;gap:8px;justify-content:flex-end"><button class="btn btn-secondary btn-sm" onclick="testModel()">测试连接</button><button class="btn btn-primary btn-sm" onclick="saveModel()">保存</button></div>
-          <div id="modelMsg" style="font-size:12px;color:var(--c-ink-muted)"></div>
+          <div id="modelMsg" style="font-size:var(--fs-sm);color:var(--c-ink-muted)"></div>
         </div>
       </div>
       <div class="card" style="margin-bottom:24px">
-        <h3 style="font-size:16px;font-weight:600;margin-bottom:16px">获取模型</h3>
+        <h3 style="font-size:var(--fs-lg);font-weight:var(--fw-semibold);margin-bottom:16px">获取模型</h3>
         <div style="display:grid;gap:12px">
-          <div><label style="font-size:12px;color:var(--c-ink-muted)">API URL</label><input id="fetchUrl" placeholder="https://your-provider.example/v1/models" style="width:100%;margin-top:4px"></div>
-          <div><label style="font-size:12px;color:var(--c-ink-muted)">API Key</label><input id="fetchKey" type="password" placeholder="sk-..." style="width:100%;margin-top:4px"></div>
-          <div style="display:flex;gap:8px;align-items:center"><button class="btn btn-accent btn-sm" onclick="fetchModels()">获取模型</button><span id="fetchMsg" style="font-size:12px;color:var(--c-ink-muted)"></span></div>
+          <div><label style="font-size:var(--fs-sm);color:var(--c-ink-muted)">API URL</label><input id="fetchUrl" placeholder="https://your-provider.example/v1/models" style="width:100%;margin-top:4px"></div>
+          <div><label style="font-size:var(--fs-sm);color:var(--c-ink-muted)">API Key</label><input id="fetchKey" type="password" placeholder="sk-..." style="width:100%;margin-top:4px"></div>
+          <div style="display:flex;gap:8px;align-items:center"><button class="btn btn-accent btn-sm" onclick="fetchModels()">获取模型</button><span id="fetchMsg" style="font-size:var(--fs-sm);color:var(--c-ink-muted)"></span></div>
           <div id="fetchResult" style="display:none">
             <div style="display:flex;gap:8px;margin-bottom:8px"><button class="btn btn-xs btn-secondary" onclick="selectAllFetchModels()">全选</button><button class="btn btn-xs btn-secondary" onclick="deselectAllFetchModels()">取消全选</button><button class="btn btn-xs btn-primary" onclick="enableSelectedModels()">启用选中</button></div>
             <div id="fetchModelList" style="max-height:240px;overflow-y:auto;display:flex;flex-direction:column;gap:2px"></div>
@@ -4920,7 +5102,7 @@ function saveModel(){
   body[state.model.provider] = { base: state.model.base, key: state.model.key, model: state.model.model };
   body.current = state.model.model;
   body.params = { temperature: state.model.temperature, maxTokens: state.model.maxTokens, topP: state.model.topP };
-  apiPut('/api/models', body);
+  apiPut('/api/models'+modelScopeParam(), body);
   toast('模型配置已保存','success');
 }
 
@@ -4953,7 +5135,7 @@ async function fetchModels(){
     if(!data||!data.models||data.models.length===0){msg.textContent='未找到模型';return}
     msg.textContent='找到 '+data.models.length+' 个模型';
     result.style.display='block';
-    list.innerHTML=data.models.map((m,i)=>`<label style="display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:var(--r-sm);cursor:pointer;font-size:13px;transition:background var(--transition-fast)" onmouseover="this.style.background='var(--c-accent-soft)'" onmouseout="this.style.background='transparent'"><input type="checkbox" class="fetch-model-cb" value="${esc(typeof m==='string'?m:m.id||'')}" data-name="${esc(typeof m==='string'?m:m.id||'')}">${esc(typeof m==='string'?m:JSON.stringify(m))}</label>`).join('');
+    list.innerHTML=data.models.map((m,i)=>`<label style="display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:var(--r-sm);cursor:pointer;font-size:var(--fs-md);transition:background var(--transition-fast)" onmouseover="this.style.background='var(--c-accent-soft)'" onmouseout="this.style.background='transparent'"><input type="checkbox" class="fetch-model-cb" value="${esc(typeof m==='string'?m:m.id||'')}" data-name="${esc(typeof m==='string'?m:m.id||'')}">${esc(typeof m==='string'?m:JSON.stringify(m))}</label>`).join('');
   }catch(e){
     msg.textContent='获取失败: '+e.message;
   }
@@ -4979,7 +5161,7 @@ let usageRange=LS.get('hermes.usageRange','30d');
 let usageCustomStart=LS.get('hermes.usageCustomStart','');
 let usageCustomEnd=LS.get('hermes.usageCustomEnd','');
 function renderModelsV2Legacy(){
-  const cfg=state.modelsConfig||{};
+  const cfg=activeModelsConfig();
   const lib=Array.isArray(cfg.library)?cfg.library:[];
   const enabled=lib.filter(m=>m.enabled!==false);
   const scenarios=cfg.scenarios||{};
@@ -5061,12 +5243,12 @@ function renderModelsV2Legacy(){
 // Legacy model page kept only for reference; the active entry is renderModelsV3 below.
 
 async function persistModelsConfig(cfg){
-  const data=await apiPut('/api/models',cfg);
-  if(data) state.modelsConfig=data;
+  const data=await apiPut('/api/models'+modelScopeParam(),cfg);
+  if(data) setActiveModelsConfig(data);
   return data;
 }
 async function setScenarioModel(scene,id){
-  const cfg=state.modelsConfig||{};
+  const cfg=activeModelsConfig();
   cfg.scenarios={...(cfg.scenarios||{}),[scene]:id};
   if(scene==='chat') cfg.current=id || cfg.current || '';
   await persistModelsConfig(cfg);
@@ -5087,7 +5269,7 @@ async function applyFastestChatModel(){
   toast(`已切换普通对话为最快模型：${model.name}`,'success');
 }
 function toggleLibraryModel(id,on){
-  const cfg=state.modelsConfig||{};
+  const cfg=activeModelsConfig();
   const item=(cfg.library||[]).find(m=>m.id===id);
   if(item){item.enabled=on;persistModelsConfig(cfg).then(()=>renderPage())}
 }
@@ -5139,7 +5321,7 @@ async function addSelectedFetchedModels(){
   const selected=[...document.querySelectorAll('.fetch-model-cb:checked')].map(c=>c.value);
   const f=state._fetchedModels;
   if(!f||!selected.length){toast('请先选择模型','info');return}
-  const cfg=state.modelsConfig||{library:[],scenarios:{}};
+  const cfg=activeModelsConfig();
   const existing=new Map((cfg.library||[]).map(m=>[m.id,m]));
   selected.forEach(name=>{
     existing.set(`${f.provider}:${name}`,{id:`${f.provider}:${name}`,provider:f.provider,name,base:f.base,key:f.key,enabled:true,tags:[],apiFormat:f.apiFormat,authType:f.authType,authHeader:f.authHeader});
@@ -5156,7 +5338,7 @@ function addModelModal(){
 function openModelEditor(model){
   const isEdit=!!model;
   openModal(`<div style="padding:24px;min-width:460px">
-    <h3 style="margin-bottom:16px;font-size:18px;font-weight:600">${isEdit?'编辑模型':'添加模型'}</h3>
+    <h3 style="margin-bottom:16px;font-size:var(--fs-xl);font-weight:var(--fw-semibold)">${isEdit?'编辑模型':'添加模型'}</h3>
     <div style="display:grid;gap:12px">
       <input id="addModelProvider" placeholder="Provider，例如 openai / deepseek / siliconflow" value="${esc(model?.provider||'')}">
       <input id="addModelName" placeholder="模型名称，例如 claude-sonnet-thinking" value="${esc(model?.name||'')}">
@@ -5185,14 +5367,14 @@ async function doSaveModel(existingId){
   const name=$('#addModelName')?.value?.trim();
   if(!name){toast('请填写模型名称','error');return}
   const item={id:existingId||`${provider}:${name}`,provider,name,base:$('#addModelBase')?.value?.trim()||'',key:$('#addModelKey')?.value||'',enabled:true,tags:getModelById(existingId)?.tags||[],apiFormat:$('#addModelApiFormat')?.value||'openai-chat',authType:$('#addModelAuthType')?.value||'bearer',authHeader:$('#addModelAuthHeader')?.value?.trim()||''};
-  const data=await apiPost('/api/models/library',item);
-  if(data){state.modelsConfig=data;closeModal();renderPage();toast(existingId?'模型已保存':'模型已添加','success')}
+  const data=await apiPost('/api/models/library'+modelScopeParam(),item);
+  if(data){setActiveModelsConfig(data);closeModal();renderPage();toast(existingId?'模型已保存':'模型已添加','success')}
 }
 async function deleteLibraryModel(id){
   const okConfirm=await askConfirm('确认删除这个模型？如果它正在某个应用场景中使用，会自动清空该场景选择。');
   if(!okConfirm) return;
-  const data=await fetch(apiBase()+'/api/models/library/'+encodeURIComponent(id),{method:'DELETE',cache:'no-store',headers:{'Cache-Control':'no-cache'}}).then(r=>r.json()).catch(()=>null);
-  if(data&&data.code===0){state.modelsConfig=data.data;renderPage();toast('模型已删除','info')}
+  const data=await fetch(apiBase()+'/api/models/library/'+encodeURIComponent(id)+modelScopeParam(),{method:'DELETE',cache:'no-store',headers:{'Cache-Control':'no-cache'}}).then(r=>r.json()).catch(()=>null);
+  if(data&&data.code===0){setActiveModelsConfig(data.data);renderPage();toast('模型已删除','info')}
   else toast('删除失败','error');
 }
 async function testLibraryModel(id){
@@ -5288,97 +5470,52 @@ function updateModelFormatHint(prefix='m'){
 }
 
 function renderModelsV3(){
-  const cfg=state.modelsConfig||{library:[],scenarios:{}};
+  const cfg=activeModelsConfig();
+  const scope=activeModelScope();
   const lib=Array.isArray(cfg.library)?cfg.library:[];
   const enabled=lib.filter(m=>m.enabled!==false);
   const scenarios=cfg.scenarios||{};
+  const fastestChat=fastestBenchmarkedChatModel();
   const scenarioRows=[
-    ['chat','普通对话','日常问答和轻量任务。对话页选择“自动”时优先使用这里。'],
-    ['reasoning','深度推理','复杂操作、代码、规划、长链路任务和分身协作。'],
-    ['image','图像生成','后续接入图像模型时，Agent 会优先调用这里。'],
-    ['fallback','失败回退','普通对话模型失败时可回退到这里。'],
+    ['chat','普通对话','日常问答和轻量任务。对话页选择“自动”时优先使用这里。','chat'],
+    ['reasoning','深度推理','复杂操作、代码、规划、长链路任务和分身协作。','brain'],
+    ['image','图像生成','图片生成和图生图场景会优先调用这里。','image'],
+    ['fallback','失败退回','普通对话模型失败时自动回退到这里。','shield'],
   ];
   const optionHtml=(selected)=>`<option value="">未设置</option>`+enabled.map(m=>`<option value="${esc(m.id)}"${selected===m.id?' selected':''}>${esc(m.name)} · ${esc(m.provider||'custom')}</option>`).join('');
   const groups=lib.reduce((acc,m)=>{const k=m.provider||'custom';(acc[k]=acc[k]||[]).push(m);return acc},{});
   const row=m=>`<div class="model-lib-row">
-    <label class="model-check" title="启用模型"><input type="checkbox" ${m.enabled!==false?'checked':''} onchange="toggleLibraryModel('${esc(m.id)}',this.checked)"><span></span></label>
-    <div class="model-lib-main">
-      <div class="model-lib-name">${esc(m.name)}</div>
-      <div class="model-lib-meta">${esc(apiFormatLabel(m.apiFormat))} · ${esc(authTypeLabel(m.authType,m.authHeader))} · ${esc(m.base||'未填写 Base URL')}${m.benchmark?` · 首包 ${Number(m.benchmark.firstTokenMs||0)}ms · 总耗时 ${Number(m.benchmark.totalMs||0)}ms`:''}</div>
-    </div>
+    <div class="model-lib-main"><div class="model-lib-name">${esc(m.name)}</div><div class="model-lib-meta">${esc(apiFormatLabel(m.apiFormat))} · ${esc(authTypeLabel(m.authType,m.authHeader))} · ${esc(m.base||'未填写 Base URL')}${m.benchmark?` · 首包 ${Number(m.benchmark.firstTokenMs||0)}ms · 总耗时 ${Number(m.benchmark.totalMs||0)}ms`:''}</div></div>
     <div class="model-lib-tags">${(m.tags||[]).map(t=>`<span>${esc(t)}</span>`).join('')}</div>
-    <button class="btn btn-xs btn-secondary" onclick="editLibraryModel('${esc(m.id)}')">编辑</button>
-    <button class="btn btn-xs btn-secondary" id="modelTestBtn_${domId(m.id)}" onclick="testLibraryModel('${esc(m.id)}')">测试</button>
-    <button class="btn btn-xs btn-secondary" id="modelBenchBtn_${domId(m.id)}" onclick="benchmarkLibraryModel('${esc(m.id)}')">测速</button>
-    <button class="btn btn-xs btn-ghost" style="color:var(--c-error)" onclick="deleteLibraryModel('${esc(m.id)}')">删除</button>
+    <div class="model-lib-actions"><button class="btn btn-xs btn-secondary" onclick="editLibraryModel('${esc(m.id)}')">编辑</button><button class="btn btn-xs btn-secondary" id="modelTestBtn_${domId(m.id)}" onclick="testLibraryModel('${esc(m.id)}')">测试</button><button class="btn btn-xs btn-ghost" style="color:var(--c-error)" onclick="deleteLibraryModel('${esc(m.id)}')">删除</button></div>
   </div>`;
-  const groupHtml=Object.entries(groups).sort(([a],[b])=>a.localeCompare(b)).map(([provider,items])=>`
-    <div class="model-provider-group">
-      <div class="model-provider-head"><strong>${esc(provider)}</strong><span>${items.filter(m=>m.enabled!==false).length}/${items.length} 已启用</span></div>
-      ${items.map(row).join('')}
-    </div>`).join('');
-  const currentCards=scenarioRows.map(([id,title])=>{
+  const groupHtml=Object.entries(groups).sort(([a],[b])=>a.localeCompare(b)).map(([provider,items])=>`<div class="model-provider-group"><div class="model-provider-head"><strong>${esc(provider)}</strong><span>${items.filter(m=>m.enabled!==false).length}/${items.length} 已启用</span></div>${items.map(row).join('')}</div>`).join('');
+  const scenarioCards=scenarioRows.map(([id,title,desc,icon])=>{
     const model=getModelById(scenarios[id]);
-    return `<div><strong>${title}</strong><span>${model?`${esc(model.name)} · ${esc(model.provider||'custom')}`:'未设置'}</span></div>`;
+    return `<article class="scenario-card"><div class="scenario-card-top"><div class="scenario-icon">${SVG[icon]||SVG.models}</div><div><strong>${title}</strong><span>${desc}</span></div></div><select onchange="setScenarioModel('${id}',this.value)">${optionHtml(scenarios[id])}</select><div class="scenario-current">当前：${model?`${esc(model.name)} · ${esc(model.provider||'custom')}`:'未设置'}</div></article>`;
   }).join('');
   return `<div class="models-view">
-    <div class="page-header"><h2>模型配置</h2><button class="btn btn-sm btn-primary" onclick="addModelModal()">添加模型</button></div>
+    <div class="page-header"><div><h2>模型配置</h2><p class="page-subtitle">按场景选择模型，并在下方维护真实 Provider 与模型库。</p></div><button class="btn btn-sm btn-primary" onclick="addModelModal()">添加模型</button></div>
     <div class="models-content">
-      <section class="model-panel" style="margin-bottom:16px">
-        <h3>当前生效</h3>
-        <p>这里展示真实后端配置，不再内置演示模型。没有配置时，对话会走 Hermes CLI 或提示你先添加模型。</p>
-        <div class="model-effective-grid">${currentCards}</div>
-        <div style="display:flex;align-items:center;gap:10px;margin-top:12px;flex-wrap:wrap">
-          <button class="btn btn-secondary btn-sm" onclick="applyFastestChatModel()" ${fastestChat?'':'disabled'}>使用最快普通模型</button>
-          <span style="font-size:12px;color:var(--c-ink-muted)">${fastestChat?`测速最快：${esc(fastestChat.name)} · 首包 ${Number(fastestChat.benchmark?.firstTokenMs||0)}ms`:'需要先对模型库里的聊天模型测速'}</span>
-        </div>
+      <section class="model-panel model-scenario-panel">
+        <div class="model-panel-head"><div><h3>应用场景</h3><p>四类核心场景直接选择模型，一个模型可以复用到多个场景。</p></div><div class="model-fastest-hint"><button class="btn btn-secondary btn-sm" onclick="applyFastestChatModel()" ${fastestChat?'':'disabled'}>使用最快普通模型</button><span>${fastestChat?`测速最快：${esc(fastestChat.name)} · 首包 ${Number(fastestChat.benchmark?.firstTokenMs||0)}ms`:'需要先对模型库里的聊天模型测速'}</span></div></div>
+        <div class="scenario-card-grid">${scenarioCards}</div>
       </section>
-      <div class="model-layout">
-        <section class="model-panel">
-          <h3>应用场景</h3>
-          <p>一个模型可以复用到多个场景；对话页默认“自动”，除非手动指定某个模型。</p>
-          ${scenarioRows.map(([id,title,desc])=>`<div class="scenario-row">
-            <div><strong>${title}</strong><span>${desc}</span></div>
-            <select onchange="setScenarioModel('${id}',this.value)">${optionHtml(scenarios[id])}</select>
-          </div>`).join('')}
-        </section>
-        <section class="model-panel">
-          <h3>获取模型</h3>
-          <p>填写 Provider、Base URL 和 Key 后，从远端拉取模型列表。New API / One API / 中转站通常选择 OpenAI 兼容。</p>
+      <div class="model-layout model-main-layout">
+        <section class="model-panel model-fetch-panel">
+          <h3>获取模型</h3><p>填写 Provider、Base URL 和 Key 后，从远端拉取模型列表。New API / One API / 中转站通常选择 OpenAI 兼容。</p>
           <div class="model-connector-grid">
-            <input id="mProvider" placeholder="Provider，如 New API / deepseek / openrouter" value="${esc(state.model.provider||'')}" oninput="applyProviderPreset('m')">
-            <select id="mApiFormat" onchange="applyApiFormatPreset('m')">
-              <option value="openai-chat">OpenAI 兼容 / Chat Completions</option>
-              <option value="openai-image">OpenAI 图片接口 / Images</option>
-              <option value="ollama">Ollama / 本地</option>
-              <option value="anthropic_messages">Anthropic / Messages</option>
-              <option value="gemini">Gemini（预留）</option>
-            </select>
-            <input id="mBase" placeholder="Base URL，如 http://host:3000 或 https://api.xxx.com/v1" value="${esc(state.model.base||'')}">
-            <select id="mAuthType" onchange="toggleCustomAuthHeader('m')">
-              <option value="bearer">Bearer Token</option>
-              <option value="x-api-key">x-api-key</option>
-              <option value="api-key">api-key</option>
-              <option value="custom">自定义 Header</option>
-              <option value="none">无需认证</option>
-            </select>
-            <input id="mAuthHeader" placeholder="自定义认证 Header" style="display:none">
-            <input id="mKey" type="password" placeholder="API Key / Token" value="${esc(state.model.key||'')}">
-            <div id="mFormatHint" class="model-format-hint"></div>
-            <button class="btn btn-secondary" id="fetchModelsBtn" onclick="fetchModelsForLibrary()">获取模型</button>
-          </div>
-          <div id="modelMsg" class="model-msg"></div>
-          <div id="fetchModelsList" class="model-fetch-list" style="display:none">
-            <div class="model-fetch-actions"><button class="btn btn-xs btn-secondary" onclick="selectAllFetchModels()">全选</button><button class="btn btn-xs btn-secondary" onclick="deselectAllFetchModels()">取消全选</button><button class="btn btn-xs btn-primary" onclick="addSelectedFetchedModels()">加入模型库</button></div>
-            <div id="fetchModelsItems"></div>
-          </div>
+            <label class="model-field"><span class="model-field-label">Provider 名称</span><input id="mProvider" placeholder="如 New API / deepseek / openrouter" value="${esc(state.model.provider||'')}" oninput="applyProviderPreset('m')"></label>
+            <label class="model-field"><span class="model-field-label">接口格式</span><select id="mApiFormat" onchange="applyApiFormatPreset('m')"><option value="openai-chat">OpenAI 兼容 / Chat Completions</option><option value="openai-image">OpenAI 图片接口 / Images</option><option value="ollama">Ollama / 本地</option><option value="anthropic_messages">Anthropic / Messages</option><option value="gemini">Gemini（预留）</option></select></label>
+            <label class="model-field"><span class="model-field-label">API 请求地址</span><input id="mBase" placeholder="如 http://host:3000 或 https://api.xxx.com/v1" value="${esc(state.model.base||'')}"></label>
+            <label class="model-field"><span class="model-field-label">认证方式</span><select id="mAuthType" onchange="toggleCustomAuthHeader('m')"><option value="bearer">Bearer Token</option><option value="x-api-key">x-api-key</option><option value="api-key">api-key</option><option value="custom">自定义 Header</option><option value="none">无需认证</option></select></label>
+            <label class="model-field" id="mAuthHeaderWrap" style="display:none"><span class="model-field-label">自定义 Header</span><input id="mAuthHeader" placeholder="自定义认证 Header"></label>
+            <label class="model-field model-field-wide"><span class="model-field-label">API Key</span><div class="model-secret-field"><input id="mKey" type="password" placeholder="API Key / Token" value="${esc(state.model.key||'')}"><button type="button" class="model-secret-toggle" onclick="toggleSecretInput('mKey',this)" title="显示/隐藏 API Key" aria-label="显示/隐藏 API Key">${SVG.eye}</button></div></label>
+            <div id="mFormatHint" class="model-format-hint"></div><button class="btn btn-secondary" id="fetchModelsBtn" onclick="fetchModelsForLibrary()">获取模型</button></div>
+          <div id="modelMsg" class="model-msg"></div><div id="fetchModelsList" class="model-fetch-list" style="display:none"><div class="model-fetch-actions"><button class="btn btn-xs btn-secondary" onclick="selectAllFetchModels()">全选</button><button class="btn btn-xs btn-secondary" onclick="deselectAllFetchModels()">取消全选</button><button class="btn btn-xs btn-primary" onclick="addSelectedFetchedModels()">加入模型库</button></div><div id="fetchModelsItems"></div></div>
         </section>
+        <section class="model-panel model-library-panel"><h3>模型库</h3><p>模型库按 Provider 分组，是对话、角色和分身共用的真实配置。</p><div class="model-lib-list">${lib.length?groupHtml:'<div class="model-empty-state"><strong>还没有模型</strong><span>添加或获取真实 Provider 后，这里才会出现可用模型。WebUI 不再预置假数据。</span><button class="btn btn-sm btn-primary" onclick="addModelModal()">添加第一个模型</button></div>'}</div></section>
       </div>
-      <section class="model-panel">
-        <h3>模型库</h3>
-        <p>模型库按 Provider 分组，是对话、角色和分身共用的真实配置。</p>
-        <div class="model-lib-list">${lib.length?groupHtml:'<div class="model-empty-state"><strong>还没有模型</strong><span>添加或获取真实 Provider 后，这里才会出现可用模型。WebUI 不再预置假数据。</span><button class="btn btn-sm btn-primary" onclick="addModelModal()">添加第一个模型</button></div>'}</div>
-      </section>
     </div>
   </div>`;
 }
@@ -5386,7 +5523,7 @@ function renderModelsV3(){
 renderModels=renderModelsV3;
 
 async function setScenarioModel(scene,id){
-  const cfg=state.modelsConfig||{library:[],scenarios:{}};
+  const cfg=activeModelsConfig();
   cfg.scenarios={...(cfg.scenarios||{}),[scene]:id};
   if(scene==='chat') cfg.current=id || cfg.current || '';
   await persistModelsConfig(cfg);
@@ -5400,7 +5537,7 @@ async function setScenarioModel(scene,id){
   renderPage();
 }
 function toggleLibraryModel(id,on){
-  const cfg=state.modelsConfig||{library:[],scenarios:{}};
+  const cfg=activeModelsConfig();
   const item=(cfg.library||[]).find(m=>m.id===id);
   if(item){item.enabled=on;persistModelsConfig(cfg).then(()=>renderPage())}
 }
@@ -5437,7 +5574,7 @@ async function addSelectedFetchedModels(){
   const selected=[...document.querySelectorAll('.fetch-model-cb:checked')].map(c=>c.value);
   const f=state._fetchedModels;
   if(!f||!selected.length){toast('请先选择模型','info');return}
-  const cfg=state.modelsConfig||{library:[],scenarios:{}};
+  const cfg=activeModelsConfig();
   const existing=new Map((cfg.library||[]).map(m=>[m.id,m]));
   selected.forEach(name=>{
     existing.set(`${f.provider}:${name}`,{
@@ -5472,7 +5609,7 @@ function openModelEditor(model){
     <h3>${isEdit?'编辑模型':'添加模型'}</h3>
     <div class="model-editor-grid">
       <label>Provider<input id="addModelProvider" placeholder="例如 New API / deepseek / openrouter" value="${esc(model?.provider||'')}" oninput="applyProviderPreset('addModel')"></label>
-      <label>模型名称<input id="addModelName" placeholder="例如 claude-sonnet-4.6-thinking" value="${esc(model?.name||'')}"></label>
+      <label>模型<input id="addModelName" placeholder="例如 [量]gpt-5.5" value="${esc(model?.name||'')}"></label>
       <label>API 格式<select id="addModelApiFormat" onchange="applyApiFormatPreset('addModel')">
         ${['openai-chat','openai-image','ollama','anthropic_messages','gemini'].map(v=>`<option value="${v}"${(model?.apiFormat||'openai-chat')===v?' selected':''}>${apiFormatLabel(v)}</option>`).join('')}
       </select></label>
@@ -5510,9 +5647,9 @@ async function doSaveModel(existingId,shouldTest=false){
   const tags=[...document.querySelectorAll('.addModelTag:checked')].map(c=>c.value);
   const id=existingId||`${provider}:${name}`;
   const item={...old,id,provider,name,base:values.base,key:values.key,enabled:old.enabled!==false,tags:tags.length?tags:inferModelTags(name),kind:'chat',apiFormat:values.apiFormat,authType:values.authType,authHeader:values.authHeader};
-  const data=await apiPost('/api/models/library',item);
+  const data=await apiPost('/api/models/library'+modelScopeParam(),item);
   if(data){
-    state.modelsConfig=data;
+    setActiveModelsConfig(data);
     state.model={...state.model,provider,model:name,base:values.base,key:values.key};
     save();
     closeModal();
@@ -5525,8 +5662,8 @@ async function deleteLibraryModel(id){
   const m=getModelById(id);
   const okConfirm=await askConfirm(`确认删除模型「${m?.name||id}」？\n如果它正在某个应用场景中使用，会自动清空对应场景。`);
   if(!okConfirm) return;
-  const data=await fetch(apiBase()+'/api/models/library/'+encodeURIComponent(id),{method:'DELETE',cache:'no-store',headers:{'Cache-Control':'no-cache'}}).then(r=>r.json()).catch(()=>null);
-  if(data&&data.code===0){state.modelsConfig=data.data;renderPage();toast('模型已删除','info')}
+  const data=await fetch(apiBase()+'/api/models/library/'+encodeURIComponent(id)+modelScopeParam(),{method:'DELETE',cache:'no-store',headers:{'Cache-Control':'no-cache'}}).then(r=>r.json()).catch(()=>null);
+  if(data&&data.code===0){setActiveModelsConfig(data.data);renderPage();toast('模型已删除','info')}
   else toast('删除失败','error');
 }
 function buildModelTestModal(model,result){
@@ -5557,25 +5694,25 @@ function buildModelTestModal(model,result){
   </div>`;
 }
 async function quickFixAnthropicMessages(id){
-  const cfg=state.modelsConfig||{library:[],scenarios:{}};
+  const cfg=activeModelsConfig();
   const m=(cfg.library||[]).find(x=>x.id===id);
   if(!m) return;
   m.apiFormat='anthropic_messages';
   m.authType='x-api-key';
   const data=await persistModelsConfig(cfg);
-  if(data) state.modelsConfig=data;
+  if(data) setActiveModelsConfig(data);
   closeModal();
   renderPage();
   setTimeout(()=>testLibraryModel(id),80);
 }
 async function quickFixOpenAICompat(id){
-  const cfg=state.modelsConfig||{library:[],scenarios:{}};
+  const cfg=activeModelsConfig();
   const m=(cfg.library||[]).find(x=>x.id===id);
   if(!m) return;
   m.apiFormat='openai-chat';
   m.authType='bearer';
   const data=await persistModelsConfig(cfg);
-  if(data) state.modelsConfig=data;
+  if(data) setActiveModelsConfig(data);
   closeModal();
   renderPage();
   setTimeout(()=>testLibraryModel(id),80);
@@ -5729,10 +5866,10 @@ function buildUsageHtml(data){
   <div class="chart-container">
     <div class="chart-title">总览</div>
     <div style="display:flex;gap:24px;padding:16px 0">
-      <div><span style="font-size:24px;font-weight:600">${todayMessages}</span><div style="font-size:12px;color:var(--c-ink-muted)">今日消息</div></div>
-      <div><span style="font-size:24px;font-weight:600">${fmtTokens(todayTokens)}</span><div style="font-size:12px;color:var(--c-ink-muted)">今日 Token</div></div>
-      <div><span style="font-size:24px;font-weight:600">${totalSessions}</span><div style="font-size:12px;color:var(--c-ink-muted)">总会话数</div></div>
-      <div><span style="font-size:24px;font-weight:600">${totalMessages}</span><div style="font-size:12px;color:var(--c-ink-muted)">总消息数</div></div>
+      <div><span style="font-size:24px;font-weight:var(--fw-semibold)">${todayMessages}</span><div style="font-size:var(--fs-sm);color:var(--c-ink-muted)">今日消息</div></div>
+      <div><span style="font-size:24px;font-weight:var(--fw-semibold)">${fmtTokens(todayTokens)}</span><div style="font-size:var(--fs-sm);color:var(--c-ink-muted)">今日 Token</div></div>
+      <div><span style="font-size:24px;font-weight:var(--fw-semibold)">${totalSessions}</span><div style="font-size:var(--fs-sm);color:var(--c-ink-muted)">总会话数</div></div>
+      <div><span style="font-size:24px;font-weight:var(--fw-semibold)">${totalMessages}</span><div style="font-size:var(--fs-sm);color:var(--c-ink-muted)">总消息数</div></div>
     </div>
   </div>
   ${dailyHtml}
@@ -5764,7 +5901,7 @@ function buildChannelsHtml(data){
   return `<div class="platform-grid">
     ${platforms.map(p=>`<div class="platform-card" style="cursor:pointer" onclick="editChannel('${esc(p.id)}')">
       <div class="platform-header"><span class="platform-icon">${p.id==='feishu'?'FS':(icons[p.id]||'??')}</span><div><div class="platform-name">${esc(p.name)}</div><span class="platform-status ${(p.streamConnected||p.connected)?'connected':'disconnected'}">${p.streamConnected?'\u957f\u8fde\u63a5\u5df2\u8fde\u63a5':(p.connected?'\u5df2\u8fde\u63a5':(p.configured?'\u672a\u8fde\u901a':'\u672a\u914d\u7f6e'))}</span></div></div>
-      <div style="font-size:13px;color:var(--c-ink-muted)">${esc(p.desc||'')}</div>
+      <div style="font-size:var(--fs-md);color:var(--c-ink-muted)">${esc(p.desc||'')}</div>
     </div>`).join('')}
   </div>`;
 }
@@ -5782,16 +5919,36 @@ function renderSettings(){
   const enabledModels=getEnabledModels();
   const missingModel=!enabledModels.length;
   const missingDataRoot=!String(state.settings.dataRootDir||state.settings.memoryDir||state.settings.imageDir||state.settings.mdLibraryDir||'').trim();
-  const onboardingHtml=(missingModel||missingDataRoot)?`<div class="settings-section" style="border-color:var(--c-accent-muted);background:var(--c-accent-soft)">
+  const onboardingHtml=(missingModel||missingDataRoot)?`<div class="settings-section" id="onboarding" style="border-color:var(--c-accent-muted);background:var(--c-accent-soft)">
     <div class="settings-section-title">首次配置引导</div>
-    ${missingModel?`<div class="settings-item"><div><div class="settings-label">还没有可用模型</div><div class="settings-desc">请先到「模型配置」添加 Provider、Base URL、API Key 和模型名。</div></div><button class="btn btn-secondary" onclick="state.page='models';renderPage()">去配置模型</button></div>`:''}
-    ${missingDataRoot?'<div class="settings-item"><div><div class="settings-label">建议配置外部数据目录</div><div class="settings-desc">把记忆、图片、历史和输出文档放到项目外，更新 WebUI 时更安全。</div></div><span style="font-size:12px;color:var(--c-ink-muted)">例如 F:\\\\AI\\\\Hermes Agent\\\\记忆</span></div>':''}
+    ${missingModel?`<div class="settings-item"><div><div class="settings-label">还没有可用模型</div><div class="settings-desc">请先到「模型配置」添加 Provider、Base URL、API Key 和模型名。</div></div><button class="btn btn-secondary" onclick="setSettingsTab('models')">去配置模型</button></div>`:''}
+    ${missingDataRoot?'<div class="settings-item"><div><div class="settings-label">建议配置外部数据目录</div><div class="settings-desc">把记忆、图片、历史和输出文档放到项目外，更新 WebUI 时更安全。</div></div><span style="font-size:var(--fs-sm);color:var(--c-ink-muted)">例如 F:\\\\AI\\\\Hermes Agent\\\\记忆</span></div>':''}
   </div>`:'';
-  return `<div class="settings-view">
-    <div class="page-header"><h2>设置</h2></div>
-    <div class="settings-content">
+  const settingsSections=[
+    ['onboarding','配置引导'],
+    ['general','通用'],
+    ['api','API 配置'],
+    ['routing','Agent 路由策略'],
+    ['data','本地数据目录'],
+    ['prompt','Prompt 注入治理'],
+    ['tools','工具权限与安全'],
+    ['update','更新中心'],
+    ['cli','Hermes CLI 状态'],
+    ['style','风格设置'],
+    ['system','系统提示词'],
+  ];
+  const settingsSideNav=`<aside class="settings-side-nav settings-inner-nav"><div class="settings-side-list">${settingsSections.map((item,idx)=>`<button type="button" class="settings-side-link${idx===0?' active':''}" data-target="${esc(item[0])}" onclick="scrollSettingsSection('${esc(item[0])}',this)"><span>${esc(item[1])}</span></button>`).join('')}</div></aside>`;
+  return `<div class="settings-design-page">
+    <div class="page-header settings-page-header settings-design-header">
+      <div><h2>设计</h2><p class="page-subtitle">集中管理运行状态、更新、界面风格和系统提示词。</p></div>
+      <button class="btn btn-primary" onclick="saveSettings()">保存设置</button>
+    </div>
+    <div class="settings-shell settings-inner-shell settings-design-body">
+      ${settingsSideNav}
+      <section class="settings-main-panel"><div class="settings-panel-fade"><div class="settings-view settings-general-view">
+      <div class="settings-content settings-general-content">
       ${onboardingHtml}
-      <div class="settings-section">
+      <div class="settings-section" id="general">
         <div class="settings-section-title">通用</div>
         <div class="settings-item"><div><div class="settings-label">语言</div><div class="settings-desc">界面显示语言</div></div>
           <select id="sLang" style="width:120px"><option value="zh"${state.settings.lang==='zh'?' selected':''}>中文</option><option value="en"${state.settings.lang==='en'?' selected':''}>English</option></select>
@@ -5802,25 +5959,25 @@ function renderSettings(){
         <div class="settings-item"><div><div class="settings-label">性能调试</div><div class="settings-desc">在浏览器控制台输出 WebUI / Hermes 流式时序</div></div>
           <label class="toggle"><input type="checkbox" id="sDebugPerf" ${state.settings.debugPerf?'checked':''}><span class="toggle-slider"></span></label>
         </div>
-        <div class="settings-item"><div><div class="settings-label">快速模式</div><div class="settings-desc">跳过 Hermes Agent，直接调用大模型 API（更快但不支持工具调用）</div></div>
+        <div class="settings-item"><div><div class="settings-label">快速模式</div><div class="settings-desc">纯直连 API 大模型：开启后跳过 Hermes Agent 和工具调用，只使用 WebUI 模型配置。</div></div>
           <label class="toggle"><input type="checkbox" id="sQuick" ${state.settings.quickMode?'checked':''}><span class="toggle-slider"></span></label>
         </div>
-        <div class="settings-item"><div><div class="settings-label">回复速度优化</div><div class="settings-desc">普通 Agent 模式会保留工具链；想要更快首 token，可开启快速模式并把历史记录保留控制在 12-20 轮。</div></div>
-          <span style="font-size:12px;color:var(--c-ink-muted)">当前历史：${esc(state.settings.history||20)} 轮</span>
+        <div class="settings-item"><div><div class="settings-label">回复速度优化</div><div class="settings-desc">想要最快纯聊天可开启快速模式；需要工具/文件/语雀能力请关闭快速模式，并在下方路由模式选择“自动”或“始终 Hermes Agent”。</div></div>
+          <span style="font-size:var(--fs-sm);color:var(--c-ink-muted)">当前历史：${esc(state.settings.history||20)} 轮</span>
         </div>
         <div class="settings-item"><div><div class="settings-label">历史记录保留</div><div class="settings-desc">保留的对话轮数</div></div>
           <input id="sHistory" type="number" value="${state.settings.history}" style="width:80px">
         </div>
       </div>
-      <div class="settings-section">
+      <div class="settings-section" id="api">
         <div class="settings-section-title">API 配置</div>
         <div class="settings-item"><div><div class="settings-label">Hermes API 地址</div><div class="settings-desc">后端服务地址</div></div>
           <input id="sApi" value="${esc(state.settings.api)}" style="width:280px">
         </div>
       </div>
-      <div class="settings-section">
+      <div class="settings-section" id="routing">
         <div class="settings-section-title">Agent 路由策略</div>
-        <div class="settings-item"><div><div class="settings-label">路由模式</div><div class="settings-desc">自动：普通聊天直连模型，复杂文件/命令/代码任务走 Hermes Agent。</div></div>
+        <div class="settings-item"><div><div class="settings-label">路由模式</div><div class="settings-desc">自动：普通聊天直连模型；本地文档、语雀、文件、命令、代码等需要工具的任务自动走 Hermes Agent。</div></div>
           <select id="sRoutingMode" style="width:180px">
             <option value="auto" ${(state.settings.routingMode||'auto')==='auto'?'selected':''}>自动</option>
             <option value="direct" ${(state.settings.routingMode||'auto')==='direct'?'selected':''}>始终直连</option>
@@ -5834,14 +5991,7 @@ function renderSettings(){
           <input id="sHermesApiServerKey" type="password" value="${esc(state.settings.hermesApiServerKey||'')}" placeholder="可选" style="width:320px">
         </div>
       </div>
-      <div class="settings-section">
-        <div class="settings-section-title">模型策略状态</div>
-        <div class="settings-item"><div><div class="settings-label">普通对话模型</div><div class="settings-desc">用于默认聊天和 Agent 自动模式。</div></div><span style="font-size:12px;color:var(--c-ink-muted)">${esc(scenarioModel('chat')||'未配置')}</span></div>
-        <div class="settings-item"><div><div class="settings-label">深度推理模型</div><div class="settings-desc">用于分身、代码、研究等推理场景。</div></div><span style="font-size:12px;color:var(--c-ink-muted)">${esc(scenarioModel('reasoning')||'未配置')}</span></div>
-        <div class="settings-item"><div><div class="settings-label">图像模型</div><div class="settings-desc">用于图片生成和图生图。</div></div><span style="font-size:12px;color:var(--c-ink-muted)">${esc(scenarioModel('image')||'未配置')}</span></div>
-        <div class="settings-item"><div><div class="settings-label">模型健康建议</div><div class="settings-desc">普通对话建议选择响应快的模型；深度推理选择强推理模型；图像模型需配置 OpenAI 图片接口格式。</div></div><button class="btn btn-secondary" onclick="state.page='models';renderPage()">打开模型配置</button></div>
-      </div>
-      <div class="settings-section">
+      <div class="settings-section" id="data">
         <div class="settings-section-title">本地数据目录</div>
         <div class="settings-item"><div><div class="settings-label">数据根目录</div><div class="settings-desc">记忆、图片、历史和输出文档的默认根目录；留空使用 backend/data/workspace。</div></div>
           <input id="sDataRootDir" value="${esc(state.settings.dataRootDir||'')}" placeholder="例如 F:\\AI\\Hermes Agent\\记忆" style="width:420px">
@@ -5861,11 +6011,11 @@ function renderSettings(){
         <div class="settings-item"><div><div class="settings-label">迁移检查</div><div class="settings-desc">如果旧 backend/data 和外部目录同时存在，建议确认后再手动合并数据，避免覆盖。</div></div>
           <button class="btn btn-secondary" onclick="openPathFromSetting('data')">打开当前数据目录</button>
         </div>
-        <div class="settings-item" style="align-items:flex-start"><div><div class="settings-label">一键备份导出</div><div class="settings-desc">导出设置、模型配置、Skill、聊天索引和数据目录清单；API Key 会自动脱敏。</div><div id="backupExportResult" style="font-size:12px;color:var(--c-ink-muted);margin-top:6px"></div></div>
+        <div class="settings-item" style="align-items:flex-start"><div><div class="settings-label">一键备份导出</div><div class="settings-desc">导出设置、模型配置、Skill、聊天索引和数据目录清单；API Key 会自动脱敏。</div><div id="backupExportResult" style="font-size:var(--fs-sm);color:var(--c-ink-muted);margin-top:6px"></div></div>
           <button class="btn btn-secondary" onclick="exportWebuiBackup()">生成备份</button>
         </div>
       </div>
-      <div class="settings-section">
+      <div class="settings-section" id="prompt">
         <div class="settings-section-title">Prompt 注入治理</div>
         ${[
           ['webuiRules','WebUI 自保护规则','图像任务、自保护和 WebUI 对话边界，建议保持开启。'],
@@ -5880,7 +6030,7 @@ function renderSettings(){
           <input id="sKnowledgeSearchLimit" type="number" min="0" max="8" value="${esc(state.settings.knowledgeSearchLimit??3)}" style="width:80px">
         </div>
       </div>
-      <div class="settings-section">
+      <div class="settings-section" id="tools">
         <div class="settings-section-title">工具权限与安全</div>
         <div class="settings-item"><div><div class="settings-label">命令执行策略</div><div class="settings-desc">安全模式会阻止危险命令并记录审批日志；严格模式会拦截高风险命令。</div></div>
           <select id="sCommandPolicy" style="width:160px">
@@ -5892,7 +6042,7 @@ function renderSettings(){
         <div class="settings-item"><div><div class="settings-label">记录审批日志</div><div class="settings-desc">记录命令执行、阻止原因和风险等级，可在任务日志中查看。</div></div><label class="toggle"><input type="checkbox" id="sLogApprovals" ${state.settings.toolPermissions?.logApprovals!==false?'checked':''}><span class="toggle-slider"></span></label></div>
         <div class="settings-item"><div><div class="settings-label">高风险命令弹窗确认</div><div class="settings-desc">例如 git push、git reset --hard、npm publish 等命令会先弹窗，确认后才执行。</div></div><label class="toggle"><input type="checkbox" id="sRequireRiskyApproval" ${state.settings.toolPermissions?.requireApprovalForRisky!==false?'checked':''}><span class="toggle-slider"></span></label></div>
       </div>
-      <div class="settings-section">
+      <div class="settings-section" id="update">
         <div class="settings-section-title">更新中心</div>
         <div id="updateStatusCard" class="settings-item" style="align-items:flex-start;gap:12px">
           <div style="flex:1;min-width:0">
@@ -5906,7 +6056,7 @@ function renderSettings(){
           </div>
         </div>
       </div>
-      <div class="settings-section">
+      <div class="settings-section" id="cli">
         <div class="settings-section-title">Hermes CLI 状态</div>
         <div id="cliStatusCard" class="settings-item" style="align-items:flex-start;gap:12px">
           <div style="flex:1">
@@ -5919,22 +6069,19 @@ function renderSettings(){
           </div>
         </div>
       </div>
-      <div class="settings-section">
+      <div class="settings-section" id="style">
         <div class="settings-section-title">风格设置</div>
         <div class="settings-item"><div><div class="settings-label">界面风格</div><div class="settings-desc">选择界面显示风格</div></div>
           <select id="sStyle" style="width:160px"><option value="minimal"${(state.settings.style||'minimal')==='minimal'?' selected':''}>简约默认风格</option></select>
         </div>
       </div>
-      <div class="settings-section">
+      <div class="settings-section" id="system">
         <div class="settings-section-title">系统提示词</div>
         <textarea id="sSys" style="width:100%;min-height:100px;margin-top:8px">${esc(state.settings.systemPrompt)}</textarea>
-        <p style="font-size:12px;color:var(--c-ink-muted);margin-top:8px;line-height:1.6">文档工作台：输出工作文档、AI分享、教程、笔记等长内容时，建议使用 <code>&lt;artifact type="markdown" title="文件名" docType="work|share|tutorial|note"&gt;</code> 包裹完整 Markdown；正文顶部使用 YAML frontmatter，包含 <code>title / folder / type / tags / status / summary</code>。文件夹建议为：工作文档、AI分享、教程、笔记、临时收件箱。</p>
+        <p style="font-size:var(--fs-sm);color:var(--c-ink-muted);margin-top:8px;line-height:1.6">文档工作台：输出工作文档、AI分享、教程、笔记等长内容时，建议使用 <code>&lt;artifact type="markdown" title="文件名" docType="work|share|tutorial|note"&gt;</code> 包裹完整 Markdown；正文顶部使用 YAML frontmatter，包含 <code>title / folder / type / tags / status / summary</code>。文件夹建议为：工作文档、AI分享、教程、笔记、临时收件箱。</p>
       </div>
-      <div style="display:flex;gap:8px;margin-top:16px">
-        <button class="btn btn-primary" onclick="saveSettings()">保存设置</button>
-        <button class="btn btn-secondary" onclick="pingApi()">测试连接</button>
-      </div>
-      <div id="settingsMsg" style="font-size:12px;color:var(--c-ink-muted);margin-top:8px"></div>
+      <div id="settingsMsg" style="font-size:var(--fs-sm);color:var(--c-ink-muted);margin-top:8px"></div>
+      </div></div></section>
     </div>
   </div>`;
 }
@@ -5985,7 +6132,7 @@ function updateStatusCardHtml(status={}, {checking=false, error=''}={}){
     return `<div style="flex:1;min-width:0"><div class="settings-label">更新状态检测失败</div><div class="settings-desc">${esc(error)}</div></div>`;
   }
   if(!status.isGitRepo){
-    return `<div style="flex:1;min-width:0"><div class="settings-label">当前不是 Git 克隆项目</div><div class="settings-desc">${esc(status.message||'无法通过 GitHub 自动检测更新。')}</div><div style="margin-top:8px;font-size:12px;color:var(--c-ink-muted)">版本：${esc(status.packageVersion||'unknown')} · 目录：${esc(status.projectRoot||'')}</div></div>`;
+    return `<div style="flex:1;min-width:0"><div class="settings-label">当前不是 Git 克隆项目</div><div class="settings-desc">${esc(status.message||'无法通过 GitHub 自动检测更新。')}</div><div style="margin-top:8px;font-size:var(--fs-sm);color:var(--c-ink-muted)">版本：${esc(status.packageVersion||'unknown')} · 目录：${esc(status.projectRoot||'')}</div></div>`;
   }
   const behind=Number(status.behind||0);
   const ahead=Number(status.ahead||0);
@@ -5998,21 +6145,23 @@ function updateStatusCardHtml(status={}, {checking=false, error=''}={}){
   return `<div style="flex:1;min-width:0">
     <div class="settings-label">GitHub 更新 · <span class="platform-status ${stateClass}" style="display:inline-flex;align-items:center">${esc(stateText)}</span></div>
     <div class="settings-desc">${esc(advice)}</div>
-    <div style="margin-top:8px;font-size:12px;color:var(--c-ink-muted);line-height:1.7">
+    <div style="margin-top:8px;font-size:var(--fs-sm);color:var(--c-ink-muted);line-height:1.7">
       版本：${esc(status.packageVersion||'unknown')} · 分支：${esc(status.branch||'unknown')} · 提交：${esc(status.localCommit||'')}${status.currentTag?` · 当前标签：${esc(status.currentTag)}`:''}${status.latestTag?` · 最新标签：${esc(status.latestTag)}`:''}<br>
       远端：${esc(status.upstream||'未设置 upstream')} · 落后 ${behind} / 领先 ${ahead} · 本地改动 ${dirty} 个${status.fetched?' · 已检查远端':''}${status.fetchError?`<br>远端检查失败：${esc(status.fetchError)}`:''}
     </div>
   </div>`;
 }
 
-async function loadUpdateStatus(fetchRemote=false){
+async function loadUpdateStatus(fetchRemote=false, seq){
   const card=$('#updateStatusCard');
-  if(!card) return;
+  if(!card || !isSettingsPage('settings')) return;
   card.innerHTML=`${updateStatusCardHtml({}, {checking:true})}<div style="display:flex;gap:8px;flex-shrink:0;flex-wrap:wrap;justify-content:flex-end"><button class="btn btn-secondary" disabled>检测中</button><button class="btn btn-secondary" onclick="showUpdateGuide()">查看方法</button></div>`;
   try{
     const data=await apiGet('/api/system/update-status'+(fetchRemote?'?fetch=1':''));
+    if(!isRenderCurrent(seq) || !isSettingsPage('settings')) return;
     card.innerHTML=`${updateStatusCardHtml(data||{}, {error:data?'' : '接口没有返回有效数据'})}<div style="display:flex;gap:8px;flex-shrink:0;flex-wrap:wrap;justify-content:flex-end"><button class="btn btn-secondary" onclick="loadUpdateStatus(false)">刷新状态</button><button class="btn btn-secondary" onclick="loadUpdateStatus(true)">检查远端</button><button class="btn btn-secondary" onclick="showUpdateGuide()">查看方法</button></div>`;
   }catch(err){
+    if(!isRenderCurrent(seq) || !isSettingsPage('settings')) return;
     card.innerHTML=`${updateStatusCardHtml({}, {error:err.message||String(err)})}<div style="display:flex;gap:8px;flex-shrink:0;flex-wrap:wrap;justify-content:flex-end"><button class="btn btn-secondary" onclick="loadUpdateStatus(false)">重试</button><button class="btn btn-secondary" onclick="showUpdateGuide()">查看方法</button></div>`;
   }
 }
@@ -6031,7 +6180,7 @@ function cliStatusCardHtml(cli={}, {checking=false, error=''}={}){
     <div style="flex:1;min-width:0">
       <div class="settings-label">Hermes CLI ${statusText}</div>
       <div class="settings-desc">${esc(detail)}</div>
-      <div style="margin-top:8px;font-size:12px;color:var(--c-ink-muted)">状态：<span class="platform-status ${statusClass}" style="display:inline-flex;align-items:center">${statusText}</span> · 模式：${esc(cli.type||'unknown')}</div>
+      <div style="margin-top:8px;font-size:var(--fs-sm);color:var(--c-ink-muted)">状态：<span class="platform-status ${statusClass}" style="display:inline-flex;align-items:center">${statusText}</span> · 模式：${esc(cli.type||'unknown')}</div>
     </div>
     <div style="display:flex;gap:8px;flex-shrink:0;align-items:flex-start">
       <button class="btn btn-secondary" onclick="loadCliStatusCard(true)">${checking?'检测中...':'刷新状态'}</button>
@@ -6039,9 +6188,9 @@ function cliStatusCardHtml(cli={}, {checking=false, error=''}={}){
     </div>`;
 }
 
-async function loadCliStatusCard(force=false){
+async function loadCliStatusCard(force=false, seq){
   const box=$('#cliStatusCard');
-  if(!box) return;
+  if(!box || !isSettingsPage('settings')) return;
   const cached=state.cliStatusCache;
   if(cached && cached.available && !force){
     box.innerHTML=cliStatusCardHtml({...cached, stale:true}, {checking:true});
@@ -6050,6 +6199,7 @@ async function loadCliStatusCard(force=false){
   }
   try{
     const data=await apiGet('/api/agent');
+    if(!isRenderCurrent(seq) || !isSettingsPage('settings')) return;
     const cli=data?.hermesCli||{};
     if(cli.available){
       state.cliStatusCache={...cli, checkedAt:Date.now()};
@@ -6061,6 +6211,7 @@ async function loadCliStatusCard(force=false){
     }
     box.innerHTML=cliStatusCardHtml(cli);
   }catch(e){
+    if(!isRenderCurrent(seq) || !isSettingsPage('settings')) return;
     if(cached?.available){
       box.innerHTML=cliStatusCardHtml({...cached, stale:true}, {error:'后端状态暂时读取失败，保留上次可用状态。'});
       return;
@@ -6073,7 +6224,7 @@ function showCliInstallGuide(){
   openModal(`
     <div class="confirm-modal">
       <h3>Hermes CLI 安装指引</h3>
-      <div style="display:grid;gap:10px;font-size:13px;line-height:1.65;color:var(--c-ink)">
+      <div style="display:grid;gap:10px;font-size:var(--fs-md);line-height:1.65;color:var(--c-ink)">
         <div>1. 先确认终端能执行 <code>hermes --version</code>。</div>
         <div>2. 如果你在 Windows 上使用 WSL，先在 WSL 里安装 Hermes，再回到 WebUI 刷新状态。</div>
         <div>3. 不确定是否安装成功时，优先用“快速模式”直连可用的模型 API。</div>
@@ -6094,6 +6245,10 @@ function saveSettings(){
   const promptToggles={};
   ['webuiRules','coreMemory','agentRules','userSystemPrompt','profilePrompt','skills','knowledgeSearch'].forEach(id=>promptToggles[id]=$(`#pt_${id}`)?.checked!==false);
   state.settings={lang:$('#sLang').value,stream:$('#sStream').checked,debugPerf:$('#sDebugPerf').checked,quickMode:$('#sQuick').checked,routingMode:$('#sRoutingMode')?.value||'auto',hermesApiServerUrl:$('#sHermesApiServerUrl')?.value?.trim()||'',hermesApiServerKey:$('#sHermesApiServerKey')?.value?.trim()||'',toolPermissions:{commandPolicy:$('#sCommandPolicy')?.value||'safe',logApprovals:$('#sLogApprovals')?.checked!==false,requireApprovalForRisky:$('#sRequireRiskyApproval')?.checked!==false},history:parseInt($('#sHistory').value)||20,systemPrompt:$('#sSys').value,api:$('#sApi').value.trim(),style:$('#sStyle')?.value||'minimal',dataRootDir:$('#sDataRootDir')?.value?.trim()||'',memoryDir:$('#sMemoryDir')?.value?.trim()||'',imageDir:$('#sImageDir')?.value?.trim()||'',historyDir:$('#sHistoryDir')?.value?.trim()||'',mdLibraryDir:$('#sMdLibraryDir')?.value?.trim()||'',promptToggles,knowledgeSearchLimit:Math.max(0,Math.min(parseInt($('#sKnowledgeSearchLimit')?.value)||0,8))};
+  state.modelConfigScope = state.settings.quickMode ? 'webui' : 'agent';
+  LS.set('hermes.modelConfigScope', state.modelConfigScope);
+  activeModelsConfig();
+  syncStateModelFromModelsConfig();
   save();
   apiPut('/api/settings', {
     lang: state.settings.lang,
@@ -6115,8 +6270,11 @@ function saveSettings(){
     mdLibraryDir: state.settings.mdLibraryDir || '',
     promptToggles: state.settings.promptToggles || {},
     knowledgeSearchLimit: state.settings.knowledgeSearchLimit ?? 3,
+  }).then(ok=>{
+    toast(ok?'设置已保存，已立即生效':'设置已保存到本地，后端同步失败','success');
+    renderPage();
+    pingApi();
   });
-  toast('设置已保存','success');pingApi();
 }
 
 async function pingApi(){
@@ -6177,11 +6335,11 @@ function renderProfiles(){
 function addProfile(){
   const colors=['var(--c-block-lime)','var(--c-block-lilac)','var(--c-block-cream)','var(--c-block-mint)','#e57373','#64b5f6','#ffb74d','#81c784'];
   openModal(`<div style="padding:24px;min-width:400px">
-    <h3 style="margin-bottom:16px;font-size:18px;font-weight:600">新建角色</h3>
+    <h3 style="margin-bottom:16px;font-size:var(--fs-xl);font-weight:var(--fw-semibold)">新建角色</h3>
     <div style="display:flex;flex-direction:column;gap:12px">
-      <div><label style="font-size:12px;color:var(--c-ink-muted);margin-bottom:4px;display:block">角色名称</label><input id="pfName" style="width:100%;padding:8px 12px;border-radius:var(--r-md);border:1px solid var(--c-hairline);background:var(--c-canvas);color:var(--c-ink);font-size:14px" placeholder="例如：代码专家"></div>
-      <div><label style="font-size:12px;color:var(--c-ink-muted);margin-bottom:4px;display:block">使用模型</label><input id="pfModel" style="width:100%;padding:8px 12px;border-radius:var(--r-md);border:1px solid var(--c-hairline);background:var(--c-canvas);color:var(--c-ink);font-size:14px" value="${esc(state.model.model)}"></div>
-      <div><label style="font-size:12px;color:var(--c-ink-muted);margin-bottom:4px;display:block">系统提示词</label><textarea id="pfPrompt" style="width:100%;min-height:80px;padding:8px 12px;border-radius:var(--r-md);border:1px solid var(--c-hairline);background:var(--c-canvas);color:var(--c-ink);font-size:14px;resize:vertical" placeholder="描述角色的能力和行为…"></textarea></div>
+      <div><label style="font-size:var(--fs-sm);color:var(--c-ink-muted);margin-bottom:4px;display:block">角色名称</label><input id="pfName" style="width:100%;padding:8px 12px;border-radius:var(--r-md);border:1px solid var(--c-hairline);background:var(--c-canvas);color:var(--c-ink);font-size:var(--fs-base)" placeholder="例如：代码专家"></div>
+      <div><label style="font-size:var(--fs-sm);color:var(--c-ink-muted);margin-bottom:4px;display:block">使用模型</label><input id="pfModel" style="width:100%;padding:8px 12px;border-radius:var(--r-md);border:1px solid var(--c-hairline);background:var(--c-canvas);color:var(--c-ink);font-size:var(--fs-base)" value="${esc(state.model.model)}"></div>
+      <div><label style="font-size:var(--fs-sm);color:var(--c-ink-muted);margin-bottom:4px;display:block">系统提示词</label><textarea id="pfPrompt" style="width:100%;min-height:80px;padding:8px 12px;border-radius:var(--r-md);border:1px solid var(--c-hairline);background:var(--c-canvas);color:var(--c-ink);font-size:var(--fs-base);resize:vertical" placeholder="描述角色的能力和行为…"></textarea></div>
       <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:8px">
         <button class="btn btn-secondary" onclick="closeModal()">取消</button>
         <button class="btn btn-primary" onclick="doAddProfile()">创建</button>
@@ -6203,11 +6361,11 @@ function editProfile(id){
   const p=_profilesCache.find(x=>x.id===id);
   if(!p) return;
   openModal(`<div style="padding:24px;min-width:400px">
-    <h3 style="margin-bottom:16px;font-size:18px;font-weight:600">编辑角色</h3>
+    <h3 style="margin-bottom:16px;font-size:var(--fs-xl);font-weight:var(--fw-semibold)">编辑角色</h3>
     <div style="display:flex;flex-direction:column;gap:12px">
-      <div><label style="font-size:12px;color:var(--c-ink-muted);margin-bottom:4px;display:block">角色名称</label><input id="pfName" style="width:100%;padding:8px 12px;border-radius:var(--r-md);border:1px solid var(--c-hairline);background:var(--c-canvas);color:var(--c-ink);font-size:14px" value="${esc(p.name)}"></div>
-      <div><label style="font-size:12px;color:var(--c-ink-muted);margin-bottom:4px;display:block">使用模型</label><input id="pfModel" style="width:100%;padding:8px 12px;border-radius:var(--r-md);border:1px solid var(--c-hairline);background:var(--c-canvas);color:var(--c-ink);font-size:14px" value="${esc(p.model)}"></div>
-      <div><label style="font-size:12px;color:var(--c-ink-muted);margin-bottom:4px;display:block">系统提示词</label><textarea id="pfPrompt" style="width:100%;min-height:80px;padding:8px 12px;border-radius:var(--r-md);border:1px solid var(--c-hairline);background:var(--c-canvas);color:var(--c-ink);font-size:14px;resize:vertical">${esc(p.systemPrompt||'')}</textarea></div>
+      <div><label style="font-size:var(--fs-sm);color:var(--c-ink-muted);margin-bottom:4px;display:block">角色名称</label><input id="pfName" style="width:100%;padding:8px 12px;border-radius:var(--r-md);border:1px solid var(--c-hairline);background:var(--c-canvas);color:var(--c-ink);font-size:var(--fs-base)" value="${esc(p.name)}"></div>
+      <div><label style="font-size:var(--fs-sm);color:var(--c-ink-muted);margin-bottom:4px;display:block">使用模型</label><input id="pfModel" style="width:100%;padding:8px 12px;border-radius:var(--r-md);border:1px solid var(--c-hairline);background:var(--c-canvas);color:var(--c-ink);font-size:var(--fs-base)" value="${esc(p.model)}"></div>
+      <div><label style="font-size:var(--fs-sm);color:var(--c-ink-muted);margin-bottom:4px;display:block">系统提示词</label><textarea id="pfPrompt" style="width:100%;min-height:80px;padding:8px 12px;border-radius:var(--r-md);border:1px solid var(--c-hairline);background:var(--c-canvas);color:var(--c-ink);font-size:var(--fs-base);resize:vertical">${esc(p.systemPrompt||'')}</textarea></div>
       <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:8px">
         <button class="btn btn-secondary" onclick="closeModal()">取消</button>
         <button class="btn btn-primary" onclick="doEditProfile('${id}')">保存</button>
@@ -6253,7 +6411,7 @@ function renderGateways(){
     <div class="page-header"><h2>网关</h2>
       <div style="display:flex;gap:8px;align-items:center">
         <label class="toggle" style="margin-right:8px"><input type="checkbox" id="gwEnabled" ${_gatewaysCache.enabled?'checked':''} onchange="toggleGatewayEnabled()"><span class="toggle-slider"></span></label>
-        <span style="font-size:13px;color:var(--c-ink-muted)">${_gatewaysCache.enabled?'已启用':'已禁用'}</span>
+        <span style="font-size:var(--fs-md);color:var(--c-ink-muted)">${_gatewaysCache.enabled?'已启用':'已禁用'}</span>
       </div>
     </div>
     <div class="gateways-content" id="gatewaysContent">${buildGatewaysHtml(_gatewaysCache)}</div>
@@ -6264,11 +6422,11 @@ function buildGatewaysHtml(data){
   if(!platforms.length) return '<div class="empty-state"><span>暂无网关配置</span></div>';
   return `<div class="gateway-grid">${platforms.map(p=>`<div class="gateway-card" style="cursor:pointer" onclick="editGateway('${esc(p.id)}')">
     <div style="display:flex;justify-content:space-between;align-items:center">
-      <div style="font-weight:600">${esc(p.icon||'')} ${esc(p.name)}</div>
-      <span style="font-size:11px;padding:2px 8px;border-radius:var(--r-pill);background:${(p.streamConnected||p.connected)?'var(--c-success)':(p.configured?'var(--c-accent-soft)':'var(--c-hairline)')};color:${(p.streamConnected||p.connected)?'#fff':(p.configured?'var(--c-accent)':'var(--c-ink-muted)')}">${p.streamConnected?'\u957f\u8fde\u63a5':(p.connected?'\u5df2\u8fde\u63a5':(p.configured?'\u5f85\u8fde\u63a5':'\u672a\u914d\u7f6e'))}</span>
+      <div style="font-weight:var(--fw-semibold)">${esc(p.icon||'')} ${esc(p.name)}</div>
+      <span style="font-size:var(--fs-xs);padding:2px 8px;border-radius:var(--r-pill);background:${(p.streamConnected||p.connected)?'var(--c-success)':(p.configured?'var(--c-accent-soft)':'var(--c-hairline)')};color:${(p.streamConnected||p.connected)?'#fff':(p.configured?'var(--c-accent)':'var(--c-ink-muted)')}">${p.streamConnected?'\u957f\u8fde\u63a5':(p.connected?'\u5df2\u8fde\u63a5':(p.configured?'\u5f85\u8fde\u63a5':'\u672a\u914d\u7f6e'))}</span>
     </div>
-    <div style="font-size:12px;color:var(--c-ink-muted);margin-top:4px">${esc(p.desc||'')}</div>
-    <div style="font-size:12px;color:var(--c-ink-muted);margin-top:2px">${p.enabled?'\u2713 \u5df2\u542f\u7528':'\u2717 \u5df2\u7981\u7528'}${(p.streamStatusMsg||p.statusMsg)?' - '+esc(p.streamStatusMsg||p.statusMsg):''}</div>
+    <div style="font-size:var(--fs-sm);color:var(--c-ink-muted);margin-top:4px">${esc(p.desc||'')}</div>
+    <div style="font-size:var(--fs-sm);color:var(--c-ink-muted);margin-top:2px">${p.enabled?'\u2713 \u5df2\u542f\u7528':'\u2717 \u5df2\u7981\u7528'}${(p.streamStatusMsg||p.statusMsg)?' - '+esc(p.streamStatusMsg||p.statusMsg):''}</div>
   </div>`).join('')}</div>`;
 }
 function toggleGatewayEnabled(){
@@ -6278,12 +6436,12 @@ function toggleGatewayEnabled(){
 function editGateway(id){
   const p=(_gatewaysCache?.platforms||[]).find(x=>x.id===id);
   if(!p) return;
-  const fields=(p.fields||[]).map(f=>`<div><label style="font-size:12px;color:var(--c-ink-muted);margin-bottom:4px;display:block">${esc(f)}</label><input id="gw_${esc(f)}" value="${esc(p.config?.[f]||'')}" style="width:100%;padding:8px 12px;border-radius:var(--r-md);border:1px solid var(--c-hairline);background:var(--c-canvas);color:var(--c-ink);font-size:14px"></div>`).join('');
-  const feishuHelp=id==='feishu'?`<div style="font-size:12px;color:var(--c-ink-muted);line-height:1.6;margin:-4px 0 12px">\u5df2\u542f\u7528\u98de\u4e66\u957f\u8fde\u63a5\u6a21\u5f0f\uff1a\u53ea\u9700\u8981 App ID / App Secret\uff0c\u4e0d\u9700\u8981\u516c\u7f51\u56de\u8c03\u5730\u5740\u3002<br>\u5728\u98de\u4e66\u91cc\u53d1\u9001\u201c\u751f\u56fe/\u751f\u6210\u56fe\u7247/\u753b\u56fe + \u63cf\u8ff0\u201d\uff0cWebUI \u4f1a\u672c\u5730\u751f\u6210\u56fe\u7247\u5e76\u56de\u53d1\u5230\u98de\u4e66\u3002</div>`:'';
+  const fields=(p.fields||[]).map(f=>`<div><label style="font-size:var(--fs-sm);color:var(--c-ink-muted);margin-bottom:4px;display:block">${esc(f)}</label><input id="gw_${esc(f)}" value="${esc(p.config?.[f]||'')}" style="width:100%;padding:8px 12px;border-radius:var(--r-md);border:1px solid var(--c-hairline);background:var(--c-canvas);color:var(--c-ink);font-size:var(--fs-base)"></div>`).join('');
+  const feishuHelp=id==='feishu'?`<div style="font-size:var(--fs-sm);color:var(--c-ink-muted);line-height:1.6;margin:-4px 0 12px">\u5df2\u542f\u7528\u98de\u4e66\u957f\u8fde\u63a5\u6a21\u5f0f\uff1a\u53ea\u9700\u8981 App ID / App Secret\uff0c\u4e0d\u9700\u8981\u516c\u7f51\u56de\u8c03\u5730\u5740\u3002<br>\u5728\u98de\u4e66\u91cc\u53d1\u9001\u201c\u751f\u56fe/\u751f\u6210\u56fe\u7247/\u753b\u56fe + \u63cf\u8ff0\u201d\uff0cWebUI \u4f1a\u672c\u5730\u751f\u6210\u56fe\u7247\u5e76\u56de\u53d1\u5230\u98de\u4e66\u3002</div>`:'';
   openModal(`<div style="padding:24px;min-width:400px">
-    <h3 style="margin-bottom:16px;font-size:18px;font-weight:600">${esc(p.icon||'')} ${esc(p.name)}</h3>
-    <p style="font-size:13px;color:var(--c-ink-muted);margin-bottom:16px">${esc(p.desc||'')}</p>
-    <div style="display:flex;flex-direction:column;gap:12px">${fields||'<div style="font-size:13px;color:var(--c-ink-muted)">无需额外配置</div>'}</div>
+    <h3 style="margin-bottom:16px;font-size:var(--fs-xl);font-weight:var(--fw-semibold)">${esc(p.icon||'')} ${esc(p.name)}</h3>
+    <p style="font-size:var(--fs-md);color:var(--c-ink-muted);margin-bottom:16px">${esc(p.desc||'')}</p>
+    <div style="display:flex;flex-direction:column;gap:12px">${fields||'<div style="font-size:var(--fs-md);color:var(--c-ink-muted)">无需额外配置</div>'}</div>
     ${feishuHelp}
     <div style="display:flex;justify-content:space-between;align-items:center;margin-top:16px">
       <label class="toggle"><input type="checkbox" id="gwEnabled_${esc(id)}" ${(p.enabled||id==='feishu')?'checked':''}><span class="toggle-slider"></span></label>
@@ -6555,7 +6713,7 @@ function fileTreeIndent(depth){
 }
 
 function buildFilesHtml(items,depth=0){
-  if(!items||!items.length) return '<div style="font-size:13px;color:var(--c-ink-muted);padding:8px 12px">空目录</div>';
+  if(!items||!items.length) return '<div style="font-size:var(--fs-md);color:var(--c-ink-muted);padding:8px 12px">空目录</div>';
   return items.map(f=>{
     const encoded=encodeURIComponent(f.path);
     if(f.type==='folder'){
@@ -6574,7 +6732,7 @@ function buildFilesHtml(items,depth=0){
       <span class="file-chevron spacer"></span>
       ${isPreviewImage(f.path)?SVG.image:SVG.file}
       <span>${esc(f.name)}</span>
-      ${f.size?`<span style="font-size:11px;color:var(--c-ink-muted);margin-left:auto">${formatBytes(f.size)}</span>`:''}
+      ${f.size?`<span style="font-size:var(--fs-xs);color:var(--c-ink-muted);margin-left:auto">${formatBytes(f.size)}</span>`:''}
     </div>`;
   }).join('');
 }
@@ -6680,7 +6838,7 @@ function renderTerminal(){
   }
   return `<div class="terminal-view">
     <div class="page-header" style="cursor:pointer" onclick="this.nextElementSibling.classList.toggle('expanded')">
-      <h2>终端历史 <span style="font-size:12px;color:var(--c-ink-muted);margin-left:6px">▶</span></h2>
+      <h2>终端历史 <span style="font-size:var(--fs-sm);color:var(--c-ink-muted);margin-left:6px">▶</span></h2>
       <div class="header-actions">
         <span class="term-badge">${chats.length} 个会话</span>
       </div>
@@ -7192,19 +7350,9 @@ async function initApp() {
   // Load model config
   const modelData = await apiGet('/api/models');
   if (modelData) {
-    state.modelsConfig = modelData;
-    const lib=Array.isArray(modelData.library)?modelData.library:[];
-    const currentId=modelData.current || modelData.scenarios?.chat || '';
-    const current=lib.find(m=>m.id===currentId||m.name===currentId) || lib.find(m=>m.enabled!==false);
-    state.model = {
-      provider: current?.provider || '',
-      model: current?.name || '',
-      base: current?.base || '',
-      key: current?.key || '',
-      temperature: modelData.params?.temperature || state.model.temperature || 0.7,
-      topP: modelData.params?.topP || state.model.topP || 1,
-      maxTokens: modelData.params?.maxTokens || state.model.maxTokens || 4096,
-    };
+    state.modelsConfigRoot = normalizeModelsRootForClient(modelData);
+    state.modelsConfig = activeModelsConfig();
+    syncStateModelFromModelsConfig(state.modelsConfig);
   }
 
   // Load WebUI chats and real Hermes CLI sessions together.
@@ -7238,3 +7386,11 @@ initApp();
 
 
 
+
+function toggleSecretInput(id, btn){
+  const input=document.getElementById(id);
+  if(!input) return;
+  const show=input.type==='password';
+  input.type=show?'text':'password';
+  if(btn) btn.classList.toggle('active', show);
+}

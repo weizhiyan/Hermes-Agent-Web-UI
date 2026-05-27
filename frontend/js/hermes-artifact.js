@@ -59,6 +59,19 @@
     return consumed ? lines.slice(index).join('\n').trimStart() : text;
   }
 
+  async function readJsonResponse(res, fallbackMessage) {
+    const text = await res.text();
+    let data = null;
+    try {
+      data = text ? JSON.parse(text) : null;
+    } catch (_) {
+      const clean = text.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
+      throw new Error(clean ? clean.slice(0, 120) : (fallbackMessage || '接口没有返回 JSON，可能需要重启 WebUI 后端'));
+    }
+    if (!res.ok || !data || data.code !== 0) throw new Error(data && data.msg ? data.msg : (fallbackMessage || '请求失败'));
+    return data;
+  }
+
   async function writeClipboardText(value) {
     const text = String(value || '');
     if (!text) return false;
@@ -161,13 +174,19 @@
   let splitPct = 52;
   let dragActive = false;
   let _mdTimer = null;
+  let _sourceSaveTimer = null;
+  let _sourceSaveInFlight = false;
+  let _sourceSavePending = false;
+  let _sourceLastSaved = '';
   let _dragMode = 'split';
   let currentTitle = '';
+  let currentFilePath = '';
   let currentTab = 'preview';
   let viewVersionIndex = -1;
   let historyMode = 'all';
   let historyData = null;
   let historyPreview = null;
+  let localEditContext = null;
   const DOC_FOLDERS = ['工作文档', 'AI分享', '教程', '笔记', '临时收件箱'];
   const autoSavedKeys = new Set();
 
@@ -192,6 +211,12 @@
     }
     if (kind === 'copy') {
       return namedIcon('复制', 16, '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="9" y="9" width="10" height="10" rx="2"/><path d="M5 15V7a2 2 0 012-2h8"/></svg>');
+    }
+    if (kind === 'magic') {
+      return namedIcon('局部编辑', 16, '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="m15 4 5 5"/><path d="M14 5 4 15l-1 6 6-1L19 10"/><path d="M5 4v4"/><path d="M3 6h4"/><path d="M19 16v4"/><path d="M17 18h4"/></svg>');
+    }
+    if (kind === 'back') {
+      return namedIcon('??', 16, '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg>');
     }
     if (kind === 'download') {
       return namedIcon('下载', 16, '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M12 4v10"/><path d="M8 10l4 4 4-4"/><path d="M5 19h14"/></svg>');
@@ -241,6 +266,20 @@
     return 'http://127.0.0.1:3381';
   }
 
+  function publicApiBase() {
+    const base = apiBase();
+    if (base) return base.replace(/\/$/, '');
+    if (global.location && /^https?:$/.test(global.location.protocol)) return global.location.origin;
+    return 'http://127.0.0.1:3381';
+  }
+
+  function mediaUrl(url) {
+    const text = String(url || '');
+    if (!text) return '';
+    if (/^https?:\/\//i.test(text) || /^data:/i.test(text)) return text;
+    return publicApiBase() + '/' + text.replace(/^\/+/, '');
+  }
+
   function fmtBytes(bytes) {
     const n = Number(bytes) || 0;
     if (n < 1024) return n + ' B';
@@ -259,6 +298,10 @@
 
   function toggleExportMenu(event) {
     if (event && event.stopPropagation) event.stopPropagation();
+    if (!shouldShowArtifactExport()) {
+      hideExportMenu();
+      return;
+    }
     const menu = $('#artifactExportMenu');
     if (!menu) return;
     menu.classList.toggle('open');
@@ -283,16 +326,20 @@
       loadHistory();
       return;
     }
+    if (currentFilePath) {
+      previewHistoryFile(encodeURIComponent(currentFilePath), encodeURIComponent(currentTitle || fileNameFromPath(currentFilePath)));
+      return;
+    }
     const list = getVersionList(currentTitle);
     const row = list.length && viewVersionIndex >= 0 ? list[viewVersionIndex] : null;
     const typ = row ? row.type : 'markdown';
     const lang = row ? row.language : '';
-    const body = getSourceText();
+    const body = getSourceText() || window.__hermesLastArtifactBody || '';
     const prev = $('#artifactPreview');
     if (currentTab === 'source') {
       syncSourceEditor(body);
     }
-    if (prev) flushPreviewNow(typ, lang, body, prev);
+    if (prev && body) flushPreviewNow(typ, lang, body, prev);
   }
 
   function formatDocDate(ts) {
@@ -305,7 +352,7 @@
     return `<div class="doc-library-head">
       <div class="doc-library-head-main">
         <div>
-          <h3>文档库</h3>
+          <h3>知识库</h3>
         </div>
         <div class="doc-library-stats">
           <span>${esc(resultText)}</span>
@@ -319,7 +366,7 @@
   function renderDocListEmpty(message) {
     return `<div class="history-empty-docs">
       <h3>${esc('暂无文档')}</h3>
-      <p>${esc(message || '生成 Markdown 后点击“保存到库”，或让 Hermes Agent 按文档规范输出。')}</p>
+      <p>${esc(message || '生成 Markdown 后可在代码模式直接编辑，修改会自动保存到知识库。')}</p>
     </div>`;
   }
 
@@ -377,6 +424,23 @@
     syncToolbarActive();
   }
 
+  function artifactDisplayTitle() {
+    if (currentTab === 'history' && historyPreview) return historyPreview.title || fileNameFromPath(historyPreview.path || '') || '?????';
+    return currentTitle || '?????';
+  }
+
+  function syncDocumentHeader() {
+    const head = $('#artifactDocumentHead');
+    const titleEl = $('#artifactDocumentTitle');
+    const show = currentTab !== 'history' || !!historyPreview;
+    if (head) head.style.display = show ? 'flex' : 'none';
+    if (titleEl) titleEl.textContent = artifactDisplayTitle();
+  }
+
+  function backFromDocumentHeader() {
+    showHistory();
+  }
+
   function syncToolbarActive() {
     document.querySelectorAll('.artifact-layout-btn').forEach((b) => {
       const m = b.dataset.layout;
@@ -392,6 +456,21 @@
     document.querySelectorAll('.artifact-view-btn').forEach((t) => {
       t.classList.toggle('active', t.dataset.tab === currentTab);
     });
+    syncToolbarState();
+  }
+
+  function shouldShowArtifactExport() {
+    if (currentTab === 'history') return !!historyPreview;
+    return !!String(getSourceText() || '').trim();
+  }
+
+  function syncToolbarState() {
+    const exportWrap = $('#artifactExportWrap');
+    if (!exportWrap) return;
+    const showExport = shouldShowArtifactExport();
+    exportWrap.classList.toggle('is-hidden', !showExport);
+    exportWrap.setAttribute('aria-hidden', showExport ? 'false' : 'true');
+    if (!showExport) hideExportMenu();
   }
 
   function renderMarkdownDebounced(md, el) {
@@ -511,11 +590,311 @@
     if (!src) return;
     const text = content || '';
     if (src.value !== text) src.value = text;
+    _sourceLastSaved = text;
+  }
+
+  function setSourceSaveStatus(text, tone) {
+    const verEl = $('#artifactVersionText');
+    if (!verEl) return;
+    verEl.textContent = text || '';
+    verEl.dataset.saveTone = tone || '';
+  }
+
+  function currentSourceMeta() {
+    const row = getCurrentVersionRow();
+    const body = getSourceText().trim();
+    return {
+      body,
+      title: currentTitle || firstHeading(body) || '未命名文档',
+      type: (row && row.type) || 'markdown',
+      language: (row && row.language) || '',
+    };
+  }
+
+  async function saveSourceEditNow() {
+    const meta = currentSourceMeta();
+    if (!meta.body || meta.body === _sourceLastSaved) return;
+    if (_sourceSaveInFlight) {
+      _sourceSavePending = true;
+      return;
+    }
+    _sourceSaveInFlight = true;
+    setSourceSaveStatus('保存中…', 'saving');
+    try {
+      if (currentFilePath) {
+        const res = await fetch(apiBase() + '/api/system/file-content', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ path: currentFilePath, content: meta.body }),
+        });
+        const data = await readJsonResponse(res, '保存失败：请重启 WebUI 后端后再试');
+      } else {
+        const folder = inferFolderFromContent(meta.body, meta.title);
+        const res = await fetch(apiBase() + '/api/system/md-library', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ title: meta.title, folder, content: meta.body }),
+        });
+        const data = await readJsonResponse(res, '保存失败：请重启 WebUI 后端后再试');
+        currentFilePath = data.data && data.data.path ? data.data.path : currentFilePath;
+        currentTitle = data.data && data.data.title ? data.data.title : meta.title;
+        historyData = null;
+      }
+      _sourceLastSaved = meta.body;
+      setSourceSaveStatus('已自动保存', 'saved');
+    } catch (e) {
+      setSourceSaveStatus('自动保存失败', 'error');
+      if (global.toast) global.toast(e && e.message ? e.message : '自动保存失败', 'warning');
+    } finally {
+      _sourceSaveInFlight = false;
+      if (_sourceSavePending) {
+        _sourceSavePending = false;
+        scheduleSourceAutoSave();
+      }
+    }
+  }
+
+  function scheduleSourceAutoSave() {
+    clearTimeout(_sourceSaveTimer);
+    setSourceSaveStatus('待保存…', 'pending');
+    _sourceSaveTimer = setTimeout(saveSourceEditNow, 900);
+  }
+  function selectionEditPrompt(text, mode) {
+    const title = currentTitle || '当前知识库文档';
+    const file = currentFilePath || (historyPreview && historyPreview.path) || '';
+    const label = mode === 'source' ? '代码模式选区' : '预览选区';
+    return [
+      '请对当前知识库文档做局部编辑，并把结果写回原文档。',
+      '只修改下面选中的局部内容，不要重写全文；保持原文风格、Markdown 层级和上下文语气。',
+      '如果你能操作文件，请读取文档路径，定位选区文本并替换为修改后的片段，然后保存。',
+      '',
+      '【文档】' + title,
+      file ? '【文档路径】' + file : '【文档路径】当前 Artifact 尚未保存，请先根据上下文更新当前知识库文档',
+      '【来源】' + label,
+      '【选中内容】',
+      text,
+      '',
+      '【修改要求】',
+      ''
+    ].join('\n');
+  }
+
+  function createLocalEditContext(text, mode) {
+    const selectedText = String(text || '').trim().slice(0, 12000);
+    if (!selectedText) return null;
+    const sourceText = getSourceText() || '';
+    return {
+      id: 'local_edit_' + Date.now(),
+      title: currentTitle || firstHeading(sourceText) || '当前知识库文档',
+      path: currentFilePath || (historyPreview && historyPreview.path) || '',
+      mode: mode === 'source' ? 'source' : 'preview',
+      selectedText,
+      sourceSnapshot: sourceText.slice(0, 200000),
+      createdAt: Date.now(),
+    };
+  }
+
+  function getLocalEditContext() {
+    return localEditContext ? { ...localEditContext } : null;
+  }
+
+  function clearLocalEditContext(id) {
+    if (!id || (localEditContext && localEditContext.id === id)) localEditContext = null;
+  }
+
+  async function applyLocalEditReplacement(replacement, contextId) {
+    const ctx = localEditContext && (!contextId || localEditContext.id === contextId) ? localEditContext : null;
+    if (!ctx || !ctx.selectedText) {
+      if (global.toast) global.toast('没有可应用的局部编辑选区', 'warning');
+      return false;
+    }
+    const nextText = String(replacement || '').trim();
+    if (!nextText) {
+      if (global.toast) global.toast('没有可应用的替换内容', 'warning');
+      return false;
+    }
+    let source = getSourceText() || ctx.sourceSnapshot || '';
+    if (!source.includes(ctx.selectedText) && ctx.path) {
+      try {
+        const res = await fetch(apiBase() + '/api/system/file-content?path=' + encodeURIComponent(ctx.path), { cache: 'no-store' });
+        const data = await readJsonResponse(res, '读取文档失败');
+        source = String((data.data && data.data.content) || '');
+      } catch (_) {}
+    }
+    if (!source.includes(ctx.selectedText)) {
+      if (global.toast) global.toast('原选区已变化，无法自动替换', 'warning');
+      return false;
+    }
+    const updated = source.replace(ctx.selectedText, nextText);
+    if (ctx.path) {
+      const res = await fetch(apiBase() + '/api/system/file-content', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path: ctx.path, content: updated }),
+      });
+      await readJsonResponse(res, '写回文档失败');
+      currentFilePath = ctx.path;
+      currentTitle = ctx.title || currentTitle;
+    } else {
+      currentTitle = ctx.title || currentTitle;
+      const res = await fetch(apiBase() + '/api/system/md-library', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title: currentTitle, folder: inferFolderFromContent(updated, currentTitle), content: updated }),
+      });
+      const data = await readJsonResponse(res, '保存文档失败');
+      currentFilePath = data.data && data.data.path ? data.data.path : currentFilePath;
+      currentTitle = data.data && data.data.title ? data.data.title : currentTitle;
+    }
+    window.__hermesLastArtifactBody = updated;
+    historyData = null;
+    clearLocalEditContext(ctx.id);
+    recordCompletedArtifacts([{ attrs: { title: currentTitle || ctx.title, type: 'markdown', path: currentFilePath }, content: updated }]);
+    openRef(currentTitle || ctx.title || '当前知识库文档');
+    if (global.toast) global.toast('已应用到当前文档选区', 'success');
+    return true;
+  }
+
+  function insertLocalEditPrompt(text, mode) {
+    const ta = document.getElementById('chatInput');
+    if (!ta) {
+      if (global.toast) global.toast('请先回到对话页再局部编辑', 'warning');
+      return;
+    }
+    const prompt = selectionEditPrompt(text, mode);
+    localEditContext = createLocalEditContext(text, mode);
+    const prefix = ta.value && ta.value.trim() ? '\n\n' : '';
+    ta.value = (ta.value || '') + prefix + prompt;
+    ta.focus();
+    ta.selectionStart = ta.selectionEnd = ta.value.length;
+    ta.dispatchEvent(new Event('input', { bubbles: true }));
+    if (typeof global.autoResizeInput === 'function') global.autoResizeInput(ta);
+    if (global.toast) global.toast('已引用选中内容，可补充修改要求后发送', 'success');
+  }
+
+  function hideLocalEditBubble() {
+    const bubble = document.getElementById('artifactLocalEditBubble');
+    if (bubble) bubble.classList.remove('show');
+  }
+
+  function showLocalEditBubble(x, y, text, mode) {
+    let bubble = document.getElementById('artifactLocalEditBubble');
+    if (!bubble) {
+      bubble = document.createElement('button');
+      bubble.type = 'button';
+      bubble.id = 'artifactLocalEditBubble';
+      bubble.className = 'artifact-local-edit-bubble';
+      bubble.title = '引用选区进行局部编辑';
+      bubble.setAttribute('aria-label', '引用选区进行局部编辑');
+      bubble.innerHTML = renderToolbarIcon('magic') + '<span>局部编辑</span>';
+      document.body.appendChild(bubble);
+      bubble.addEventListener('mousedown', event => event.preventDefault());
+    }
+    bubble._selectedText = text;
+    bubble._selectedMode = mode;
+    bubble.onclick = () => {
+      insertLocalEditPrompt(bubble._selectedText || '', bubble._selectedMode || 'preview');
+      hideLocalEditBubble();
+    };
+    bubble.style.left = Math.min(global.innerWidth - 116, Math.max(8, x + 10)) + 'px';
+    bubble.style.top = Math.min(global.innerHeight - 44, Math.max(8, y + 10)) + 'px';
+    bubble.classList.add('show');
+  }
+
+  function maybeShowLocalEditBubble(event) {
+    const target = event && event.target;
+    if (!target || target.closest('#artifactLocalEditBubble')) return;
+    const src = $('#artifactSource');
+    if (target === src && currentTab === 'source') {
+      const start = src.selectionStart || 0;
+      const end = src.selectionEnd || 0;
+      const text = src.value.slice(start, end).trim();
+      if (text.length >= 2) showLocalEditBubble(event.clientX, event.clientY, text.slice(0, 4000), 'source');
+      else hideLocalEditBubble();
+      return;
+    }
+    const preview = target.closest && target.closest('#artifactPreview,.artifact-history-preview');
+    if (!preview) { hideLocalEditBubble(); return; }
+    const sel = global.getSelection ? global.getSelection() : null;
+    const text = sel ? String(sel.toString() || '').trim() : '';
+    if (text.length < 2) { hideLocalEditBubble(); return; }
+    let node = sel.anchorNode;
+    if (node && node.nodeType === 3) node = node.parentElement;
+    if (!node || !preview.contains(node)) { hideLocalEditBubble(); return; }
+    showLocalEditBubble(event.clientX, event.clientY, text.slice(0, 4000), 'preview');
+  }
+
+  async function fileToDataUrl(file) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = () => reject(reader.error || new Error('读取图片失败'));
+      reader.readAsDataURL(file);
+    });
+  }
+
+  function sourceInsertText(text) {
+    const src = $('#artifactSource');
+    if (!src) return;
+    const value = src.value || '';
+    const start = src.selectionStart ?? value.length;
+    const end = src.selectionEnd ?? start;
+    const before = value.slice(0, start);
+    const after = value.slice(end);
+    const prefix = before && !before.endsWith('\n') ? '\n\n' : '';
+    const suffix = after && !after.startsWith('\n') ? '\n\n' : '';
+    src.value = before + prefix + text + suffix + after;
+    const next = (before + prefix + text).length;
+    src.selectionStart = src.selectionEnd = next;
+    updateCurrentArtifactBody(src.value || '');
+  }
+
+  async function uploadImageForSource(file) {
+    const dataUrl = await fileToDataUrl(file);
+    const res = await fetch(apiBase() + '/api/images/upload', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ dataUrl, fileName: file.name || 'clipboard-image.png', mime: file.type || 'image/png', source: 'artifact-source-paste', publicBase: publicApiBase() }),
+    });
+    const data = await readJsonResponse(res, '图片上传失败');
+    return data.data || data;
+  }
+
+  async function handleSourcePaste(event) {
+    if (currentTab !== 'source') return;
+    const items = [...((event.clipboardData && event.clipboardData.items) || [])];
+    const imageFiles = items
+      .filter(item => item.kind === 'file' && item.type && item.type.startsWith('image/'))
+      .map((item, i) => {
+        const file = item.getAsFile();
+        if (file && !file.name) {
+          try { return new File([file], 'artifact-clipboard-' + Date.now() + '-' + i + '.png', { type: file.type || 'image/png' }); } catch (_) { return file; }
+        }
+        return file;
+      })
+      .filter(Boolean);
+    if (!imageFiles.length) return;
+    event.preventDefault();
+    setSourceSaveStatus('上传图片…', 'saving');
+    try {
+      const markdown = [];
+      for (const file of imageFiles) {
+        const image = await uploadImageForSource(file);
+        const url = mediaUrl(image.publicUrl || image.url || (image.id ? '/api/images/file/' + encodeURIComponent(image.id) : ''));
+        markdown.push('![' + (image.originalName || image.filename || file.name || '粘贴图片') + '](' + url + ')');
+      }
+      sourceInsertText(markdown.join('\n\n'));
+      if (global.toast) global.toast('图片已插入到代码模式', 'success');
+    } catch (e) {
+      setSourceSaveStatus('图片插入失败', 'error');
+      if (global.toast) global.toast(e && e.message ? e.message : '图片插入失败', 'error');
+    }
   }
 
   function updateCurrentArtifactBody(content) {
     const text = content || '';
     window.__hermesLastArtifactBody = text;
+    window.__hermesCurrentSourceBody = text;
     const row = getCurrentVersionRow();
     if (row) row.content = text;
     const prev = $('#artifactPreview');
@@ -523,6 +902,7 @@
       const meta = row || { type: 'markdown', language: '' };
       flushPreviewNow(meta.type || 'markdown', meta.language || '', text, prev);
     }
+    if (currentTab === 'source') scheduleSourceAutoSave();
   }
 
   function updatePanelUI(cur, streaming) {
@@ -536,16 +916,20 @@
     const src = $('#artifactSource');
     if (!cur) {
       if (titleEl) titleEl.textContent = 'Artifact';
+      syncDocumentHeader();
       if (typeEl) typeEl.textContent = '—';
       if (verEl) verEl.textContent = '';
       if (gen) gen.style.display = 'none';
+      syncToolbarState();
       return;
     }
     const title = cur.attrs.title || '未命名';
+    if (currentTitle && currentTitle !== title && !cur.attrs.path) currentFilePath = '';
     currentTitle = title;
     const typ = (cur.attrs.type || 'markdown').toLowerCase();
     const lang = cur.attrs.language || '';
     if (titleEl) titleEl.textContent = title;
+    syncDocumentHeader();
     if (typeEl) typeEl.textContent = typeLabel(typ);
     const list = getVersionList(title);
     const vCount = list.length || (cur.incomplete ? 1 : 0);
@@ -559,6 +943,7 @@
     const effLang = viewVersionIndex >= 0 && list[viewVersionIndex] ? list[viewVersionIndex].language : lang;
 
     window.__hermesLastArtifactBody = body || '';
+    window.__hermesCurrentSourceBody = body || '';
 
     if (currentTab === 'source') {
       if (src) {
@@ -579,6 +964,7 @@
     const btnR = $('#artifactVerNext');
     if (btnL) btnL.disabled = !list.length || viewVersionIndex <= 0;
     if (btnR) btnR.disabled = !list.length || viewVersionIndex >= list.length - 1 || viewVersionIndex < 0;
+    syncToolbarState();
   }
 
   function feedStream(parsed, streaming) {
@@ -628,6 +1014,7 @@
     if (list.length && viewVersionIndex >= 0) {
       const row = list[viewVersionIndex];
       window.__hermesLastArtifactBody = row.content;
+      window.__hermesCurrentSourceBody = row.content;
       updatePanelUI(
         { attrs: { title, type: row.type, language: row.language }, content: row.content, incomplete: false },
         false
@@ -640,6 +1027,7 @@
 
   function openEmpty(title, message) {
     currentTitle = '';
+    currentFilePath = '';
     viewVersionIndex = -1;
     layout = 'SPLIT_VIEW';
     loadSplit();
@@ -650,20 +1038,22 @@
     const verEl = $('#artifactVersionText');
     const gen = $('#artifactGenerating');
     const prev = $('#artifactPreview');
-    const src = $('#artifactSource');
     if (titleEl) titleEl.textContent = title || '暂无可预览文件';
     if (typeEl) typeEl.textContent = '空状态';
     if (verEl) verEl.textContent = '';
     if (gen) gen.style.display = 'none';
+    const src = $('#artifactSource');
     if (src) src.style.display = 'none';
+    window.__hermesLastArtifactBody = '';
     if (prev) {
       prev.style.display = 'block';
       prev.innerHTML = `<div class="artifact-empty-state">
         <div class="artifact-empty-icon">MD</div>
         <h3>${esc(title || '暂无可预览文件')}</h3>
-        <p>${esc(message || '当前没有检测到可预览的输出文档。你可以在“文档库”里打开本地 Markdown。')}</p>
+        <p>${esc(message || '当前没有检测到可预览的输出文档。你可以在“知识库”里打开本地 Markdown。')}</p>
       </div>`;
     }
+    syncToolbarState();
     flashPanel();
   }
 
@@ -814,22 +1204,26 @@
         <button type="button" class="artifact-view-btn artifact-tooltip" data-tab="source" data-tip="代码" onclick="HermesArtifact.setTab('source')" aria-label="代码">${renderToolbarIcon('code')}</button>
       </div>
       <span class="artifact-toolbar-title" id="artifactTitleText">Artifact</span>
+      <span class="artifact-version-text" id="artifactVersionText"></span>
     </div>
     <div class="artifact-toolbar-actions">
-      <div class="artifact-export-wrap" id="artifactExportWrap">
-        <button type="button" class="artifact-copy-main artifact-tooltip" id="artifactCopyBtn" data-tip="复制到剪贴板" aria-label="复制到剪贴板" onclick="HermesArtifact.copyContent()">${renderToolbarIcon('copy')}<span>复制</span></button>
-        <button type="button" class="artifact-icon-btn artifact-copy-caret artifact-tooltip" data-tip="更多导出选项" aria-label="更多导出选项" onclick="HermesArtifact.toggleExportMenu(event)">${renderToolbarIcon('chevron-down')}</button>
-        <div class="artifact-export-menu" id="artifactExportMenu">
-          <button type="button" onclick="HermesArtifact.download();HermesArtifact.hideExportMenu()">下载 Markdown 文件</button>
-          <button type="button" onclick="HermesArtifact.saveToLibrary();HermesArtifact.hideExportMenu()">保存到本地文档库</button>
-        </div>
-      </div>
       <button type="button" class="artifact-library-btn artifact-tooltip" data-tip="打开知识库" aria-label="打开知识库" onclick="HermesArtifact.showHistory()">${renderToolbarIcon('library')}<span>知识库</span></button>
       <button type="button" class="artifact-icon-btn artifact-refresh-btn artifact-tooltip" id="artifactRefreshBtn" data-tip="刷新" aria-label="刷新" onclick="HermesArtifact.refreshCurrentView()">${renderToolbarIcon('refresh')}</button>
       <button type="button" class="artifact-icon-btn artifact-tooltip" data-tip="关闭面板" aria-label="关闭面板" onclick="HermesArtifact.setLayout('chat')">${renderToolbarIcon('close')}</button>
     </div>
   </div>
   <div class="artifact-body">
+    <div class="artifact-document-head" id="artifactDocumentHead">
+      <button type="button" class="artifact-document-back" onclick="HermesArtifact.backFromDocumentHeader()" aria-label="返回">${renderToolbarIcon('back')}</button>
+      <div class="artifact-document-title" id="artifactDocumentTitle">Artifact</div>
+      <div class="artifact-export-wrap artifact-document-export" id="artifactExportWrap">
+        <button type="button" class="artifact-copy-main artifact-tooltip" id="artifactCopyBtn" data-tip="复制当前文档" aria-label="复制当前文档" onclick="HermesArtifact.copyContent()">${renderToolbarIcon('copy')}<span>复制</span></button>
+        <button type="button" class="artifact-icon-btn artifact-copy-caret artifact-tooltip" data-tip="更多文档操作" aria-label="更多文档操作" onclick="HermesArtifact.toggleExportMenu(event)">${renderToolbarIcon('chevron-down')}</button>
+        <div class="artifact-export-menu" id="artifactExportMenu">
+          <button type="button" onclick="HermesArtifact.download();HermesArtifact.hideExportMenu()">打开当前 MD 文档</button>
+        </div>
+      </div>
+    </div>
     <div id="artifactGenerating" class="artifact-generating" style="display:none"><span class="dot-pulse"></span> 生成中…</div>
     <div id="artifactPreview" class="artifact-preview"></div>
     <textarea id="artifactSource" class="artifact-source artifact-source-editor" style="display:none" spellcheck="false"></textarea>
@@ -848,9 +1242,18 @@
       src.addEventListener('input', () => {
         updateCurrentArtifactBody(src.value || '');
       });
+      src.addEventListener('paste', handleSourcePaste);
+      src.addEventListener('mouseup', maybeShowLocalEditBubble);
+      src.addEventListener('keyup', maybeShowLocalEditBubble);
     }
     bindResize();
     bindToolbarMenus();
+    if (document.body.dataset.artifactLocalEditBound !== '1') {
+      document.body.dataset.artifactLocalEditBound = '1';
+      document.addEventListener('mouseup', maybeShowLocalEditBubble);
+      document.addEventListener('scroll', hideLocalEditBubble, true);
+      document.addEventListener('keydown', event => { if (event.key === 'Escape') hideLocalEditBubble(); });
+    }
     applyLayout();
     syncToolbarActive();
     if (global.mermaid && typeof global.mermaid.initialize === 'function') {
@@ -902,6 +1305,7 @@
     if (tab === 'history') {
       if (prev) prev.style.display = 'none';
       if (src) src.style.display = 'none';
+      syncToolbarState();
       if (hist) {
         hist.style.display = 'block';
         loadHistory();
@@ -910,20 +1314,19 @@
     }
     if (hist) hist.style.display = 'none';
     const list = getVersionList(currentTitle);
-    const body =
-      list.length && viewVersionIndex >= 0
-        ? list[viewVersionIndex].content
-        : window.__hermesLastArtifactBody || '';
-    const typ =
-      list.length && viewVersionIndex >= 0 ? list[viewVersionIndex].type : 'markdown';
-    const lang =
-      list.length && viewVersionIndex >= 0 ? list[viewVersionIndex].language : '';
+    if (list.length && (viewVersionIndex < 0 || viewVersionIndex >= list.length)) viewVersionIndex = list.length - 1;
+    const row = list.length && viewVersionIndex >= 0 ? list[viewVersionIndex] : null;
+    const body = (row && row.content != null ? row.content : '') || window.__hermesCurrentSourceBody || window.__hermesLastArtifactBody || (src ? src.value : '') || '';
+    const typ = row ? (row.type || 'markdown') : 'markdown';
+    const lang = row ? (row.language || '') : '';
     if (tab === 'source') {
       if (prev) prev.style.display = 'none';
       if (src) {
         syncSourceEditor(body);
         src.style.display = 'block';
       }
+      window.__hermesCurrentSourceBody = body;
+      window.__hermesLastArtifactBody = body;
     } else {
       if (src) src.style.display = 'none';
       if (prev) {
@@ -931,12 +1334,12 @@
         flushPreviewNow(typ, lang, body, prev);
       }
     }
+    syncToolbarState();
   }
 
   function renderHistoryCard(f) {
     const name = f.file || f.name || '';
     const title = f.title || name.replace(/\.md$/, '');
-    const summary = f.summary || f.preview || '暂无内容概括';
     const date = formatDocDate(f.mtime);
     const safePath = encodeURIComponent(f.path || '');
     const safeName = encodeURIComponent(title || name);
@@ -947,6 +1350,8 @@
         <button type="button" class="history-card-more" onclick="HermesArtifact.toggleHistoryCardMenu(event, '${cardId}')" aria-label="更多操作" title="更多操作">⋮</button>
         <div class="history-card-menu" id="${cardId}">
           <button type="button" onclick="HermesArtifact.renameHistoryFile('${safePath}', '${safeName}')">编辑命名</button>
+          <button type="button" onclick="HermesArtifact.copyHistoryFile('${safePath}')">复制文件</button>
+          <button type="button" onclick="HermesArtifact.moveHistoryFile('${safePath}')">移动分类</button>
           <button type="button" class="danger" onclick="HermesArtifact.deleteHistoryFile('${safePath}')">删除</button>
         </div>
         <button type="button" class="history-card-main" aria-label="预览 ${esc(title)}" onclick="HermesArtifact.previewHistoryFile('${safePath}', '${safeName}')">
@@ -965,13 +1370,16 @@
         </button>
       </div>`;
   }
+
   function renderHistoryList() {
     const hist = $('#artifactHistory');
     if (!hist || !historyData) return;
+    syncToolbarState();
+    syncDocumentHeader();
     if (historyPreview) {
       hist.innerHTML = `
         <div class="artifact-history-preview-head">
-          <button class="history-back-btn" onclick="HermesArtifact.backToHistoryList()" aria-label="返回文档库">←</button>
+          <button class="history-back-btn" onclick="HermesArtifact.backToHistoryList()" aria-label="返回知识库">←</button>
           <div class="artifact-history-preview-meta">
             <div class="artifact-history-preview-label">文档预览</div>
             <div class="artifact-history-preview-title">${esc(historyPreview.title || 'Markdown 预览')}</div>
@@ -987,6 +1395,7 @@
         </div>
         <div class="artifact-history-preview markdown-body artifact-preview" id="artifactHistoryPreview"></div>`;
       flushPreviewNow('markdown', '', historyPreview.content || '', $('#artifactHistoryPreview'));
+      syncDocumentHeader();
       return;
     }
     const all = historyData.filesFlat || [];
@@ -1049,13 +1458,14 @@
       const res = await fetch(apiBase() + '/api/system/md-library', { cache: 'no-store' });
       const data = await res.json();
       if (!data || data.code !== 0 || !data.data) {
-        hist.innerHTML = '<div style="text-align:center;padding:20px;color:var(--c-ink-muted)">暂无文档</div>'; 
+        hist.innerHTML = '<div style="text-align:center;padding:20px;color:var(--c-ink-muted)">暂无文档</div>';
         return;
       }
       historyData = data.data;
       renderHistoryList();
     } catch (e) {
-      hist.innerHTML = '<div style="text-align:center;padding:20px;color:var(--c-error)">加载失败</div>';
+      console.error('[HermesArtifact] loadHistory failed', e);
+      hist.innerHTML = '<div style="text-align:center;padding:20px;color:var(--c-error)">加载失败：' + esc(e && e.message ? e.message : String(e || '未知错误')) + '</div>';
     }
   }
 
@@ -1073,13 +1483,17 @@
         resetSession();
         recordCompletedArtifacts([{ attrs: { title: name, type: 'markdown' }, content: data.data.content }]);
         currentTitle = name;
+        currentFilePath = path;
         window.__hermesLastArtifactBody = data.data.content;
+        window.__hermesCurrentSourceBody = data.data.content;
         historyPreview = null;
         setTab('preview');
         openRef(name);
       }
     } catch (e) {
-      openEmpty('无法读取文件', e && e.message ? e.message : '读取本地 Markdown 失败。');
+      currentTitle = name || '没有内容';
+      currentFilePath = path || '';
+      openEmpty(currentTitle, e && e.message ? e.message : '读取本地 Markdown 失败。');
     }
   }
 
@@ -1120,6 +1534,53 @@
       await loadHistory();
     } catch (e) {
       if (global.toast) global.toast(e && e.message ? e.message : '重命名失败', 'error');
+    }
+  }
+
+  async function copyHistoryFile(encodedPath) {
+    const file = decodeURIComponent(encodedPath || '');
+    document.querySelectorAll('.history-card-menu.open').forEach(menu => menu.classList.remove('open'));
+    if (!file) return;
+    try {
+      const res = await fetch(apiBase() + '/api/system/md-library/copy', {
+        method: 'POST',
+        cache: 'no-store',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path: file }),
+      });
+      const data = await res.json();
+      if (!data || data.code !== 0) throw new Error(data && data.msg ? data.msg : '复制失败');
+      historyData = null;
+      if (global.toast) global.toast('已复制文档', 'success');
+      await loadHistory();
+    } catch (e) {
+      if (global.toast) global.toast(e && e.message ? e.message : '复制失败', 'error');
+    }
+  }
+
+  async function moveHistoryFile(encodedPath) {
+    const file = decodeURIComponent(encodedPath || '');
+    document.querySelectorAll('.history-card-menu.open').forEach(menu => menu.classList.remove('open'));
+    if (!file) return;
+    const currentFolder = (historyData && historyData.filesFlat || []).find(item => item.path === file)?.folder || '';
+    const nextFolder = global.prompt ? global.prompt('移动到分类文件夹：', currentFolder || '工作文档') : '';
+    if (!nextFolder || !nextFolder.trim()) return;
+    try {
+      const res = await fetch(apiBase() + '/api/system/md-library/move', {
+        method: 'POST',
+        cache: 'no-store',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path: file, folder: nextFolder.trim() }),
+      });
+      const data = await res.json();
+      if (!data || data.code !== 0) throw new Error(data && data.msg ? data.msg : '移动失败');
+      historyData = null;
+      if (historyPreview && historyPreview.path === file) historyPreview.path = data.data && data.data.path ? data.data.path : historyPreview.path;
+      if (currentFilePath === file && data.data && data.data.path) currentFilePath = data.data.path;
+      if (global.toast) global.toast('已移动到：' + nextFolder.trim(), 'success');
+      await loadHistory();
+    } catch (e) {
+      if (global.toast) global.toast(e && e.message ? e.message : '移动失败', 'error');
     }
   }
 
@@ -1180,7 +1641,7 @@
     const file = decodeURIComponent(encodedPath || '');
     document.querySelectorAll('.history-card-menu.open').forEach(menu => menu.classList.remove('open'));
     if (!file) return;
-    const message = '确定删除这个 Markdown 文档吗？\n\n' + file + '\n\n删除后会从本地文档库移除。';
+    const message = '确定删除这个 Markdown 文档吗？\n\n' + file + '\n\n删除后会从本地知识库移除。';
     const ok = typeof global.askConfirm === 'function'
       ? await global.askConfirm(message)
       : (global.confirm ? global.confirm(message) : false);
@@ -1217,7 +1678,7 @@
     const file = historyPreview && historyPreview.path ? historyPreview.path : '';
     if (!file) return;
     hideHistoryMore();
-    const message = '确定删除这个 Markdown 文档吗？\n\n' + file + '\n\n删除后会从本地文档库移除。';
+    const message = '确定删除这个 Markdown 文档吗？\n\n' + file + '\n\n删除后会从本地知识库移除。';
     const ok = typeof global.askConfirm === 'function'
       ? await global.askConfirm(message)
       : (global.confirm ? global.confirm(message) : false);
@@ -1308,14 +1769,14 @@
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ title: doc.title, folder, content: doc.body }),
       });
-      const data = await res.json();
-      if (!data || data.code !== 0) throw new Error(data && data.msg ? data.msg : '保存失败');
+      const data = await readJsonResponse(res, '保存失败：请重启 WebUI 后端后再试');
       historyData = null;
-      if (global.toast) global.toast('已自动保存到文档库：' + data.data.folder, 'success');
+      if (data.data && data.data.path) currentFilePath = data.data.path;
+      if (global.toast) global.toast('已自动保存到知识库：' + data.data.folder, 'success');
       if (btn) btn.textContent = '已自动保存';
       setTimeout(() => {
         const current = $('#artifactSaveBtn');
-        if (current && current.textContent === '已自动保存') current.textContent = old || '保存到库';
+        if (current && current.textContent === '已自动保存') current.textContent = old || '保存到知识库';
       }, 2200);
     } catch (e) {
       autoSavedKeys.delete(doc.key);
@@ -1323,7 +1784,7 @@
     } finally {
       if (btn) {
         btn.disabled = false;
-        if (btn.textContent === '自动保存中…') btn.textContent = old || '保存到库';
+        if (btn.textContent === '自动保存中…') btn.textContent = old || '保存到知识库';
       }
     }
   }
@@ -1361,10 +1822,10 @@
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ title, folder, content: body }),
       });
-      const data = await res.json();
-      if (!data || data.code !== 0) throw new Error(data && data.msg ? data.msg : '保存失败');
+      const data = await readJsonResponse(res, '保存失败：请重启 WebUI 后端后再试');
       historyData = null;
-      if (global.toast) global.toast('已保存到文档库：' + data.data.folder, 'success');
+      if (data.data && data.data.path) currentFilePath = data.data.path;
+      if (global.toast) global.toast('已保存到知识库：' + data.data.folder, 'success');
       const verEl = $('#artifactVersionText');
       if (verEl) verEl.textContent = '已保存';
       if (currentTab === 'history') loadHistory();
@@ -1373,12 +1834,16 @@
     } finally {
       if (btn) {
         btn.disabled = false;
-        btn.textContent = old || '保存到库';
+        btn.textContent = old || '保存到知识库';
       }
     }
   }
 
   function download() {
+    if (currentFilePath) {
+      openFileLocation(encodeURIComponent(currentFilePath));
+      return;
+    }
     const list = getVersionList(currentTitle);
     const body = getSourceText();
     const typ = list.length && viewVersionIndex >= 0 ? list[viewVersionIndex].type : 'markdown';
@@ -1447,24 +1912,21 @@
     toggleHistoryMore,
     toggleHistoryCardMenu,
     renameHistoryFile,
+    copyHistoryFile,
+    moveHistoryFile,
     deleteHistoryFile,
     hideHistoryMore,
     openHistoryPreviewFile,
     confirmDeleteHistoryFile,
     openFileLocation,
     backToHistoryList,
-    setHistoryMode
+    backFromDocumentHeader,
+    setHistoryMode,
+    insertLocalEditPrompt,
+    getLocalEditContext,
+    clearLocalEditContext,
+    applyLocalEditReplacement
   };
 
   global.HermesArtifact = API;
 })(typeof window !== 'undefined' ? window : this);
-
-
-
-
-
-
-
-
-
-

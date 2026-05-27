@@ -19,6 +19,7 @@ const cliRoutes = require('./routes/cli');
 const modalRoutes = require('./routes/modal');
 const memoryRoutes = require('./routes/memory');
 const imageRoutes = require('./routes/images');
+const relayRoutes = require('./routes/relay');
 const feishuStream = require('./services/feishuStream');
 const paths = require('./services/paths');
 
@@ -74,6 +75,8 @@ app.get('/api/health', (req, res) => res.ok({
   entry: __filename,
 }));
 
+app.use('/v1', relayRoutes);
+
 app.use('/api/chats', chatRoutes);
 app.use('/api/skills', skillRoutes);
 app.use('/api/models', modelRoutes);
@@ -115,4 +118,3 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log(`[hermes] backend listening on http://0.0.0.0:${PORT}`);
   feishuStream.startFromConfig().catch(error => console.warn('[feishu-stream] startup skipped:', error.message));
 });
-

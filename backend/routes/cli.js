@@ -10,6 +10,14 @@ const { chatStream } = require('../services/llm');
 const { redactSecrets, sanitizeChat } = require('../services/security');
 
 const router = express.Router();
+
+function modelConfigForScope(scope = 'agent') {
+  const root = store.read('models', {});
+  if (root && typeof root === 'object' && (root.webui || root.agent)) {
+    return { ...(root[scope] || root.webui || root.agent || {}) };
+  }
+  return { ...(root || {}) };
+}
 const HIDDEN_KEY = 'cli-hidden-sessions';
 
 function shQuote(value) {
@@ -293,7 +301,7 @@ router.post('/sessions/:id/messages', async (req, res) => {
   });
   res.flushHeaders();
 
-  const cfg = store.read('models', {});
+  const cfg = modelConfigForScope('agent');
   cfg._scene = req.body?.scene || 'chat';
   if (req.body?.model && req.body.model !== 'auto') cfg._requestedModel = req.body.model;
   cfg._resumeSessionId = String(req.params.id || '').trim();

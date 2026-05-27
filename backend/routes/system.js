@@ -378,6 +378,25 @@ router.get('/file-content', (req, res) => {
   }
 });
 
+router.put('/file-content', (req, res) => {
+  const filePath = path.resolve(normalizeIncomingPath(req.body?.path || ''));
+  const content = String(req.body?.content || '');
+  if (!filePath || !allowed(filePath)) return res.fail('path not allowed', 403, 403);
+  if (Buffer.byteLength(content, 'utf8') > 1024 * 1024) return res.fail('file too large (max 1MB)', 400, 400);
+  try {
+    const stat = fs.statSync(filePath);
+    if (!stat.isFile()) return res.fail('not a file', 400, 400);
+    if (path.extname(filePath).toLowerCase() !== '.md') return res.fail('only markdown files can be saved', 400, 400);
+    const root = mdLibraryRoot();
+    if (!(filePath === root || filePath.startsWith(root + path.sep))) return res.fail('only md library files can be saved', 403, 403);
+    fs.writeFileSync(filePath, content, 'utf8');
+    const nextStat = fs.statSync(filePath);
+    res.ok({ path: filePath, size: nextStat.size, mtime: nextStat.mtimeMs });
+  } catch (e) {
+    res.fail('save failed: ' + e.message, 500, 500);
+  }
+});
+
 router.get('/file-raw', (req, res) => {
   const filePath = path.resolve(normalizeIncomingPath(req.query.path || ''));
   if (!filePath || !allowed(filePath)) return res.status(403).send('path not allowed');
@@ -725,6 +744,59 @@ router.patch('/md-library', (req, res) => {
   }
 });
 
+router.post('/md-library/copy', (req, res) => {
+  const filePath = path.resolve(normalizeIncomingPath(req.body?.path || ''));
+  if (!filePath || !allowed(filePath)) return res.fail('path not allowed', 403, 403);
+  try {
+    const root = mdLibraryRoot();
+    if (!(filePath === root || filePath.startsWith(root + path.sep))) return res.fail('only md library files can be copied', 403, 403);
+    const stat = fs.statSync(filePath);
+    if (!stat.isFile()) return res.fail('not a file', 400, 400);
+    if (path.extname(filePath).toLowerCase() !== '.md') return res.fail('only markdown files can be copied', 400, 400);
+    const parsed = path.parse(filePath);
+    let target = path.join(parsed.dir, `${parsed.name} - 副本${parsed.ext}`);
+    let index = 2;
+    while (fs.existsSync(target)) {
+      target = path.join(parsed.dir, `${parsed.name} - 副本 ${index}${parsed.ext}`);
+      index += 1;
+    }
+    fs.copyFileSync(filePath, target);
+    const nextStat = fs.statSync(target);
+    res.ok({ path: target, file: path.basename(target), title: path.basename(target, '.md'), size: nextStat.size, mtime: nextStat.mtimeMs });
+  } catch (e) {
+    res.fail('copy failed: ' + e.message, 500, 500);
+  }
+});
+
+router.post('/md-library/move', (req, res) => {
+  const filePath = path.resolve(normalizeIncomingPath(req.body?.path || ''));
+  const folder = normalizeDocFolder(String(req.body?.folder || '').trim(), '');
+  if (!filePath || !allowed(filePath)) return res.fail('path not allowed', 403, 403);
+  try {
+    const root = mdLibraryRoot();
+    if (!(filePath === root || filePath.startsWith(root + path.sep))) return res.fail('only md library files can be moved', 403, 403);
+    const stat = fs.statSync(filePath);
+    if (!stat.isFile()) return res.fail('not a file', 400, 400);
+    if (path.extname(filePath).toLowerCase() !== '.md') return res.fail('only markdown files can be moved', 400, 400);
+    const dir = path.join(root, folder);
+    fs.mkdirSync(dir, { recursive: true });
+    let target = path.join(dir, path.basename(filePath));
+    if (path.resolve(target) !== filePath && fs.existsSync(target)) {
+      const parsed = path.parse(target);
+      let index = 2;
+      do {
+        target = path.join(parsed.dir, `${parsed.name} ${index}${parsed.ext}`);
+        index += 1;
+      } while (fs.existsSync(target));
+    }
+    fs.renameSync(filePath, target);
+    const nextStat = fs.statSync(target);
+    res.ok({ path: target, file: path.basename(target), title: path.basename(target, '.md'), folder, size: nextStat.size, mtime: nextStat.mtimeMs });
+  } catch (e) {
+    res.fail('move failed: ' + e.message, 500, 500);
+  }
+});
+
 router.delete('/md-library', (req, res) => {
   const filePath = path.resolve(normalizeIncomingPath(req.query.path || req.body?.path || ''));
   if (!filePath || !allowed(filePath)) return res.fail('path not allowed', 403, 403);
@@ -741,7 +813,6 @@ router.delete('/md-library', (req, res) => {
   }
 });
 module.exports = router;
-
 
 
 

@@ -8,6 +8,14 @@ const { chatStream } = require('../services/llm');
 const { discoverExternalSkills, externalSkillRoots, normalizeFsPath, samePath, skillFiles: discoverSkillFiles } = require('../services/skillDiscovery');
 
 const router = express.Router();
+
+function modelConfigForScope(scope = 'webui') {
+  const root = store.read('models', {});
+  if (root && typeof root === 'object' && (root.webui || root.agent)) {
+    return { ...(root[scope] || root.webui || root.agent || {}) };
+  }
+  return { ...(root || {}) };
+}
 const KEY = 'skills';
 const LOCAL_DIR = path.join(store.DATA_DIR, 'skills-local');
 const DEFAULTS = [];
@@ -156,7 +164,7 @@ router.post('/describe', async (req, res) => {
       { role: 'user', content: prompt },
     ];
     let desc = '';
-    const cfg = store.read('models', {});
+    const cfg = modelConfigForScope('webui');
     for await (const event of chatStream(cfg, messages)) {
       if (event.type === 'token') desc += event.text;
       if (event.type === 'error') { desc = `${name}相关技能`; break; }

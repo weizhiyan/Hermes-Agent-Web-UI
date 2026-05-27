@@ -16,7 +16,7 @@ const DEFAULT_SKILL_PROMPT_LIMIT = Math.max(1000, Number(process.env.HERMES_SKIL
 const DEFAULT_KNOWLEDGE_SEARCH_LIMIT = Math.max(0, Math.min(Number(process.env.HERMES_KNOWLEDGE_SEARCH_LIMIT || 3), 8));
 const WEBUI_ASK_BRIDGE_PROMPT = [
   '【WebUI 反问弹窗协议】',
-  '当你需要向用户确认信息、让用户在多个方案中选择、确认路径/范围/风险，或需要用户授权后才能继续时，请不要直接输出普通问题。',
+  '当你需要向用户确认信息、让用户在多个方案中选择、确认路径/范围/风险，或需要用户授权后才能继续时，不要直接输出普通问题。',
   '请输出且只输出一个 WEBUI_ASK_JSON 代码块，WebUI 后端会自动弹窗询问用户并把答案带回给你。',
   '',
   '```WEBUI_ASK_JSON',
@@ -44,21 +44,47 @@ const WEBUI_ASK_BRIDGE_PROMPT = [
 const WEBUI_SELF_PROTECTION_PROMPT = `【WebUI 对话执行规则】
 当前请求来自 Hermes WebUI 对话页。除非用户明确说明“现在不是 WebUI 对话，而是在 CLI/代码维护模式中修改项目”，否则你应把自己当作正在 WebUI 中服务用户的 Agent。
 
-1. 图像任务：
-- 当用户要求生成图片、画图、出图、改图、优化图片，或基于参考图生成视觉效果时，必须优先调用可用的图像生成工具，例如 webui_image_generate。
+1. 工具执行：
+- 用户要求读取、写入、保存、修改、同步、上传、下载、调用 API、操作语雀/飞书/Notion/网页/文件/目录/命令时，必须走 Hermes Agent 工具能力；不要用纯文字假装已经执行。
+- 只有工具或后端明确返回成功时，才说“已保存/已写入/已同步”。
+- 当前没有对应工具时，直接说明限制，并给出可行替代方案。
+
+2. 图像任务：
+- 当用户要求生成图片、画图、出图、改图、优化图片，或基于参考图生成视觉效果时，必须优先调用可用的图像生成工具。
 - 不要输出 curl、Python、HTTP 请求示例、伪代码，或“等待 API 返回”这类说明。
 - 工具调用完成后，只需要用简短中文总结结果，并展示工具返回的图片 Markdown/预览链接。
 - 如果工具不可用或失败，明确说明失败原因和下一步，不要假装已经生成。
 
-2. 参考图任务：
+3. 参考图任务：
 - 用户上传图片并要求生成、修改、优化视觉效果时，应作为图像任务处理。
 - 如果当前工具不能读取参考图，请直接说明工具限制，不要编造本地接口命令。
 
-3. WebUI 自保护：
+4. WebUI 自保护：
 - 不要主动修改当前 Hermes WebUI 的核心代码与服务文件。
-- 允许读取文件、解释现状、给出方案；允许在用户授权后写入业务数据文件，例如配置、记忆、输出文档和 backend/data 下的数据。
-- 如果用户要求维护 WebUI 代码，请提示需要切换到 CLI/代码维护模式。`;
+- 允许读取文件、解释现状、给出方案；允许在用户明确要求维护 WebUI 代码后进行修改。
+- 删除、覆盖、批量移动、安装依赖、联网下载等高风险操作必须先让用户确认。`;
+function buildWebuiMarkdownOutputPrompt(settings = {}) {
+  const mdDir = paths.mdLibraryRoot();
+  const dataRoot = paths.dataRoot();
+  return `【WebUI Markdown / Artifact 输出硬规则】
+当用户要求产出可归档内容（工作文档、AI 分享、教程、笔记、总结、规范、方案、报告、验收说明、交接文档、复盘等）时，必须同时完成两步：
 
+1. 先把完整 Markdown 文件写入 MD 输出库：${mdDir}
+   - 文件名要清晰、可读，并以 .md 结尾。
+   - 这是“历史文件”标签页的数据来源；不要写到聊天导出目录 history-md。
+   - 当前 dataRoot：${dataRoot}
+
+2. 然后最终回复只输出一个 artifact 标签，不要附加任何说明文字：
+<artifact type="markdown" title="文件名">
+完整 Markdown 内容
+</artifact>
+
+禁止：
+- 禁止只在聊天里贴 Markdown 而不写入 ${mdDir}。
+- 禁止在 artifact 标签前后说“已保存到……”或其他说明。
+- 禁止把用户文档误写到 history-md；history-md 只用于聊天记录导出。
+- 如果无法写文件，必须明确说明失败原因，不能假装已保存。`;
+}
 function loadAll() { return store.read(KEY, []); }
 function saveAll(list) { store.write(KEY, list); }
 function safeName(name) {
@@ -68,7 +94,7 @@ function toMarkdown(chat) {
   const lines = [
     `# ${redactSecrets(chat.title || '未命名对话')}`,
     '',
-    `- 时间：${new Date(chat.updatedAt || chat.createdAt || Date.now()).toLocaleString('zh-CN')}`,
+    `- 更新时间：${new Date(chat.updatedAt || chat.createdAt || Date.now()).toLocaleString('zh-CN')}`,
     `- 来源：${chat.source || 'WebUI'}`,
     `- 模型：${chat.model || 'default'}`,
     '',
@@ -100,7 +126,7 @@ function extractWebuiAskRequest(text = '') {
     if (!data || !Array.isArray(data.questions) || !data.questions.length) return null;
     return {
       title: String(data.title || 'Agent 需要确认'),
-      message: String(data.message || '请确认后继续。'),
+      message: String(data.message || '请确认下一步操作。'),
       questions: data.questions,
       timeoutMs: Math.max(10000, Math.min(Number(data.timeoutMs || 600000), 30 * 60 * 1000)),
     };
@@ -110,21 +136,29 @@ function extractWebuiAskRequest(text = '') {
 }
 
 function formatAskAnswersForModel(result) {
-  if (!result || !result.ok || !Array.isArray(result.answers)) return '用户未完成弹窗确认，请在聊天中直接追问。';
+  if (!result || !result.ok || !Array.isArray(result.answers)) return '用户没有完成确认或弹窗已超时。';
   return result.answers.map(item => {
     const selected = Array.isArray(item.selected) ? item.selected.filter(Boolean).join('、') : '';
     const custom = String(item.custom || '').trim();
     return `- ${item.label || item.id}: ${selected || '未选择'}${custom ? `；补充：${custom}` : ''}`;
-  }).join('\n') || '用户已确认，但没有具体答案。';
+  }).join('\n') || '用户已确认，但未提供具体答案。';
 }
 function needsKnowledgeBaseRules(text = '') {
-  return /文档|markdown|md\b|知识库|教程|笔记|总结|规范|方案|验收|交接|复盘|报告|分享|归档|保存|frontmatter|artifact/i.test(String(text || ''));
+  return /markdown|md\b|frontmatter|artifact|doc|document|save|report|note|tutorial|summary|knowledge|\u6587\u6863|\u77e5\u8bc6\u5e93|\u6559\u7a0b|\u7b14\u8bb0|\u603b\u7ed3|\u89c4\u8303|\u65b9\u6848|\u62a5\u544a|\u4fdd\u5b58/i.test(String(text || ''));
 }
 
 function isAgentTaskIntent(text = '') {
-  return /\b(改代码|修改代码|写入文件|保存文件|创建文件|删除文件|移动文件|重命名文件|运行命令|执行命令|终端|shell|powershell|cmd|git\s|npm\s|pnpm\s|yarn\s|docker\s|测试|构建|部署|安装依赖|批量处理|扫描项目|读取目录|分析代码库|修复bug|修 bug|提交|commit|push)\b|帮我(改|修|写|创建|删除|运行|执行|安装|部署)|打开.*文件|操作.*文件|工具调用|agent\s*模式|hermes\s*模式/i.test(String(text || ''));
+  const value = String(text || '');
+  if (!value.trim()) return false;
+  const forceRe = /agent\s*模式|hermes\s*模式|工具调用|用工具|调用工具|终端|命令行|shell|powershell|cmd|git\s|npm\s|pnpm\s|yarn\s|docker\s|curl|api|接口/i;
+  const actionRe = /(帮我)?(新建|创建|保存|写入|读取|查看|打开|编辑|修改|更新|删除|移动|重命名|上传|下载|同步|导入|导出|发布|抓取|复制|粘贴|运行|执行|安装|部署|测试|构建|扫描|分析|修复|提交|create|write|read|save|edit|modify|update|delete|upload|download|sync|import|export|publish|run|execute)/i;
+  const targetRe = /(本地|文件|文档|目录|路径|代码|项目|仓库|语雀|yuque|飞书|notion|网页|浏览器|网站|后台|控制台|知识库|markdown|md\b|file|folder|path|document|repo|browser|site)/i;
+  if (forceRe.test(value)) return true;
+  if (/帮我(改|修|写|新建|创建|保存|读取|查看|打开|编辑|修改|更新|删除|移动|重命名|上传|下载|同步|导入|导出|发布|抓取|运行|执行|安装|部署|测试|构建|提交)/i.test(value)) return true;
+  if (actionRe.test(value) && targetRe.test(value)) return true;
+  if (/(语雀|yuque|飞书|notion)/i.test(value) && /(编辑|修改|更新|发布|同步|上传|下载|导入|导出|读取|创建|新建|保存)/i.test(value)) return true;
+  return false;
 }
-
 function skillMatchInfo(skill = {}, text = '') {
   const triggerText = Array.isArray(skill.triggers) ? skill.triggers.join(' ') : String(skill.triggers || '');
   const haystack = String((skill.name || '') + ' ' + (skill.description || skill.desc || '') + ' ' + triggerText + ' ' + (skill.prompt || '')).toLowerCase();
@@ -164,7 +198,11 @@ function limitPromptText(text = '', limit = DEFAULT_SKILL_PROMPT_LIMIT) {
   if (!raw || raw.length <= limit) return { text: raw, truncated: false, originalChars: raw.length };
   const head = Math.floor(limit * 0.72);
   const tail = Math.max(400, limit - head - 220);
-  const clipped = `${raw.slice(0, head).trim()}\n\n[内容已截断：原始 ${raw.length} 字，仅注入前 ${head} 字和末尾 ${tail} 字。请优先遵守摘要、触发条件和关键规则。]\n\n${raw.slice(-tail).trim()}`;
+  const clipped = `${raw.slice(0, head).trim()}
+
+[内容已截断：原始 ${raw.length} 字，仅注入前 ${head} 字和末尾 ${tail} 字。请优先遵守摘要、触发条件和关键规则。]
+
+${raw.slice(-tail).trim()}`;
   return { text: clipped, truncated: true, originalChars: raw.length };
 }
 
@@ -268,7 +306,7 @@ router.post('/', (req, res) => {
   const now = Date.now();
   const chat = {
     id: crypto.randomUUID(),
-    title: req.body.title || '新建对话',
+    title: req.body.title || '新对话',
     model: req.body.model || 'hermes-agent',
     agentId: req.body.agentId || '',
     agentName: req.body.agentName || '',
@@ -450,19 +488,29 @@ router.post('/:id/messages', async (req, res) => {
       ...extra,
     });
   }
-  if (toggles.webuiRules) addSystemPart('WebUI 自保护规则', WEBUI_SELF_PROTECTION_PROMPT, { source: 'builtin' });
+  if (toggles.webuiRules) {
+    addSystemPart('WebUI 对话执行规则', WEBUI_SELF_PROTECTION_PROMPT, { source: 'builtin' });
+    addSystemPart('WebUI 运行路径', [
+      '【WebUI 当前运行路径】',
+      `数据根目录：${paths.dataRoot()}`,
+      `记忆根目录：${paths.memoryRoot()}`,
+      `聊天历史导出目录 history-md：${paths.historyDir()}`,
+      `MD 输出库目录 output-md / mdLibraryDir：${paths.mdLibraryRoot()}`,
+      '用户生成的 Markdown 文档必须写入 MD 输出库目录，不要写入聊天历史导出目录。',
+    ].join('\n'), { source: 'builtin' });
+  }
   if (toggles.webuiRules) addSystemPart('WebUI 反问弹窗协议', WEBUI_ASK_BRIDGE_PROMPT, { source: 'builtin' });
   const memoryPrompt = readCoreMemoryPrompt();
   if (toggles.coreMemory) addSystemPart('核心记忆', memoryPrompt, { source: 'memory' });
   const agentRulesPrompt = readAgentRulesPrompt({ includeKnowledgeBase: needsKnowledgeBaseRules(userMsg.content) });
   if (toggles.agentRules) addSystemPart('Agent 规则', agentRulesPrompt, { source: 'rules', knowledgeBase: needsKnowledgeBaseRules(userMsg.content) });
-  if (toggles.userSystemPrompt) addSystemPart('全局系统提示词', settings.systemPrompt, { source: 'settings' });
+  if (toggles.userSystemPrompt) addSystemPart('用户系统提示', settings.systemPrompt, { source: 'settings' });
   if (toggles.profilePrompt && (req.body.profilePrompt || req.body.profileName)) {
-    addSystemPart(`Agent Profile: ${String(req.body.profileName || req.body.profileId || '默认助手').slice(0, 80)}`, `[当前 Agent: ${String(req.body.profileName || req.body.profileId || '默认助手').slice(0, 80)}]\n${String(req.body.profilePrompt || '').slice(0, 6000)}`, { source: 'profile' });
+    addSystemPart(`Agent Profile: ${String(req.body.profileName || req.body.profileId || '未命名').slice(0, 80)}`, `[当前 Agent: ${String(req.body.profileName || req.body.profileId || '未命名').slice(0, 80)}]\n${String(req.body.profilePrompt || '').slice(0, 6000)}`, { source: 'profile' });
   }
   if (toggles.skills) skills.forEach(s => {
     const limited = limitPromptText(s.prompt);
-    addSystemPart(`技能: ${s.name}`, `[技能: ${s.name}] ${limited.text}`, {
+    addSystemPart(`技能 ${s.name}`, `[技能 ${s.name}] ${limited.text}`, {
       source: 'skill',
       id: s.id || '',
       name: s.name || '',
@@ -475,7 +523,7 @@ router.post('/:id/messages', async (req, res) => {
   const knowledgeSnippets = toggles.knowledgeSearch ? searchKnowledgeSnippets(userMsg.content, knowledgeLimit) : [];
   if (knowledgeSnippets.length) {
     addSystemPart('相关 Markdown 知识片段', [
-      '以下是从 MD 输出库按当前问题轻量检索到的相关片段，仅作为上下文参考；如果与用户当前要求冲突，以用户当前要求为准。',
+      '以下是 MD 知识库中可能相关的历史内容，请仅作为背景参考，不要把 history-md 当作生成文档的保存目录。',
       ...knowledgeSnippets.map((item, index) => `\n[${index + 1}] ${item.title}\n路径：${item.relativePath}\n摘要：${item.snippet}`),
     ].join('\n'), { source: 'knowledge-search', items: knowledgeSnippets.map(({ title, relativePath, score }) => ({ title, relativePath, score })) });
   }
@@ -507,7 +555,10 @@ router.post('/:id/messages', async (req, res) => {
     matchedSkills: skills.map(s => ({ id: s.id || '', name: s.name || '', category: s.category || (Array.isArray(s.tags) ? s.tags[0] : ''), priority: Number(s.priority || 0), match: skillMatchInfo(s, userMsg.content) })),
   });
 
-  const cfg = store.read('models', {});
+  const settingsForMode = store.read('settings', {});
+  const modelRoot = store.read('models', {});
+  const modelScope = settingsForMode.quickMode ? 'webui' : 'agent';
+  const cfg = (modelRoot && (modelRoot.webui || modelRoot.agent)) ? (modelRoot[modelScope] || modelRoot.webui || modelRoot.agent || {}) : modelRoot;
   cfg._scene = req.body.scene || 'chat';
   cfg._abortSignal = abortController.signal;
   if (req.body.model && req.body.model !== 'auto') cfg._requestedModel = req.body.model;
@@ -616,15 +667,15 @@ router.post('/:id/messages', async (req, res) => {
     const askPayload = extractWebuiAskRequest(full);
     if (askPayload) {
       sseWrite(res, 'perf', { stage: 'agent-ask', title: askPayload.title });
-      sseWrite(res, 'token', { text: '\n\n⏸️ Agent 正在等待你的确认...\n' });
+      sseWrite(res, 'token', { text: '\n\nAgent 正在等待你的确认...\n' });
       const askResult = await modalBus.createAsk(askPayload, { wait: true }).catch(error => ({ ok: false, status: error.status || 'error', error: error.message, answers: null }));
       sseWrite(res, 'perf', { stage: 'agent-ask-result', status: askResult.status || (askResult.ok ? 'answered' : 'failed') });
       const answerText = formatAskAnswersForModel(askResult);
       full = '';
       const followupMessages = [
         ...contextMessages,
-        { role: 'assistant', content: '[WebUI 已弹窗向用户确认，等待用户回答。]' },
-        { role: 'user', content: `用户通过 WebUI 弹窗回答如下：\n${answerText}\n\n请根据用户回答继续完成原任务。不要再输出 WEBUI_ASK_JSON，除非仍然缺少关键信息。` },
+        { role: 'assistant', content: '[WebUI 已收到反问弹窗请求]' },
+        { role: 'user', content: `以下是 WebUI 弹窗返回的用户确认结果：\n${answerText}\n\n请根据确认结果继续完成任务，不要再次输出 WEBUI_ASK_JSON，除非仍然缺少关键信息。` },
       ];
       for await (const followEvent of chatStream(cfg, followupMessages)) {
         if (abortController.signal.aborted) break;
@@ -653,7 +704,7 @@ router.post('/:id/messages', async (req, res) => {
       }
     }
 
-    const assistantContent = full || (errorFull ? `⚠️ ${errorFull}` : '');
+    const assistantContent = full || (errorFull ? ('错误：' + errorFull) : '');
     chat.messages.push({ role: 'assistant', content: redactSecrets(assistantContent), ts: Date.now(), error: Boolean(errorFull && !full) });
     if (reasoningFull) chat.messages[chat.messages.length - 1].reasoning = reasoningFull;
     if (toolCalls.length) {
@@ -667,13 +718,13 @@ router.post('/:id/messages', async (req, res) => {
     }
     if (sessionIdFromDone) chat.messages[chat.messages.length - 1].hermesSessionId = sessionIdFromDone;
     chat.updatedAt = Date.now();
-    if ((chat.title === '新建对话' || chat.title === '鏂板缓瀵硅瘽') && userMsg.content) chat.title = userMsg.content.slice(0, 24);
+    if ((chat.title === '新对话' || chat.title === '未命名对话') && userMsg.content) chat.title = userMsg.content.slice(0, 24);
     saveAll(list);
     try { writeMarkdown(chat); } catch {}
     appendSystemLog({
       type: 'task',
       level: errorFull ? 'error' : 'info',
-      msg: `${chat.title || '新建对话'} · ${selectedRoute || 'unknown'} · ${Date.now() - perfStart}ms`,
+      msg: (chat.title || 'chat') + ' · ' + (selectedRoute || 'unknown') + ' · ' + (Date.now() - perfStart) + 'ms',
       chatId: chat.id,
       title: chat.title || '',
       route: selectedRoute || '',
@@ -693,9 +744,9 @@ router.post('/:id/messages', async (req, res) => {
     const safeText = redactSecrets(e.message || '未知错误');
     sseWrite(res, 'error', { msg: safeText });
     try {
-      chat.messages.push({ role: 'assistant', content: `⚠️ ${safeText}`, ts: Date.now(), error: true });
+      chat.messages.push({ role: 'assistant', content: '错误：' + safeText, ts: Date.now(), error: true });
       chat.updatedAt = Date.now();
-      appendSystemLog({ type: 'task', level: 'error', msg: `${chat.title || '新建对话'} · error · ${Date.now() - perfStart}ms`, chatId: chat.id, title: chat.title || '', route: selectedRoute || '', reason: selectedRouteReason || '', durationMs: Date.now() - perfStart, outputChars: full.length, error: safeText });
+      appendSystemLog({ type: 'task', level: 'error', msg: (chat.title || 'chat') + ' · error · ' + (Date.now() - perfStart) + 'ms', chatId: chat.id, title: chat.title || '', route: selectedRoute || '', reason: selectedRouteReason || '', durationMs: Date.now() - perfStart, outputChars: full.length, error: safeText });
       saveAll(list);
       writeMarkdown(chat);
     } catch {}
@@ -720,7 +771,10 @@ router.post('/gc-stream', async (req, res) => {
     if (!res.writableEnded) abortController.abort();
   });
 
-  const cfg = store.read('models', {});
+  const settingsForMode = store.read('settings', {});
+  const modelRoot = store.read('models', {});
+  const modelScope = settingsForMode.quickMode ? 'webui' : 'agent';
+  const cfg = (modelRoot && (modelRoot.webui || modelRoot.agent)) ? (modelRoot[modelScope] || modelRoot.webui || modelRoot.agent || {}) : modelRoot;
   cfg._scene = scene || 'chat';
   cfg._abortSignal = abortController.signal;
   if (model && model !== 'auto') cfg._requestedModel = model;
@@ -748,5 +802,4 @@ router.post('/gc-stream', async (req, res) => {
     res.end();
   }
 });
-
 module.exports = router;

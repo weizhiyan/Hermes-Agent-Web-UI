@@ -83,7 +83,7 @@ WebUI -> Hermes API Server -> Hermes Agent
 推荐目录：
 
 ```text
-D:\HermesData
+F:\AI\Hermes Agent\记忆
 ```
 
 如果记忆目录移动到其他盘，只要在设置页修改路径，WebUI 会自动读取新路径。

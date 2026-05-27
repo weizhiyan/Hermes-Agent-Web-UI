@@ -104,9 +104,12 @@
   --md-h2-size:24px; /* MD：H2 标题字号 */
   --md-h3-size:20px; /* MD：H3 标题字号 */
   --md-h4-size:16px; /* MD：H4 标题字号 */
-  --md-heading-weight:600; /* MD：标题字重 */
+  --md-heading-weight:700; /* MD：标题字重 */
   --md-code-size:13px; /* MD：代码字号 */
   --md-code-radius:6px; /* MD/Chat：统一代码块圆角 */
+  --md-source-num-color:var(--c-ink-muted); /* MD：源码行号颜色 */
+  --md-source-num-border:var(--c-hairline-soft); /* MD：源码行号边框 */
+  --md-source-num-bg:transparent; /* MD：源码行号背景 */
 }
 
 [data-theme="dark"]{
@@ -209,7 +212,10 @@
   --md-h2-size:24px; /* MD：H2 标题字号 */
   --md-h3-size:20px; /* MD：H3 标题字号 */
   --md-h4-size:16px; /* MD：H4 标题字号 */
-  --md-heading-weight:600; /* MD：标题字重 */
+  --md-heading-weight:700; /* MD：标题字重 */
   --md-code-size:13px; /* MD：代码字号 */
   --md-code-radius:6px; /* MD/Chat：统一代码块圆角 */
+  --md-source-num-color:var(--c-ink-muted); /* MD：源码行号颜色 */
+  --md-source-num-border:var(--c-hairline-soft); /* MD：源码行号边框 */
+  --md-source-num-bg:transparent; /* MD：源码行号背景 */
 }

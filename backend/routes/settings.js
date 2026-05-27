@@ -1,5 +1,6 @@
 const express = require('express');
 const store = require('../services/store');
+const paths = require('../services/paths');
 
 const router = express.Router();
 const KEY = 'settings';
@@ -43,7 +44,7 @@ const DEFAULTS = {
 };
 
 function withDefaults(value = {}) {
-  return {
+  const merged = {
     ...DEFAULTS,
     ...value,
     toolPermissions: {
@@ -55,14 +56,25 @@ function withDefaults(value = {}) {
       ...(value.promptToggles || {}),
     },
   };
+  return {
+    ...merged,
+    effectivePaths: {
+      dataRootDir: paths.dataRoot(),
+      memoryDir: paths.memoryRoot(),
+      imageDir: paths.imageRoot(),
+      historyDir: paths.historyDir(),
+      mdLibraryDir: paths.mdLibraryRoot(),
+    },
+  };
 }
 
 router.get('/', (req, res) => res.ok(withDefaults(store.read(KEY, DEFAULTS))));
 
 router.put('/', (req, res) => {
   const merged = withDefaults({ ...store.read(KEY, DEFAULTS), ...req.body });
+  delete merged.effectivePaths;
   store.write(KEY, merged);
-  res.ok(merged);
+  res.ok(withDefaults(merged));
 });
 
 module.exports = router;

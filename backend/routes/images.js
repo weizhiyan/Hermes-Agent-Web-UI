@@ -9,6 +9,14 @@ const { directApiStream } = require('../services/llm');
 
 const router = express.Router();
 
+function modelConfigForScope(scope = 'webui') {
+  const root = store.read('models', {});
+  if (root && typeof root === 'object' && (root.webui || root.agent)) {
+    return { ...(root[scope] || root.webui || root.agent || {}) };
+  }
+  return { ...(root || {}) };
+}
+
 const IMAGE_KEY = 'images';
 const CHAT_KEY = 'chats';
 const MAX_UPLOAD_BYTES = 25 * 1024 * 1024;
@@ -294,7 +302,7 @@ function imageEndpoint(base, mode = 'generations') {
 }
 
 function resolveImageModel(modelId = 'auto') {
-  const cfg = store.read('models', {});
+  const cfg = modelConfigForScope('webui');
   const lib = Array.isArray(cfg.library) ? cfg.library : [];
   const wanted = modelId && modelId !== 'auto' ? modelId : (cfg.scenarios?.image || '');
   const model = lib.find(m => m.id === wanted || m.name === wanted);
@@ -533,7 +541,7 @@ router.post('/optimize-prompt', async (req, res) => {
     },
   ];
 
-  const cfg = store.read('models', {});
+  const cfg = modelConfigForScope('webui');
   cfg._scene = 'reasoning';
   cfg._requestedModel = pickTextModelId(cfg, model && model !== 'auto' ? model : '');
   cfg.params = { ...(cfg.params || {}), temperature: 0.35, maxTokens: Math.min(Number(cfg.params?.maxTokens || 1200), 1200) };

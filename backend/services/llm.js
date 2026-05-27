@@ -1,17 +1,32 @@
-const { hermesStream } = require('./hermes');
+﻿const { hermesStream } = require('./hermes');
 const store = require('./store');
 
 const RELAY_PROVIDER_RE = /new\s*api|one\s*api|openai|openrouter|siliconflow|together|moonshot|kimi|zhipu|智谱|中转|gateway|relay/i;
-const AGENT_TASK_RE = /\b(改代码|修改代码|写入文件|保存文件|创建文件|删除文件|移动文件|重命名文件|运行命令|执行命令|终端|shell|powershell|cmd|git\s|npm\s|pnpm\s|yarn\s|docker\s|测试|构建|部署|安装依赖|批量处理|扫描项目|读取目录|分析代码库|修复bug|修 bug|提交|commit|push)\b|帮我(改|修|写|创建|删除|运行|执行|安装|部署)|打开.*文件|操作.*文件|工具调用|agent\s*模式|hermes\s*模式/i;
+const AGENT_FORCE_RE = /agent\s*模式|hermes\s*模式|工具调用|用工具|调用工具|终端|命令行|shell|powershell|cmd|git\s|npm\s|pnpm\s|yarn\s|docker\s|curl|api|接口/i;
+const AGENT_ACTION_RE = /(帮我)?(新建|创建|保存|写入|读取|查看|打开|编辑|修改|更新|删除|移动|重命名|上传|下载|同步|导入|导出|发布|抓取|复制|粘贴|运行|执行|安装|部署|测试|构建|扫描|分析|修复|提交)/i;
+const AGENT_TARGET_RE = /(本地|文件|文档|目录|路径|代码|项目|仓库|语雀|yuque|飞书|notion|网页|浏览器|网站|后台|控制台|知识库|markdown|md\b)/i;
+
+function hasAgentTaskIntent(text = '') {
+  const value = String(text || '');
+  if (!value.trim()) return false;
+  if (AGENT_FORCE_RE.test(value)) return true;
+  if (/帮我(改|修|写|新建|创建|保存|读取|查看|打开|编辑|修改|更新|删除|移动|重命名|上传|下载|同步|导入|导出|发布|抓取|运行|执行|安装|部署|测试|构建|提交)/i.test(value)) return true;
+  if (AGENT_ACTION_RE.test(value) && AGENT_TARGET_RE.test(value)) return true;
+  if (/(语雀|yuque|飞书|notion)/i.test(value) && /(编辑|修改|更新|发布|同步|上传|下载|导入|导出|读取|创建|新建|保存)/i.test(value)) return true;
+  return false;
+}
 
 function shouldUseHermesAgent({ cfg = {}, settings = {}, last = '', libraryItem = null } = {}) {
-  const mode = String(cfg.routingMode || settings.routingMode || '').toLowerCase();
-  if (mode === 'hermes' || mode === 'agent') return { useHermes: true, reason: 'settings-hermes' };
-  if (mode === 'direct' || mode === 'fast') return { useHermes: false, reason: 'settings-direct' };
+  const mode = String(cfg.routingMode || settings.routingMode || 'auto').toLowerCase();
+  const quickDirect = cfg.quickMode === true || settings.quickMode === true;
+  const agentIntent = hasAgentTaskIntent(last);
   if (cfg.forceHermes === true) return { useHermes: true, reason: 'request-force-hermes' };
   if (cfg.forceDirect === true) return { useHermes: false, reason: 'request-force-direct' };
+  if (quickDirect) return { useHermes: false, reason: 'quick-mode-direct' };
+  if (mode === 'hermes' || mode === 'agent') return { useHermes: true, reason: 'settings-hermes' };
+  if (mode === 'direct' || mode === 'fast') return { useHermes: false, reason: 'settings-direct' };
   if (!canUseDirectApi(libraryItem) && !isRelayModel(libraryItem)) return { useHermes: true, reason: 'direct-api-unavailable' };
-  if (AGENT_TASK_RE.test(String(last || ''))) return { useHermes: true, reason: 'agent-intent' };
+  if (agentIntent) return { useHermes: true, reason: 'agent-intent' };
   return { useHermes: false, reason: 'normal-chat-direct' };
 }
 
@@ -50,6 +65,10 @@ function isRelayModel(item = {}) {
 
 function canUseDirectApi(item = {}) {
   return !!(item && item.base && (item.apiFormat || 'openai-chat') === 'openai-chat');
+}
+
+function requestModelName(item = {}, fallback = '') {
+  return item?.model || item?.name || fallback || '';
 }
 
 function timeoutSignal(ms) {
@@ -184,24 +203,24 @@ async function* directApiStream(cfg, messages) {
   const providerCfg = libraryItem || cfg[provider] || {};
   const base = String(providerCfg.base || '').replace(/\/+$/, '');
   const key = providerCfg.key || '';
-  const model = libraryItem?.name || requestedModel || providerCfg.model || '';
+  const model = requestModelName(libraryItem || providerCfg, requestedModel);
   const apiFormat = providerCfg.apiFormat || 'openai-chat';
   const authType = providerCfg.authType || 'bearer';
   const authHeader = providerCfg.authHeader || '';
   const params = cfg.params || {};
 
   if (!base || !model) {
-    yield { type: 'error', text: '未配置可用模型。请先到设置 > 模型配置添加真实 Provider、Base URL、API Key 和模型。' };
+    yield { type: 'error', text: '模型配置不完整：请在设置 > 模型中配置 Provider、Base URL 和 API Key。' };
     return;
   }
 
   if (apiFormat !== 'openai-chat') {
-    yield { type: 'error', text: `快速模式目前只支持 OpenAI 兼容格式，当前模型是 ${apiFormat}。请改成 OpenAI 兼容，或关闭快速模式走 Hermes CLI。` };
+    yield { type: 'error', text: `当前直连模式仅支持 OpenAI Chat Completions 格式，当前为 ${apiFormat}。请切换到兼容 OpenAI 的接口，或使用 Hermes Agent 模式。` };
     return;
   }
 
   if (!key && authType !== 'none') {
-    yield { type: 'error', text: `未配置 ${provider || model} 的 API Key，请在模型配置中填写后再发送。` };
+    yield { type: 'error', text: `缺少 ${provider || model} 的 API Key，请先在模型设置中填写。` };
     return;
   }
 
@@ -216,7 +235,7 @@ async function* directApiStream(cfg, messages) {
       top_p: params.topP ?? 1,
     });
   } catch (e) {
-    yield { type: 'error', text: `消息序列化失败: ${e.message}` };
+    yield { type: 'error', text: `消息序列化失败：${e.message}` };
     return;
   }
 
@@ -233,7 +252,7 @@ async function* directApiStream(cfg, messages) {
       yield { type: 'perf', stage: 'direct-api-aborted' };
       return true;
     }
-    yield { type: 'error', text: `API 连接失败: ${e.message}` };
+    yield { type: 'error', text: `API 连接失败：${e.message}` };
     return false;
   }
 
@@ -245,7 +264,7 @@ async function* directApiStream(cfg, messages) {
   }
 
   if (!resp.body) {
-    yield { type: 'error', text: 'API 未返回流式响应。' };
+    yield { type: 'error', text: 'API 没有返回可读取的响应体。' };
     return false;
   }
 
@@ -286,7 +305,7 @@ async function* directApiStream(cfg, messages) {
       yield { type: 'perf', stage: 'direct-api-aborted' };
       return true;
     }
-    yield { type: 'error', text: `流式读取失败: ${e.message}` };
+    yield { type: 'error', text: `流式读取失败：${e.message}` };
     return false;
   }
   return true;
@@ -296,14 +315,14 @@ async function* chatStream(cfg, messages) {
   const settings = store.read('settings', {});
   const last = messages[messages.length - 1]?.content || '';
   if (!last) {
-    yield { type: 'error', text: '没有输入内容。' };
+    yield { type: 'error', text: '消息内容为空。' };
     return;
   }
 
   const scene = cfg._scene || 'chat';
   const sceneModel = cfg._requestedModel || cfg.scenarios?.[scene] || cfg.scenarios?.chat || cfg.current || '';
   const libraryItem = selectedLibraryModel(cfg, sceneModel);
-  const modelName = libraryItem?.name || sceneModel || settings.hermesModel || '';
+  const modelName = requestModelName(libraryItem || {}, sceneModel || settings.hermesModel || '');
   cfg._requestedModel = libraryItem?.id || sceneModel;
   cfg._selectedLibraryModel = libraryItem || null;
 
@@ -342,7 +361,7 @@ async function* chatStream(cfg, messages) {
   try {
     yield* hermesStream(last, messages, modelCfg, cfg);
   } catch (e) {
-    yield { type: 'error', text: `Hermes Agent 调用失败: ${e.message}` };
+    yield { type: 'error', text: `Hermes Agent 执行失败：${e.message}` };
   }
 }
 
