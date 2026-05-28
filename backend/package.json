@@ -1,6 +1,6 @@
 ﻿{
     "name":  "hermes-agent-backend",
-    "version":  "1.5.2",
+    "version":  "1.5.3",
     "description":  "Hermes Agent backend API",
     "main":  "server.js",
     "scripts":  {
@@ -15,3 +15,4 @@
                          "iconv-lite":  "^0.7.2"
                      }
 }
+

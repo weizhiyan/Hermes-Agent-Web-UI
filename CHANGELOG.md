@@ -1,5 +1,9 @@
 ﻿# Changelog
 
+## v1.5.3
+- 合并远端 v1.5.2 agent workspace 更新与本地知识库/渲染优化。
+- 保留本地知识库捕获、Markdown 渲染、本地 marked/highlight 资源和路径兼容修复。
+- 升级发布版本，避免覆盖远端已存在的 v1.5.2 标签。
 ## v1.5.2
 - 优化知识库捕获与 Markdown 渲染链路，补充本地 marked / highlight 资源，减少外部 CDN 依赖。
 - 优化知识库局部编辑、文件写回、图片保存和路径处理逻辑。
@@ -59,5 +63,6 @@
 - 改进思考块与工具调用块的展示方式，更接近 Claude / Codex 的轻量结构。
 - 补充跨电脑安装支持：`start.ps1`、`start.sh`、`docker-compose.yml`、`Dockerfile`、`.env.example`。
 - 让后端读取根目录 `.env`，便于本地和其他机器部署。
+
 
 
