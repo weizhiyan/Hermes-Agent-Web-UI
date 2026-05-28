@@ -1,5 +1,11 @@
 ﻿# Changelog
 
+## v1.5.2
+- 优化知识库捕获与 Markdown 渲染链路，补充本地 marked / highlight 资源，减少外部 CDN 依赖。
+- 优化知识库局部编辑、文件写回、图片保存和路径处理逻辑。
+- 优化 WebUI relay、模型配置、Hermes Agent 启动环境和记忆路径兼容性。
+- 补充 AI 交接摘要文档，便于其他 AI 或开发者快速接手当前版本。
+- 清理公开文档中的个人本机路径示例，避免泄露本地环境信息。
 ## v1.5.0
 - 新增 WebUI 本地 OpenAI 兼容中转通道，支持 Hermes Agent 通过 WebUI relay 使用已配置的中转模型。
 - 优化知识库文档编辑：选区局部编辑会携带文档标题、路径、来源模式和选区上下文，助手回复后可一键应用回原选区。
@@ -53,4 +59,5 @@
 - 改进思考块与工具调用块的展示方式，更接近 Claude / Codex 的轻量结构。
 - 补充跨电脑安装支持：`start.ps1`、`start.sh`、`docker-compose.yml`、`Dockerfile`、`.env.example`。
 - 让后端读取根目录 `.env`，便于本地和其他机器部署。
+
 

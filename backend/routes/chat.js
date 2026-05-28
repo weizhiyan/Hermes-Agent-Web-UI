@@ -1,4 +1,4 @@
-const express = require('express');
+﻿const express = require('express');
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
@@ -9,11 +9,14 @@ const { readCoreMemoryPrompt, readAgentRulesPrompt } = require('../services/memo
 const { redactSecrets, sanitizeAny, sanitizeChat } = require('../services/security');
 const { discoverExternalSkills, samePath, normalizeFsPath } = require('../services/skillDiscovery');
 const modalBus = require('./modal');
+const { captureKnowledge } = require('../services/knowledgeCapture');
 
 const router = express.Router();
 const KEY = 'chats';
 const DEFAULT_SKILL_PROMPT_LIMIT = Math.max(1000, Number(process.env.HERMES_SKILL_PROMPT_LIMIT || 6000));
 const DEFAULT_KNOWLEDGE_SEARCH_LIMIT = Math.max(0, Math.min(Number(process.env.HERMES_KNOWLEDGE_SEARCH_LIMIT || 3), 8));
+const CONTEXT_KEEP_MESSAGES = Math.max(8, Number(process.env.HERMES_CONTEXT_KEEP_MESSAGES || 24));
+const CONTEXT_SUMMARY_TRIGGER = Math.max(CONTEXT_KEEP_MESSAGES + 6, Number(process.env.HERMES_CONTEXT_SUMMARY_TRIGGER || 36));
 const WEBUI_ASK_BRIDGE_PROMPT = [
   '【WebUI 反问弹窗协议】',
   '当你需要向用户确认信息、让用户在多个方案中选择、确认路径/范围/风险，或需要用户授权后才能继续时，不要直接输出普通问题。',
@@ -206,6 +209,86 @@ ${raw.slice(-tail).trim()}`;
   return { text: clipped, truncated: true, originalChars: raw.length };
 }
 
+
+function normalizeAgentSnapshot(body = {}) {
+  const agentId = String(body.agentId || body.profileId || 'default').trim() || 'default';
+  const agentName = String(body.agentName || body.profileName || (agentId === 'default' ? '\u9ed8\u8ba4\u52a9\u624b' : agentId)).slice(0, 120);
+  const skillIds = Array.isArray(body.profileSkillIds || body.skillIds) ? (body.profileSkillIds || body.skillIds).map(String) : [];
+  const dirs = paths.ensureAgentDirs(agentId);
+  return {
+    id: agentId,
+    name: agentName,
+    role: String(body.agentRole || body.role || '').slice(0, 240),
+    modelId: String(body.modelId || body.model || 'auto'),
+    systemPrompt: String(body.profilePrompt || body.systemPrompt || '').slice(0, 6000),
+    skillIds,
+    knowledgeFocus: Array.isArray(body.knowledgeFocus) ? body.knowledgeFocus.map(String).slice(0, 12) : [],
+    soulDir: dirs.soulDir,
+    memoryDir: dirs.memoryDir,
+    workspaceDir: dirs.workspaceDir,
+    knowledgeDir: dirs.knowledgeDir,
+    capturedAt: new Date().toISOString(),
+  };
+}
+
+function autoCaptureKnowledge(chat, userMsg, assistantContent) {
+  const question = String(userMsg && userMsg.content || '').trim();
+  const answer = String(assistantContent || '').trim();
+  if (!question || !answer || /^error[:?]/i.test(answer)) return;
+  const title = (chat && chat.title && chat.title !== question.slice(0, 24)) ? chat.title : question.slice(0, 40);
+  try {
+    captureKnowledge({
+      title,
+      folder: 'questions',
+      type: 'question',
+      kind: 'question',
+      tags: ['auto-capture', 'raw-question', chat?.agentId ? ('agent-' + chat.agentId) : 'agent-default'],
+      source: 'chat',
+      status: 'auto',
+      question,
+      answer,
+      context: chat && chat.id ? ('chatId: ' + chat.id) : '',
+      chatId: chat && chat.id ? chat.id : '',
+      agentId: chat && chat.agentId ? chat.agentId : '',
+      agentName: chat && chat.agentName ? chat.agentName : '',
+    });
+  } catch (error) {
+    try { appendSystemLog({ type: 'knowledge', level: 'warn', msg: 'auto capture failed: ' + error.message, chatId: chat && chat.id }); } catch {}
+  }
+}
+
+function compactChatContext(chat) {
+  const messages = Array.isArray(chat?.messages) ? chat.messages : [];
+  if (messages.length <= CONTEXT_SUMMARY_TRIGGER) return chat?.summary || '';
+  const previousUntil = Math.max(0, Number(chat.compressedUntilIndex || 0));
+  const keepStart = Math.max(0, messages.length - CONTEXT_KEEP_MESSAGES);
+  if (keepStart <= previousUntil) return chat.summary || '';
+  const slice = messages.slice(previousUntil, keepStart);
+  if (!slice.length) return chat.summary || '';
+  const brief = slice.map((msg, index) => {
+    const role = msg.role === 'assistant' ? 'Assistant' : msg.role === 'user' ? 'User' : String(msg.role || 'Message');
+    const text = redactSecrets(String(msg.content || '')).replace(/\s+/g, ' ').trim().slice(0, 260);
+    return `${previousUntil + index + 1}. ${role}: ${text}`;
+  }).filter(Boolean).join('\n');
+  const prior = String(chat.summary || '').trim();
+  const next = [prior, brief].filter(Boolean).join('\n').slice(-8000);
+  chat.summary = next;
+  chat.summaryUpdatedAt = Date.now();
+  chat.compressedUntilIndex = keepStart;
+  return next;
+}
+
+function agentSummaryPrompt(list, currentAgentId) {
+  if (currentAgentId !== 'default') return '';
+  const rows = list
+    .filter(c => c && c.agentId && c.agentId !== 'default' && c.summary)
+    .sort((a, b) => Number(b.updatedAt || 0) - Number(a.updatedAt || 0))
+    .slice(0, 8)
+    .map(c => `- ${c.agentName || c.agentId}: ${String(c.summary || '').replace(/\s+/g, ' ').slice(-900)}`);
+  if (!rows.length) return '';
+  return ['[Other Agent Summaries - read only]', '默认助手可参考这些摘要理解其他 Agent 的沉淀，但不要直接改写其他 Agent 的记忆。', ...rows].join('\n');
+}
+
 function promptToggles(settings = {}) {
   return {
     webuiRules: true,
@@ -294,6 +377,8 @@ router.get('/', (req, res) => {
     agentName: c.agentName,
     source: c.source || 'WebUI',
     pinned: !!c.pinned,
+    chatType: c.chatType || (c.isMainAgentChat ? 'main' : 'task'),
+    isMainAgentChat: !!c.isMainAgentChat,
     updatedAt: c.updatedAt,
     createdAt: c.createdAt,
     preview: redactSecrets(c.messages?.slice(-1)[0]?.content || '').slice(0, 90),
@@ -304,12 +389,17 @@ router.get('/', (req, res) => {
 
 router.post('/', (req, res) => {
   const now = Date.now();
+  const agentSnapshot = normalizeAgentSnapshot(req.body || {});
   const chat = {
     id: crypto.randomUUID(),
-    title: req.body.title || '新对话',
+    title: req.body.title || '新建对话',
     model: req.body.model || 'hermes-agent',
-    agentId: req.body.agentId || '',
-    agentName: req.body.agentName || '',
+    agentId: agentSnapshot.id,
+    agentName: agentSnapshot.name,
+    agentSnapshot,
+    lockedAgent: true,
+    chatType: req.body.chatType || (req.body.isMainAgentChat ? 'main' : 'task'),
+    isMainAgentChat: !!req.body.isMainAgentChat || req.body.chatType === 'main',
     source: req.body.source || 'WebUI',
     messages: [],
     createdAt: now,
@@ -384,8 +474,10 @@ router.put('/:id', (req, res) => {
   if (!chat) return res.fail('chat not found', 404, 404);
   if (req.body.title) chat.title = req.body.title;
   if (req.body.pinned !== undefined) chat.pinned = Boolean(req.body.pinned);
-  if (req.body.agentId !== undefined) chat.agentId = String(req.body.agentId || '');
-  if (req.body.agentName !== undefined) chat.agentName = String(req.body.agentName || '');
+  if (!chat.lockedAgent) {
+    if (req.body.agentId !== undefined) chat.agentId = String(req.body.agentId || '');
+    if (req.body.agentName !== undefined) chat.agentName = String(req.body.agentName || '');
+  }
   chat.updatedAt = Date.now();
   saveAll(list);
   res.ok(sanitizeChat(chat));
@@ -450,10 +542,17 @@ router.post('/:id/messages', async (req, res) => {
     })).filter(item => item.id || item.url || item.publicUrl);
   }
   chat.messages.push(userMsg);
-  if (req.body.profileId) chat.agentId = String(req.body.profileId);
-  if (req.body.profileName) chat.agentName = String(req.body.profileName).slice(0, 120);
+  if (!chat.agentSnapshot) chat.agentSnapshot = normalizeAgentSnapshot({ ...req.body, agentId: chat.agentId || req.body.profileId, agentName: chat.agentName || req.body.profileName });
+  chat.agentId = chat.agentSnapshot.id;
+  chat.agentName = chat.agentSnapshot.name;
+  chat.lockedAgent = true;
+  chat.chatType = chat.chatType || (chat.isMainAgentChat ? 'main' : 'task');
+  chat.isMainAgentChat = !!chat.isMainAgentChat || chat.chatType === 'main';
+  const rollingSummary = compactChatContext(chat);
 
-  const requestedSkillIds = Array.isArray(req.body.profileSkillIds) ? req.body.profileSkillIds.map(String) : [];
+  const requestedSkillIds = Array.isArray(chat.agentSnapshot.skillIds) && chat.agentSnapshot.skillIds.length
+    ? chat.agentSnapshot.skillIds.map(String)
+    : (Array.isArray(req.body.profileSkillIds) ? req.body.profileSkillIds.map(String) : []);
   const storedSkills = store.read('skills', []);
   const externalSkills = discoverExternalSkills().map(skill => {
     const old = storedSkills.find(item => item && (item.id === skill.id || samePath(item.path, skill.path) || item.name === skill.name));
@@ -505,9 +604,24 @@ router.post('/:id/messages', async (req, res) => {
   const agentRulesPrompt = readAgentRulesPrompt({ includeKnowledgeBase: needsKnowledgeBaseRules(userMsg.content) });
   if (toggles.agentRules) addSystemPart('Agent 规则', agentRulesPrompt, { source: 'rules', knowledgeBase: needsKnowledgeBaseRules(userMsg.content) });
   if (toggles.userSystemPrompt) addSystemPart('用户系统提示', settings.systemPrompt, { source: 'settings' });
-  if (toggles.profilePrompt && (req.body.profilePrompt || req.body.profileName)) {
-    addSystemPart(`Agent Profile: ${String(req.body.profileName || req.body.profileId || '未命名').slice(0, 80)}`, `[当前 Agent: ${String(req.body.profileName || req.body.profileId || '未命名').slice(0, 80)}]\n${String(req.body.profilePrompt || '').slice(0, 6000)}`, { source: 'profile' });
+  const activeAgentSnapshot = chat.agentSnapshot || normalizeAgentSnapshot(req.body || {});
+  if (toggles.profilePrompt && (activeAgentSnapshot.systemPrompt || activeAgentSnapshot.name)) {
+    const agentLabel = String(activeAgentSnapshot.name || activeAgentSnapshot.id || 'agent').slice(0, 80);
+    const agentPrompt = [
+      '[Current Agent: ' + agentLabel + ']',
+      String(activeAgentSnapshot.systemPrompt || '').slice(0, 6000),
+      '',
+      '[Agent workspace]',
+      'soul: ' + (activeAgentSnapshot.soulDir || ''),
+      'memory: ' + (activeAgentSnapshot.memoryDir || ''),
+      'workspace: ' + (activeAgentSnapshot.workspaceDir || ''),
+      'knowledge: ' + (activeAgentSnapshot.knowledgeDir || ''),
+    ].join('\n');
+    addSystemPart('Agent Profile: ' + agentLabel, agentPrompt, { source: 'profile', agentId: activeAgentSnapshot.id });
   }
+  if (rollingSummary) addSystemPart('滚动上下文摘要', '[Conversation Summary]\n' + rollingSummary, { source: 'context-summary', compressedUntilIndex: chat.compressedUntilIndex || 0 });
+  const otherAgentSummary = agentSummaryPrompt(list, activeAgentSnapshot.id);
+  if (otherAgentSummary) addSystemPart('其他 Agent 摘要', otherAgentSummary, { source: 'agent-summaries' });
   if (toggles.skills) skills.forEach(s => {
     const limited = limitPromptText(s.prompt);
     addSystemPart(`技能 ${s.name}`, `[技能 ${s.name}] ${limited.text}`, {
@@ -528,7 +642,7 @@ router.post('/:id/messages', async (req, res) => {
     ].join('\n'), { source: 'knowledge-search', items: knowledgeSnippets.map(({ title, relativePath, score }) => ({ title, relativePath, score })) });
   }
   const systemPrompt = systemParts.join('\n\n');
-  const historyLimit = Math.max(4, Math.min(Number(settings.history) || 16, 60));
+  const historyLimit = Math.max(4, Math.min(Number(settings.history) || 16, CONTEXT_KEEP_MESSAGES));
   const recentMessages = chat.messages.slice(-historyLimit).map((msg, index, arr) => (
     index === arr.length - 1 && msg === userMsg
       ? { ...msg, content: redactSecrets(String(req.body.content || userMsg.content || '')) }
@@ -544,8 +658,13 @@ router.post('/:id/messages', async (req, res) => {
   });
   res.flushHeaders();
   const abortController = new AbortController();
+  // Heartbeat: send comment every 15s to keep connection alive
+  const heartbeat = setInterval(() => {
+    try { res.write(':heartbeat\n\n'); } catch (_) { clearInterval(heartbeat); }
+  }, 15000);
   res.on('close', () => {
     if (!res.writableEnded) abortController.abort();
+    clearInterval(heartbeat);
   });
   perfMark(res, perfStart, 'sse-flushed', {
     historyMessages: recentMessages.length,
@@ -721,6 +840,7 @@ router.post('/:id/messages', async (req, res) => {
     if ((chat.title === '新对话' || chat.title === '未命名对话') && userMsg.content) chat.title = userMsg.content.slice(0, 24);
     saveAll(list);
     try { writeMarkdown(chat); } catch {}
+    try { autoCaptureKnowledge(chat, userMsg, assistantContent); } catch {}
     appendSystemLog({
       type: 'task',
       level: errorFull ? 'error' : 'info',
@@ -767,8 +887,12 @@ router.post('/gc-stream', async (req, res) => {
   });
   res.flushHeaders();
   const abortController = new AbortController();
+  const heartbeat = setInterval(() => {
+    try { res.write(':heartbeat\n\n'); } catch (_) { clearInterval(heartbeat); }
+  }, 15000);
   res.on('close', () => {
     if (!res.writableEnded) abortController.abort();
+    clearInterval(heartbeat);
   });
 
   const settingsForMode = store.read('settings', {});
@@ -803,3 +927,4 @@ router.post('/gc-stream', async (req, res) => {
   }
 });
 module.exports = router;
+

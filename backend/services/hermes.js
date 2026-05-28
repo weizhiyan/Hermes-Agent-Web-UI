@@ -311,6 +311,28 @@ function upsertCustomProvider(text, providerName, selectedModel, options = {}) {
   return [...lines.slice(0, section.start), ...rebuilt, ...lines.slice(section.end)].join('\n');
 }
 
+function removeCustomProvider(text = '', providerName = '') {
+  const lines = String(text || '').replace(/\r\n/g, '\n').split('\n');
+  const section = sectionBounds(lines, 'custom_providers');
+  if (!section) return text;
+  const sectionLines = lines.slice(section.start + 1, section.end);
+  const blocks = [];
+  let current = [];
+  for (const line of sectionLines) {
+    if (/^\s*-\s+name:\s*/.test(line) && current.length) {
+      blocks.push(current);
+      current = [line];
+    } else if (current.length || /^\s*-\s+name:\s*/.test(line)) {
+      current.push(line);
+    }
+  }
+  if (current.length) blocks.push(current);
+  const kept = blocks.filter(block => !block.some(line => String(line).trim() === 'name: ' + providerName || String(line).includes('name: ' + providerName)));
+  if (!kept.length) return [...lines.slice(0, section.start), ...lines.slice(section.end)].join('\n');
+  const rebuilt = ['custom_providers:'];
+  for (const block of kept) rebuilt.push(...block);
+  return [...lines.slice(0, section.start), ...rebuilt, ...lines.slice(section.end)].join('\n');
+}
 function minimalHermesConfig() {
   return [
     'providers: {}',
@@ -333,7 +355,7 @@ function mergedHermesConfigText(providerName, selectedModel, existing = '', opti
   const modelName = requestModelName(selectedModel);
   const modelSection = ['model:', '  provider: ' + providerName];
   if (modelName) modelSection.push('  default: ' + JSON.stringify(modelName));
-  if (modelName && !NATIVE_HERMES_PROVIDERS.has(providerName)) modelSection.push('  api_mode: ' + hermesApiMode(selectedModel));
+  if (modelName && !NATIVE_HERMES_PROVIDERS.has(providerName)) modelSection.push('  api_mode: chat_completions');
   return sanitizeHermesConfigText(replaceSection(lines, 'model', modelSection).join('\n'));
 }
 

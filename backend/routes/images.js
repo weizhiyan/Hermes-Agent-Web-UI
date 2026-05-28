@@ -6,9 +6,54 @@ const store = require('../services/store');
 const paths = require('../services/paths');
 const { redactSecrets } = require('../services/security');
 const { directApiStream } = require('../services/llm');
+const { captureKnowledge } = require('../services/knowledgeCapture');
 
 const router = express.Router();
 
+
+function captureImageGenerationRecord({ sourcePrompt = '', prompt = '', inputs = [], outputs = [], model = '', provider = '', mode = '', chatId = '', optimizedByAgent = false } = {}) {
+  try {
+    const rawTitle = String(sourcePrompt || prompt || 'image-generation').replace(/\s+/g, ' ').trim().slice(0, 40) || 'image-generation';
+    const title = 'Image Generation - ' + rawTitle;
+    const outputLines = (outputs || []).map((img, index) => [
+      '### Output ' + (index + 1),
+      img.publicUrl ? ('![output ' + (index + 1) + '](' + img.publicUrl + ')') : '',
+      '- localPath: ' + (img.path || ''),
+      '- id: ' + (img.id || ''),
+    ].filter(Boolean).join('\n')).join('\n\n') || 'None';
+    const inputLines = (inputs || []).map((img, index) => [
+      '### Reference ' + (index + 1),
+      img.publicUrl ? ('![reference ' + (index + 1) + '](' + img.publicUrl + ')') : '',
+      '- name: ' + (img.name || img.originalName || img.filename || ''),
+      '- localPath: ' + (img.path || ''),
+      '- id: ' + (img.id || ''),
+    ].filter(Boolean).join('\n')).join('\n\n') || 'None';
+    const content = [
+      '# ' + title,
+      '',
+      '## Original Prompt',
+      sourcePrompt || prompt || 'None',
+      '',
+      '## Final Prompt',
+      prompt || 'None',
+      '',
+      '## Output Images',
+      outputLines,
+      '',
+      '## Reference Images',
+      inputLines,
+      '',
+      '## Metadata',
+      '- model: ' + model,
+      '- provider: ' + provider,
+      '- mode: ' + mode,
+      '- optimizedByAgent: ' + (optimizedByAgent ? 'true' : 'false'),
+      '- chatId: ' + (chatId || ''),
+      '- createdAt: ' + new Date().toISOString(),
+    ].join('\n');
+    captureKnowledge({ title, folder: 'images', type: 'image-generation', kind: 'image-generation', tags: ['auto-capture', 'image-generation'], source: 'image-generation', status: 'auto', content });
+  } catch (_) {}
+}
 function modelConfigForScope(scope = 'webui') {
   const root = store.read('models', {});
   if (root && typeof root === 'object' && (root.webui || root.agent)) {
@@ -742,14 +787,29 @@ async function generateImageFromPrompt({ prompt = '', sourcePrompt = '', optimiz
     ? `\n\n参考图片：\n${inputs.map(img => `![${img.originalName || img.filename}](${toPublicUrl(reqLike, img.id)})\n本地路径：${img.path}`).join('\n\n')}`
     : '';
   const userContent = `图像生成：${cleanSourcePrompt || finalPrompt}${inputMd}`;
+  const imageCaptureInputs = inputs.map(i => ({ id: i.id, path: i.path, url: i.url, publicUrl: toPublicUrl(reqLike, i.id), name: i.originalName || i.filename }));
+  const imageCaptureOutputs = outputs.map(o => ({ id: o.id, path: o.path, url: o.url, publicUrl: o.publicUrl, name: o.filename, prompt: o.prompt, sourcePrompt: o.sourcePrompt }));
+  const imageMode = inputs.length ? 'image-to-image' : 'text-to-image';
   const chat = appendChatMessages(chatId, userContent, assistantContent, selectedModel.name, {
-    inputs: inputs.map(i => ({ id: i.id, path: i.path, url: i.url, publicUrl: toPublicUrl(reqLike, i.id), name: i.originalName })),
-    outputs: outputs.map(o => ({ id: o.id, path: o.path, url: o.url, publicUrl: o.publicUrl, name: o.filename, prompt: o.prompt, sourcePrompt: o.sourcePrompt })),
+    inputs: imageCaptureInputs,
+    outputs: imageCaptureOutputs,
     prompt: finalPrompt,
     sourcePrompt: cleanSourcePrompt,
     optimizedByAgent: !!optimizedByAgent,
-    mode: inputs.length ? 'image-to-image' : 'text-to-image',
+    mode: imageMode,
     optimizeSkill: optimizedByAgent ? 'image-agent/image2' : '',
+  });
+
+  captureImageGenerationRecord({
+    sourcePrompt: cleanSourcePrompt,
+    prompt: finalPrompt,
+    inputs: imageCaptureInputs,
+    outputs: imageCaptureOutputs,
+    model: selectedModel.name,
+    provider: selectedModel.provider,
+    mode: imageMode,
+    chatId: chat?.id || chatId,
+    optimizedByAgent: !!optimizedByAgent,
   });
 
   return {
@@ -758,7 +818,7 @@ async function generateImageFromPrompt({ prompt = '', sourcePrompt = '', optimiz
     prompt: finalPrompt,
     sourcePrompt: cleanSourcePrompt,
     optimizedByAgent: !!optimizedByAgent,
-    mode: inputs.length ? 'image-to-image' : 'text-to-image',
+    mode: imageMode,
     inputs,
     outputs,
     content: assistantContent,

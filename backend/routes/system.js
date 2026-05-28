@@ -6,10 +6,10 @@ const { spawnSync } = require('child_process');
 const store = require('../services/store');
 const paths = require('../services/paths');
 const modalBus = require('./modal');
+const { DOC_FOLDERS, LEGACY_DOC_FOLDERS, VAULT_CATEGORIES, stripFrontmatter, parseFrontmatter, firstHeading, summarizeMarkdown, inferMdType, normalizeTags, safeFilePart, normalizeDocFolder, ensureMarkdownFrontmatter, uniqueMarkdownPath, saveKnowledgeMarkdown, captureKnowledge } = require('../services/knowledgeCapture');
 
 const router = express.Router();
 const PROJECT_ROOT = path.resolve(path.join(__dirname, '..', '..'));
-const DOC_FOLDERS = ['工作文档', 'AI分享', '教程', '笔记', '临时收件箱'];
 
 function mdLibraryRoot() {
   return paths.mdLibraryRoot();
@@ -118,9 +118,57 @@ function parseAheadBehind(text) {
   return match ? { ahead: Number(match[1]) || 0, behind: Number(match[2]) || 0 } : { ahead: 0, behind: 0 };
 }
 
+function getUpdateStatus({ fetchRemote = false } = {}) {
+  const packageVersion = readPackageVersion();
+  const isRepo = runGit(['rev-parse', '--is-inside-work-tree']);
+  if (!isRepo.ok || isRepo.stdout !== 'true') {
+    return {
+      isGitRepo: false,
+      packageVersion,
+      projectRoot: PROJECT_ROOT,
+      message: '当前目录不是 Git 克隆项目，无法通过 GitHub 自动检测更新。',
+    };
+  }
+  const fetchResult = fetchRemote ? runGit(['fetch', '--tags', '--prune'], { timeout: 30000 }) : null;
+  const branch = runGit(['branch', '--show-current']).stdout || 'detached';
+  const localCommit = runGit(['rev-parse', '--short', 'HEAD']).stdout || '';
+  const upstream = runGit(['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}']);
+  const remote = runGit(['remote', '-v']).stdout.split(/\r?\n/).find(line => /\(fetch\)$/.test(line)) || '';
+  const dirty = runGit(['status', '--porcelain']).stdout;
+  let ahead = 0;
+  let behind = 0;
+  if (upstream.ok && upstream.stdout) {
+    const counts = runGit(['rev-list', '--left-right', '--count', 'HEAD...' + upstream.stdout]);
+    ({ ahead, behind } = parseAheadBehind(counts.stdout));
+  }
+  const latestTag = runGit(['describe', '--tags', '--abbrev=0']).stdout || '';
+  const currentTag = runGit(['describe', '--tags', '--exact-match', 'HEAD']).stdout || '';
+  return {
+    isGitRepo: true,
+    packageVersion,
+    projectRoot: PROJECT_ROOT,
+    branch,
+    upstream: upstream.ok ? upstream.stdout : '',
+    remote,
+    localCommit,
+    currentTag,
+    latestTag,
+    ahead,
+    behind,
+    dirtyCount: dirty ? dirty.split(/\r?\n/).filter(Boolean).length : 0,
+    hasLocalChanges: !!dirty,
+    fetched: fetchRemote,
+    fetchOk: fetchResult ? fetchResult.ok : null,
+    fetchError: fetchResult && !fetchResult.ok ? (fetchResult.stderr || fetchResult.error || 'git fetch failed') : '',
+    updateCommand: 'git pull --ff-only && npm install',
+    safeToPull: behind > 0 && ahead === 0 && !dirty,
+  };
+}
+
 function readPackageVersion() {
   try {
-    const pkg = JSON.parse(fs.readFileSync(path.join(PROJECT_ROOT, 'package.json'), 'utf8'));
+    const raw = fs.readFileSync(path.join(PROJECT_ROOT, 'package.json'), 'utf8').replace(/^\uFEFF/, '');
+    const pkg = JSON.parse(raw);
     return String(pkg.version || 'unknown');
   } catch (_) {
     return 'unknown';
@@ -244,55 +292,33 @@ router.get('/logs', (req, res) => {
 
 router.get('/update-status', (req, res) => {
   try {
-    const packageVersion = readPackageVersion();
-    const isRepo = runGit(['rev-parse', '--is-inside-work-tree']);
-    if (!isRepo.ok || isRepo.stdout !== 'true') {
-      return res.ok({
-        isGitRepo: false,
-        packageVersion,
-        projectRoot: PROJECT_ROOT,
-        message: '当前目录不是 Git 克隆项目，无法通过 GitHub 自动检测更新。',
-      });
-    }
-
-    const shouldFetch = String(req.query.fetch || '') === '1';
-    const fetchResult = shouldFetch ? runGit(['fetch', '--tags', '--prune'], { timeout: 30000 }) : null;
-    const branch = runGit(['branch', '--show-current']).stdout || 'detached';
-    const localCommit = runGit(['rev-parse', '--short', 'HEAD']).stdout || '';
-    const upstream = runGit(['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}']);
-    const remote = runGit(['remote', '-v']).stdout.split(/\r?\n/).find(line => /\(fetch\)$/.test(line)) || '';
-    const dirty = runGit(['status', '--porcelain']).stdout;
-    let ahead = 0;
-    let behind = 0;
-    if (upstream.ok && upstream.stdout) {
-      const counts = runGit(['rev-list', '--left-right', '--count', `HEAD...${upstream.stdout}`]);
-      ({ ahead, behind } = parseAheadBehind(counts.stdout));
-    }
-    const latestTag = runGit(['describe', '--tags', '--abbrev=0']).stdout || '';
-    const currentTag = runGit(['describe', '--tags', '--exact-match', 'HEAD']).stdout || '';
-
-    res.ok({
-      isGitRepo: true,
-      packageVersion,
-      projectRoot: PROJECT_ROOT,
-      branch,
-      upstream: upstream.ok ? upstream.stdout : '',
-      remote,
-      localCommit,
-      currentTag,
-      latestTag,
-      ahead,
-      behind,
-      dirtyCount: dirty ? dirty.split(/\r?\n/).filter(Boolean).length : 0,
-      hasLocalChanges: !!dirty,
-      fetched: shouldFetch,
-      fetchOk: fetchResult ? fetchResult.ok : null,
-      fetchError: fetchResult && !fetchResult.ok ? (fetchResult.stderr || fetchResult.error || 'git fetch failed') : '',
-      updateCommand: 'git pull --ff-only && npm install',
-      safeToPull: behind > 0 && ahead === 0 && !dirty,
-    });
+    res.ok(getUpdateStatus({ fetchRemote: String(req.query.fetch || '') === '1' }));
   } catch (e) {
     res.fail('update status failed: ' + e.message, 500, 500);
+  }
+});
+
+router.post('/update-apply', (req, res) => {
+  try {
+    const before = getUpdateStatus({ fetchRemote: true });
+    if (!before.isGitRepo) return res.fail('当前目录不是 Git 克隆项目，无法自动更新。', 400, 400);
+    if (before.hasLocalChanges) return res.fail('存在本地未提交改动。请先提交或备份后再更新，避免覆盖你的工作。', 409, 409);
+    if (before.ahead > 0) return res.fail('本地提交领先远端，不能自动快进更新。请手动处理分支。', 409, 409);
+    if (before.behind <= 0) return res.ok({ message: '当前已经是最新状态。', before, after: before, logs: [] });
+    const pull = runGit(['pull', '--ff-only'], { timeout: 60000 });
+    if (!pull.ok) return res.fail('git pull 失败：' + (pull.stderr || pull.error || pull.stdout || 'unknown error'), 500, 500);
+    const install = spawnSync('npm', ['install'], {
+      cwd: PROJECT_ROOT,
+      encoding: 'utf8',
+      timeout: 120000,
+      windowsHide: true,
+      maxBuffer: 1024 * 1024 * 4,
+    });
+    if (install.status !== 0) return res.fail('npm install 失败：' + (install.stderr || (install.error && install.error.message) || install.stdout || 'unknown error'), 500, 500);
+    const after = getUpdateStatus({ fetchRemote: false });
+    res.ok({ message: '更新完成，请重启 WebUI。', before, after, logs: [pull.stdout, install.stdout].filter(Boolean) });
+  } catch (e) {
+    res.fail('apply update failed: ' + e.message, 500, 500);
   }
 });
 
@@ -464,122 +490,6 @@ router.post('/execute-command', async (req, res) => {
   }
 });
 
-function stripFrontmatter(content) {
-  return String(content || '').replace(/^---\s*[\s\S]*?\n---\s*/m, '');
-}
-
-function parseFrontmatter(content) {
-  const match = String(content || '').match(/^---\s*([\s\S]*?)\n---/m);
-  const out = {};
-  if (!match) return out;
-  for (const line of match[1].split(/\r?\n/)) {
-    const m = line.match(/^([A-Za-z0-9_-]+)\s*:\s*(.+)$/);
-    if (!m) continue;
-    const key = m[1].trim();
-    let value = m[2].trim();
-    if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
-      value = value.slice(1, -1);
-    }
-    if (value.startsWith('[') && value.endsWith(']')) {
-      value = value.slice(1, -1).split(',').map(v => v.trim().replace(/^['"]|['"]$/g, '')).filter(Boolean);
-    }
-    out[key] = value;
-  }
-  return out;
-}
-
-function firstHeading(content) {
-  const body = stripFrontmatter(content);
-  const line = body.split(/\r?\n/).find(l => /^#\s+/.test(l.trim()));
-  return line ? line.replace(/^#\s+/, '').trim() : '';
-}
-
-function summarizeMarkdown(content) {
-  const body = stripFrontmatter(content)
-    .replace(/```[\s\S]*?```/g, ' ')
-    .replace(/<[^>]+>/g, ' ')
-    .split(/\r?\n/)
-    .map(line => line.replace(/^#{1,6}\s+/, '').replace(/^[>\-\*\d\.\s]+/, '').trim())
-    .filter(Boolean)
-    .find(line => line.length > 12) || '';
-  return body.length > 118 ? body.slice(0, 118) + '...' : body || '暂无内容概括';
-}
-
-function inferMdType(fileName, content, relPath) {
-  const text = `${fileName}\n${relPath}\n${stripFrontmatter(content).slice(0, 2000)}`.toLowerCase();
-  const rules = [
-    ['AI分享', /分享|presentation|演讲|课程|案例|blog|essay|post|文章|专栏/],
-    ['工作文档', /工作|方案|proposal|plan|prd|需求|设计方案|报告|report|复盘|review|分析|调研|会议|纪要|meeting|minutes/],
-    ['教程', /教程|guide|how to|步骤|使用指南|说明|manual|排错/],
-    ['笔记', /笔记|note|memo|灵感|学习|知识卡片/],
-    ['代码文档', /api|接口|代码|函数|class|组件|开发/],
-    ['其他', /.*/],
-  ];
-  return (rules.find(([, re]) => re.test(text)) || rules[rules.length - 1])[0];
-}
-function normalizeTags(value) {
-  if (!value) return [];
-  if (Array.isArray(value)) return value.map(String).map(s => s.trim()).filter(Boolean);
-  return String(value).split(/[,，、\s]+/).map(s => s.trim()).filter(Boolean);
-}
-
-
-function safeFilePart(value, fallback = '未命名文档') {
-  const clean = String(value || '')
-    .replace(/[<>:"/\\|?*\x00-\x1F]/g, ' ')
-    .replace(/\s+/g, '-')
-    .replace(/^-+|-+$/g, '')
-    .slice(0, 80);
-  return clean || fallback;
-}
-
-function normalizeDocFolder(value, content = '') {
-  const exact = String(value || '').trim();
-  if (DOC_FOLDERS.includes(exact)) return exact;
-  const text = (exact + '\n' + String(content || '')).toLowerCase();
-  if (/教程|guide|how\s*to|manual|步骤|使用说明|排错/.test(text)) return '教程';
-  if (/分享|share|presentation|演讲|课程|案例/.test(text)) return 'AI分享';
-  if (/笔记|note|memo|灵感|学习|知识卡片/.test(text)) return '笔记';
-  if (/工作|方案|需求|prd|复盘|汇报|会议|report|plan|proposal/.test(text)) return '工作文档';
-  return '临时收件箱';
-}
-
-function ensureMarkdownFrontmatter(content, meta = {}) {
-  const raw = String(content || '').trim();
-  const existing = parseFrontmatter(raw);
-  const body = stripFrontmatter(raw).trimStart();
-  const title = String(meta.title || existing.title || firstHeading(raw) || '未命名文档').trim();
-  const folder = normalizeDocFolder(meta.folder || existing.folder || existing.type || existing.category, raw);
-  const type = String(meta.type || existing.type || existing.category || folder).trim();
-  const tags = [...new Set([...normalizeTags(existing.tags), ...normalizeTags(existing.tag), ...normalizeTags(meta.tags)])].slice(0, 12);
-  const summary = String(meta.summary || existing.summary || existing.description || summarizeMarkdown(raw)).replace(/\r?\n/g, ' ').trim();
-  const status = String(meta.status || existing.status || 'draft').trim();
-  const yaml = [
-    '---',
-    'title: ' + title,
-    'folder: ' + folder,
-    'type: ' + type,
-    tags.length ? 'tags: [' + tags.join(', ') + ']' : 'tags: []',
-    'status: ' + status,
-    'summary: ' + summary.slice(0, 180),
-    'createdBy: hermes',
-    '---',
-    '',
-  ].join('\n');
-  return { title, folder, type, tags, summary, status, content: yaml + body };
-}
-
-function uniqueMarkdownPath(dir, title) {
-  const date = new Date().toISOString().slice(0, 10);
-  const base = date + '-' + safeFilePart(title) + '.md';
-  let target = path.join(dir, base);
-  let index = 2;
-  while (fs.existsSync(target)) {
-    target = path.join(dir, date + '-' + safeFilePart(title) + '-' + index + '.md');
-    index += 1;
-  }
-  return target;
-}
 function scanMarkdownFiles(root) {
   const files = [];
   const maxFiles = 500;
@@ -653,6 +563,7 @@ router.get('/md-library', (req, res) => {
       ...DOC_FOLDERS.map(name => ({ name, type: name, tag: name, folder: name, files: filesFlat.filter(f => f.folder === name) })),
       ...folderGroups.filter(group => !DOC_FOLDERS.includes(group.name)),
     ];
+    const vaultCategories = VAULT_CATEGORIES.map(item => ({ ...item, files: filesFlat.filter(f => f.folder === item.folder || (item.aliases || []).includes(f.folder)) }));
     const types = groupBy(filesFlat, f => f.mdType, '其他');
     const tagItems = [];
     const tagMap = new Map();
@@ -668,6 +579,8 @@ router.get('/md-library', (req, res) => {
       root,
       filesFlat,
       folders,
+      vaultCategories,
+      defaultCategory: 'outputs',
       types,
       tags: tagItems,
       stats: {
@@ -690,23 +603,19 @@ router.post('/md-library', (req, res) => {
     const raw = String(req.body.content || '').trim();
     if (!raw) return res.fail('content required', 400, 400);
     if (Buffer.byteLength(raw, 'utf8') > 1024 * 1024) return res.fail('file too large (max 1MB)', 400, 400);
-    const doc = ensureMarkdownFrontmatter(raw, req.body || {});
-    const folder = normalizeDocFolder(doc.folder, raw);
-    const dir = path.join(root, folder);
-    fs.mkdirSync(dir, { recursive: true });
-    const target = uniqueMarkdownPath(dir, doc.title);
-    fs.writeFileSync(target, doc.content, 'utf8');
-    const stat = fs.statSync(target);
-    res.ok({
-      title: doc.title,
-      folder,
-      path: target,
-      file: path.basename(target),
-      size: stat.size,
-      mtime: stat.mtimeMs,
-    });
+    res.ok(saveKnowledgeMarkdown(raw, req.body || {}));
   } catch (e) {
     res.fail('save failed: ' + e.message, 500, 500);
+  }
+});
+
+
+router.post('/knowledge-capture', (req, res) => {
+  try {
+    const result = captureKnowledge(req.body || {});
+    res.ok(result);
+  } catch (e) {
+    res.fail('capture failed: ' + e.message, 500, 500);
   }
 });
 

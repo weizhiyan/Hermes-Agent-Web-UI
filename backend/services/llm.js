@@ -1,7 +1,7 @@
 ﻿const { hermesStream } = require('./hermes');
 const store = require('./store');
 
-const RELAY_PROVIDER_RE = /new\s*api|one\s*api|openai|openrouter|siliconflow|together|moonshot|kimi|zhipu|智谱|中转|gateway|relay/i;
+const RELAY_PROVIDER_RE = /new\s*api|one\s*api|openai|openrouter|siliconflow|together|moonshot|kimi|zhipu|xiaomi|mimo|mi\s*model|\u5c0f\u7c73|\u667a\u8c31|\u4e2d\u8f6c|gateway|relay/i;
 const AGENT_FORCE_RE = /agent\s*模式|hermes\s*模式|工具调用|用工具|调用工具|终端|命令行|shell|powershell|cmd|git\s|npm\s|pnpm\s|yarn\s|docker\s|curl|api|接口/i;
 const AGENT_ACTION_RE = /(帮我)?(新建|创建|保存|写入|读取|查看|打开|编辑|修改|更新|删除|移动|重命名|上传|下载|同步|导入|导出|发布|抓取|复制|粘贴|运行|执行|安装|部署|测试|构建|扫描|分析|修复|提交)/i;
 const AGENT_TARGET_RE = /(本地|文件|文档|目录|路径|代码|项目|仓库|语雀|yuque|飞书|notion|网页|浏览器|网站|后台|控制台|知识库|markdown|md\b)/i;
@@ -38,6 +38,15 @@ function authHeaders({ key = '', authType = 'bearer', authHeader = '' } = {}) {
   else if (authType === 'custom' && authHeader) headers[authHeader] = key;
   else headers.Authorization = `Bearer ${key}`;
   return headers;
+}
+
+function normalizeApiBase(base = '') {
+  return String(base || '')
+    .trim()
+    .replace(/\/+(v1\/)?chat\/completions\/?$/i, '')
+    .replace(/\/+v1\/models\/?$/i, '/v1')
+    .replace(/\/+models\/?$/i, '')
+    .replace(/\/+$/g, '');
 }
 
 function chatUrl(base = '') {
@@ -320,7 +329,7 @@ async function* chatStream(cfg, messages) {
   }
 
   const scene = cfg._scene || 'chat';
-  const sceneModel = cfg._requestedModel || cfg.scenarios?.[scene] || cfg.scenarios?.chat || cfg.current || '';
+  const sceneModel = cfg.scenarios?.[scene] || cfg.scenarios?.chat || cfg._requestedModel || cfg.current || '';
   const libraryItem = selectedLibraryModel(cfg, sceneModel);
   const modelName = requestModelName(libraryItem || {}, sceneModel || settings.hermesModel || '');
   cfg._requestedModel = libraryItem?.id || sceneModel;

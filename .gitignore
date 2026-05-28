@@ -8,3 +8,4 @@ awesome-design-md/
 *.log
 .DS_Store
 Thumbs.db
+docs/output-md/

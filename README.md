@@ -1,4 +1,4 @@
-# Hermes Agent WebUI
+﻿# Hermes Agent WebUI
 
 Hermes Agent WebUI 是一个本地优先的 AI 工作台，围绕聊天、模型配置、Agent Profile、技能、记忆、图片生成、Markdown 预览和历史归档设计。
 
@@ -42,7 +42,7 @@ npm start
 建议在设置中配置外部数据目录，例如：
 
 ```text
-F:\AI\Hermes Agent\记忆
+D:\\HermesData
 ```
 
 推荐结构：
@@ -82,3 +82,4 @@ npm install
 ```text
 http://127.0.0.1:3381/api/health
 ```
+
