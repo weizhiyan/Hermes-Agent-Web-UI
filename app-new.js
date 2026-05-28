@@ -381,6 +381,14 @@ function setModelConfigScope(scope){
   renderPage();
 }
 
+const FIXED_AGENT_PROFILES = [
+  { id:'default', name:'主 Agent', role:'主 Agent / 调度入口', modelScene:'chat', color:'var(--c-block-lime)', systemPrompt:'你是 Hermes 的默认助手，也是主 Agent。你负责日常对话、理解用户意图、维护用户规则与偏好，并在需要时查看文档梳理、产品设计、表达增强、生图研究沉淀的知识摘要。你不直接污染其他 Agent 的工作记忆；当任务明显属于某个 Agent 时，提醒用户切换或基于对应知识给出建议。', knowledgeFocus:['rules','questions','workflow'] },
+  { id:'coder', name:'文档梳理', role:'工程实现 / 输出文档', modelScene:'reasoning', color:'var(--c-block-lilac)', systemPrompt:'你负责文档梳理、输出文档、工程实现、代码审查、架构拆解、接口说明、测试建议和 Markdown 技术文档输出。回答要重视可维护性、最小改动、测试稳定性和可复用项目经验沉淀。', knowledgeFocus:['docs','projects','workflow','prompts'] },
+  { id:'pm', name:'产品设计', role:'产品经理 / UI 与 B 端设计', modelScene:'reasoning', color:'var(--c-block-cream)', systemPrompt:'你负责产品经理、UI 设计、B 端设计、需求拆解、业务流程、信息架构、交互验收和版本规划。回答要突出目标、用户路径、状态规则、验收标准和优先级。', knowledgeFocus:['projects','docs','questions','workflow'] },
+  { id:'designer', name:'表达增强', role:'表达增强 / 细节优化', modelScene:'chat', color:'var(--c-block-mint)', systemPrompt:'你负责表达增强、文案润色、视觉层级、微交互和零碎创意整理。回答要更轻、更准，帮助用户把想法变清楚、变好看、变易懂。', knowledgeFocus:['prompts','docs','rules'] },
+  { id:'researcher', name:'生图研究', role:'生图提示词 / 视觉研究', modelScene:'image', color:'var(--c-block-coral)', systemPrompt:'你专门负责生图提示词、艺术风格、海报 UI、视觉参考、图像生成流程和图片归类沉淀。回答要强调画面结构、风格关键词、负面提示词、参数建议和可复用 Prompt 模板。', knowledgeFocus:['images','prompts','docs'] },
+];
+
 const NAV=[
   {id:'chat',label:'对话',icon:'chat'},
   {id:'groupChat',label:'分身',icon:'group'},
@@ -590,13 +598,14 @@ function renderChat(){
     <div class="chat-panel">
       <div class="session-sidebar" id="sessionSidebar">
         <div class="session-sidebar-header">
-          <button class="agent-switch-btn" id="chatAgentSwitchBtn" onclick="toggleChatAgentPopup(event)" title="New chat with Agent">
-            <span class="chat-agent-avatar">+</span>
-            <span class="agent-switch-copy"><strong>\u65b0\u5efa\u5bf9\u8bdd</strong><small>\u9009\u62e9\u4f60\u7684 Agent</small></span>
-            ${SVG.chevronDown}
-          </button>
-          <div class="session-search-row"><input id="sessionSearchInput" class="session-search-input" placeholder="\u641c\u7d22\u5bf9\u8bdd..." oninput="renderSessionSearch(this.value)"><button class="history-btn compact" onclick="openHistoryPopup()" title="\u5386\u53f2\u8bb0\u5f55">${SVG.history}</button></div>
-          <div class="chat-agent-popup" id="chatAgentPopup" style="display:none">${renderChatAgentPopup()}</div>
+          <div class="session-create-row">
+            <button class="agent-switch-btn" id="chatAgentSwitchBtn" onclick="newChat(getActiveProfile())" title="使用当前 Agent 新建对话">
+              <span class="chat-agent-avatar">+</span>
+              <span class="agent-switch-copy"><strong>新建对话</strong><small>当前 Agent</small></span>
+            </button>
+            <button class="history-btn compact" onclick="openHistoryPopup()" title="历史记录">${SVG.history}</button>
+          </div>
+          <div class="agent-dock" id="chatAgentDock">${renderAgentDock()}</div>
 
         </div>
         <div class="session-items" id="sessionItems">
@@ -1123,6 +1132,36 @@ function toggleModelPopup(){
   }
 }
 
+function visibleChatAgents(){
+  return getProfiles().filter(p=>p.id!=='default');
+}
+function getDefaultChatAgent(){
+  const current=state.activeProfile&&visibleChatAgents().find(p=>p.id===state.activeProfile&&p.enabled!==false);
+  return current || visibleChatAgents().find(p=>p.enabled!==false) || getActiveProfile();
+}
+
+function renderAgentDock(){
+  const activeId=currentChat()?.agentId||getDefaultChatAgent()?.id||state.activeProfile||'default';
+  return visibleChatAgents().map(p=>{
+    const disabled=p.enabled===false;
+    const active=activeId===p.id;
+    return `<button class="agent-dock-item${active?' active':''}${disabled?' disabled':''}" onclick="openAgentMainChat('${esc(p.id)}')" title="${esc(p.role||p.name)}">
+      ${profileAvatarHtml(p,'agent-dock-avatar')}
+      <span class="agent-dock-copy"><strong>${esc(p.name)}</strong><small>${esc(p.role||'专属工作流')}</small></span>
+    </button>`;
+  }).join('');
+}
+
+async function openAgentMainChat(id){
+  const profile=getProfiles().find(p=>p.id===id)||getActiveProfile();
+  if(profile?.enabled===false){toast('Agent 已关闭','info');return}
+  state.activeProfile=profile.id;
+  const existing=state.chats.find(c=>!isCliChat(c)&&c.agentId===profile.id&&c.isMainAgentChat);
+  save();
+  if(existing){await selectChat(existing.id);return}
+  await newChat(profile,{isMainAgentChat:true,chatType:'main',title:profile.name+' · 主对话'});
+}
+
 function renderChatAgentPopup(){
   const profiles=getProfiles();
   return profiles.map(p=>{
@@ -1531,13 +1570,13 @@ function renderSessionList(query=''){
         const preview=c.messages?.length?stripArtifactTagsForPreview(c.messages[c.messages.length-1].content||''):(c.preview||'暂无消息');
         const chatDate=formatChatDate(c);
         const chatFullDate=formatChatDate(c,'full');
-        return `<div class="session-item${state.currentChat===c.id?' active':''}" title="${esc(chatFullDate)}">
+        return `<div class="session-item${state.currentChat===c.id?' active':''}" title="${esc(c.title)} · ${esc(chatFullDate)}">
         <div class="session-item-body" onclick="selectChat('${c.id}')">
           <div class="session-card-main">
             <div class="session-card-top">
               <span class="s-title">${c.pinned?'📌 ':''}${esc(c.title)}</span>
             </div>
-            <span class="s-preview" title="${esc(preview)} · ${esc(chatFullDate)}"><span class="session-agent-tag">${esc(c.agentName||profileForChat(c)?.name||'Agent')}</span>${esc(chatDate)}</span>
+            <span class="s-preview" title="${esc(c.title)} · ${esc(chatFullDate)}">${esc(chatDate)}</span>
           </div>
         </div>
         <div class="session-more-wrap">
@@ -2313,17 +2352,17 @@ async function syncCurrentChat(chatId){
   }catch(e){}
 }
 
-async function newChat(profileArg){
+async function newChat(profileArg, options={}){
   const profile=normalizeProfile(profileArg||getActiveProfile());
-  const payload=agentChatPayload(profile);
+  const payload={...agentChatPayload(profile),...(options||{})};
   const data = await apiPost('/api/chats', payload);
   if (data) {
-    state.chats.push({ id: data.id, title: data.title, source:data.source||'WebUI', messages: [], updatedAt: data.updatedAt, createdAt:data.createdAt, agentId: data.agentId||profile?.id||'', agentName:data.agentName||profile?.name||'', agentSnapshot:data.agentSnapshot, lockedAgent:true });
+    state.chats.push({ id: data.id, title: data.title, source:data.source||'WebUI', messages: [], updatedAt: data.updatedAt, createdAt:data.createdAt, agentId: data.agentId||profile?.id||'', agentName:data.agentName||profile?.name||'', agentSnapshot:data.agentSnapshot, lockedAgent:true, chatType:data.chatType||options.chatType||'task', isMainAgentChat:!!(data.isMainAgentChat||options.isMainAgentChat) });
     state.chatFullData[data.id] = data;
     state.currentChat = data.id;
     state._artifactNeedsHydrate = true;
   } else {
-    const c = { id: 'c'+Date.now(), title: '\u65b0\u5efa\u5bf9\u8bdd', source:'WebUI', messages: [], updatedAt: Date.now(), createdAt:Date.now(), agentId: profile?.id||'', agentName:profile?.name||'', agentSnapshot:agentSnapshotForProfile(profile), lockedAgent:true };
+    const c = { id: 'c'+Date.now(), title: options.title||'新建对话', source:'WebUI', messages: [], updatedAt: Date.now(), createdAt:Date.now(), agentId: profile?.id||'', agentName:profile?.name||'', agentSnapshot:agentSnapshotForProfile(profile), lockedAgent:true, chatType:options.chatType||'task', isMainAgentChat:!!options.isMainAgentChat };
     state.chats.push(c);
     state.currentChat = c.id;
     state._artifactNeedsHydrate = true;
@@ -2361,6 +2400,8 @@ async function selectChat(id){
         c.readOnly = !!data.readOnly;
         c.agentId = data.agentId || c.agentId || '';
         c.agentName = data.agentName || c.agentName || '';
+        c.chatType = data.chatType || c.chatType || (data.isMainAgentChat ? 'main' : 'task');
+        c.isMainAgentChat = !!(data.isMainAgentChat || c.isMainAgentChat || c.chatType === 'main');
         c.messageCount = data.messageCount || (data.messages||[]).length;
         c.messages = data.messages || [];
         c._model = data.model || state.model.model;
@@ -3812,16 +3853,24 @@ function gcAddAgent(){
   toast(`Agent "${name}" 已加入`,'info');
 }
 
+function defaultFixedProfiles(){
+  return FIXED_AGENT_PROFILES.map(def=>({
+    id:def.id,name:def.name,role:def.role,fixed:true,modelScene:def.modelScene,
+    modelId:activeModelsConfig().scenarios?.[def.modelScene]||'auto',
+    model:scenarioModelName(def.modelScene==='image'?'chat':def.modelScene),
+    systemPrompt:def.systemPrompt,color:def.color,knowledgeFocus:def.knowledgeFocus||[],skillIds:[],enabled:true,
+  }));
+}
+function mergeFixedProfiles(stored){
+  const byId=new Map((Array.isArray(stored)?stored:[]).map(p=>[String(p.id||''),p]));
+  return defaultFixedProfiles().map(def=>{
+    const old=byId.get(def.id)||{};
+    return normalizeProfile({...def,...old,id:def.id,name:def.name,role:def.role,fixed:true,color:old.color||def.color,systemPrompt:old.systemPrompt||def.systemPrompt,knowledgeFocus:def.knowledgeFocus});
+  });
+}
 function getProfiles(){
   if(!_profilesCache){
-    _profilesCache=LS.get('hermes.profiles',[
-      {id:'default',name:'默认助手',modelId:'auto',model:scenarioModelName('chat'),systemPrompt:'',color:'var(--c-block-lime)'},
-      {id:'coder',name:'代码专家',modelId:activeModelsConfig().scenarios?.reasoning||'auto',model:scenarioModelName('reasoning'),systemPrompt:'你是一位资深代码专家，擅长代码审查、重构和架构设计。',color:'var(--c-block-lilac)'},
-      {id:'pm',name:'产品经理',modelId:activeModelsConfig().scenarios?.reasoning||'auto',model:scenarioModelName('reasoning'),systemPrompt:'你是一位产品经理，擅长需求拆解、验收标准和产品方案。',color:'var(--c-block-cream)'},
-      {id:'designer',name:'设计顾问',modelId:activeModelsConfig().scenarios?.chat||'auto',model:scenarioModelName('chat'),systemPrompt:'你是一位设计顾问，关注视觉层级、交互细节和用户体验。',color:'var(--c-block-mint)'},
-      {id:'researcher',name:'研究员',modelId:activeModelsConfig().scenarios?.reasoning||'auto',model:scenarioModelName('reasoning'),systemPrompt:'你是一位研究员，擅长资料整理、分析和长文总结。',color:'var(--c-block-coral)'},
-    ]);
-    _profilesCache=_profilesCache.map(p=>normalizeProfile(p));
+    _profilesCache=mergeFixedProfiles(LS.get('hermes.profiles',defaultFixedProfiles()));
     LS.set('hermes.profiles',_profilesCache);
   }
   return _profilesCache;
@@ -3831,6 +3880,7 @@ function normalizeProfile(profile){
   const p={...profile};
   if(p.enabled===undefined) p.enabled=true;
   if(!Array.isArray(p.skillIds)) p.skillIds=[];
+  if(!Array.isArray(p.knowledgeFocus)) p.knowledgeFocus=[];
   if(!p.modelId) p.modelId=p.model&&p.model!=='auto'?p.model:'auto';
   if(!p.color) p.color='var(--c-block-lime)';
   if(!p.avatar) p.avatar='';
@@ -3845,11 +3895,11 @@ function agentDirs(profile){
 function agentSnapshotForProfile(profile){
   const p=normalizeProfile(profile||getActiveProfile()||{});
   const dirs=agentDirs(p);
-  return { id:p.id, name:p.name, modelId:p.modelId||'auto', systemPrompt:p.systemPrompt||'', skillIds:p.skillIds||[], ...dirs };
+  return { id:p.id, name:p.name, role:p.role||'', modelId:p.modelId||'auto', systemPrompt:p.systemPrompt||'', skillIds:p.skillIds||[], knowledgeFocus:p.knowledgeFocus||[], ...dirs };
 }
 function agentChatPayload(profile){
   const snap=agentSnapshotForProfile(profile);
-  return { title:'New Chat', agentId:snap.id, agentName:snap.name, modelId:snap.modelId, profileId:snap.id, profileName:snap.name, profilePrompt:snap.systemPrompt, profileSkillIds:snap.skillIds };
+  return { title:'新建对话', agentId:snap.id, agentName:snap.name, modelId:snap.modelId, profileId:snap.id, profileName:snap.name, profilePrompt:snap.systemPrompt, profileSkillIds:snap.skillIds, agentRole:snap.role||'', knowledgeFocus:snap.knowledgeFocus||[] };
 }
 
 function getActiveProfile(){
@@ -6466,7 +6516,7 @@ const _filesTreeCache={};
 function renderProfilesV2(){
   const profiles=getProfiles();
   return `<div class="profiles-view">
-    <div class="page-header"><h2>Agent 管理</h2><button class="btn btn-sm btn-primary" onclick="addProfileV2()">${SVG.plus} 新建 Agent</button></div>
+    <div class="page-header"><h2>Agent 管理</h2><div class="page-subtitle">固定 5 个核心 Agent，可配置头像、模型、提示词与技能。</div></div>
     <div class="profiles-content">
       <div class="profile-grid agent-grid">${profiles.map(p=>{
         const enabled=p.enabled!==false;
@@ -6489,7 +6539,6 @@ function renderProfilesV2(){
         <div class="agent-skill-chips">${skillNames.length?skillNames.map(n=>`<span>${esc(n)}</span>`).join(''):'<span>未绑定技能</span>'}${(p.skillIds||[]).length>3?`<span>+${(p.skillIds||[]).length-3}</span>`:''}</div>
         <div class="agent-card-actions">
           <button class="btn btn-xs btn-primary" onclick="event.stopPropagation();useProfile('${p.id}')">用于对话</button>
-          ${p.id!=='default'?`<button class="btn btn-xs btn-ghost" style="color:var(--c-error)" onclick="event.stopPropagation();deleteProfile('${p.id}')">删除</button>`:''}
         </div>
       </div>`;
       }).join('')}</div>
@@ -6512,34 +6561,42 @@ function profileModal(profile){
     </label>`;
   }).join(''):'<div class="empty-text">技能中心还没有技能。</div>';
   openModal(`<div class="agent-editor-modal">
-    <h3>${profile?'编辑 Agent':'新建 Agent'}</h3>
-    <div class="agent-editor-grid">
-      <div class="agent-avatar-field wide">
+    <div class="agent-editor-head">
+      <div>
+        <h3>${profile?'编辑 Agent':'新建 Agent'}</h3>
+        <p>${esc(p.role||'配置这个 Agent 的模型、提示词、技能与记忆入口。')}</p>
+      </div>
+      <button class="btn-icon" onclick="closeModal()" title="关闭">×</button>
+    </div>
+    <div class="agent-editor-body">
+      <section class="agent-editor-section agent-avatar-field">
         <span id="pfAvatarPreview" class="profile-avatar" style="${p.avatar?`background-image:url('${esc(p.avatar)}');background-size:cover;background-position:center`:`background:${p.color||'var(--c-block-lime)'}`}">${p.avatar?'':esc((p.name||'A').charAt(0))}</span>
-        <div>
-          <strong>Agent 头像</strong>
-          <small>头像会同步显示到对话页面、Agent 切换和会话卡片。</small>
+        <div class="agent-editor-section-main">
+          <strong>Agent 信息</strong>
+          <small>头像、记忆入口与启用状态会同步影响对话页和 Agent 切换。</small>
           <div class="agent-avatar-actions">
             <button class="btn btn-xs btn-secondary" onclick="document.getElementById('pfAvatarInput').click()">更换头像</button>
             <button class="btn btn-xs btn-ghost" onclick="resetProfileAvatar()">恢复默认头像</button>
+            <button class="btn btn-xs btn-secondary" onclick="closeModal();skillCenterTab='memory';navigate('skills');setTimeout(()=>openAgentMemory('${esc(p.id||'default')}'),0)">查看记忆</button>
           </div>
           <input id="pfAvatarInput" type="file" accept="image/*" style="display:none" onchange="handleProfileAvatarInput(this)">
         </div>
+        <label class="agent-editor-toggle" title="启用这个 Agent"><input type="checkbox" id="pfEnabled" ${p.enabled!==false?'checked':''}><span></span></label>
+      </section>
+      <div class="agent-editor-fields">
+        <label>名称<input id="pfName" placeholder="Agent 名称" value="${esc(p.name)}"></label>
+        <label>模型<select id="pfModel">${opts}</select></label>
       </div>
-      <label>名称<input id="pfName" placeholder="Agent 名称" value="${esc(p.name)}"></label>
-      <label>模型<select id="pfModel">${opts}</select></label>
-      <label class="wide">Agent 提示词<textarea id="pfPrompt" placeholder="描述这个 Agent 的身份、能力边界、工作方式…" style="min-height:130px">${esc(p.systemPrompt||'')}</textarea></label>
-      <div class="agent-memory-link-card wide"><div><strong>Agent 记忆与 Soul</strong><small>每个 Agent 拥有独立的 soul、memory、workspace 和 knowledge 目录；具体文件在记忆储存中查看。</small></div><button class="btn btn-xs btn-secondary" onclick="closeModal();navigate('skills');setTimeout(()=>{state.skillsTab='memory';renderPage();setTimeout(()=>openAgentMemory('${esc(p.id||'default')}'),0)},0)">查看记忆</button></div><div class="agent-skill-picker wide">
-        <div><strong>可用技能</strong><small>与技能中心保持一致，只会注入被这个 Agent 勾选的技能。</small></div>
+      <label class="agent-editor-prompt">Agent 提示词<textarea id="pfPrompt" placeholder="描述这个 Agent 的身份、能力边界、工作方式…">${esc(p.systemPrompt||'')}</textarea></label>
+      <section class="agent-skill-picker">
+        <div class="agent-skill-picker-head"><strong>可用技能</strong><small>只注入当前 Agent 勾选的技能。</small></div>
         <div class="agent-skill-list">${skillHtml}</div>
-      </div>
-      <label class="agent-editor-switch wide"><input type="checkbox" id="pfEnabled" ${p.enabled!==false?'checked':''}> 启用这个 Agent</label>
-      <div class="model-format-hint">关闭后，这个 Agent 在对话、分身等任何场景都不会启动；默认 Agent 也可以关闭，但系统会自动选择下一个启用的 Agent。</div>
-      <div style="display:flex;gap:8px;justify-content:flex-end"><button class="btn btn-secondary" onclick="closeModal()">取消</button><button class="btn btn-primary" onclick="${profile?`doEditProfileV2('${p.id}')`:'doAddProfileV2()'}">保存</button></div>
+      </section>
     </div>
+    <div class="agent-editor-actions"><button class="btn btn-secondary" onclick="closeModal()">取消</button><button class="btn btn-primary" onclick="${profile?`doEditProfileV2('${p.id}')`:'doAddProfileV2()'}">保存</button></div>
   </div>`);
 }
-function addProfileV2(){profileModal(null)}
+function addProfileV2(){toast('当前版本固定 5 个核心 Agent，请直接编辑对应 Agent。','info')}
 function editProfileV2(id){profileModal(getProfiles().find(p=>p.id===id))}
 function doAddProfileV2(){
   const name=$('#pfName')?.value?.trim();
@@ -7322,3 +7379,4 @@ function toggleSecretInput(id, btn){
   input.type=show?'text':'password';
   if(btn) btn.classList.toggle('active', show);
 }
+

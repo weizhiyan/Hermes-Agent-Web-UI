@@ -1,4 +1,4 @@
-const express = require('express');
+﻿const express = require('express');
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
@@ -15,6 +15,8 @@ const router = express.Router();
 const KEY = 'chats';
 const DEFAULT_SKILL_PROMPT_LIMIT = Math.max(1000, Number(process.env.HERMES_SKILL_PROMPT_LIMIT || 6000));
 const DEFAULT_KNOWLEDGE_SEARCH_LIMIT = Math.max(0, Math.min(Number(process.env.HERMES_KNOWLEDGE_SEARCH_LIMIT || 3), 8));
+const CONTEXT_KEEP_MESSAGES = Math.max(8, Number(process.env.HERMES_CONTEXT_KEEP_MESSAGES || 24));
+const CONTEXT_SUMMARY_TRIGGER = Math.max(CONTEXT_KEEP_MESSAGES + 6, Number(process.env.HERMES_CONTEXT_SUMMARY_TRIGGER || 36));
 const WEBUI_ASK_BRIDGE_PROMPT = [
   '【WebUI 反问弹窗协议】',
   '当你需要向用户确认信息、让用户在多个方案中选择、确认路径/范围/风险，或需要用户授权后才能继续时，不要直接输出普通问题。',
@@ -216,9 +218,11 @@ function normalizeAgentSnapshot(body = {}) {
   return {
     id: agentId,
     name: agentName,
+    role: String(body.agentRole || body.role || '').slice(0, 240),
     modelId: String(body.modelId || body.model || 'auto'),
     systemPrompt: String(body.profilePrompt || body.systemPrompt || '').slice(0, 6000),
     skillIds,
+    knowledgeFocus: Array.isArray(body.knowledgeFocus) ? body.knowledgeFocus.map(String).slice(0, 12) : [],
     soulDir: dirs.soulDir,
     memoryDir: dirs.memoryDir,
     workspaceDir: dirs.workspaceDir,
@@ -251,6 +255,38 @@ function autoCaptureKnowledge(chat, userMsg, assistantContent) {
   } catch (error) {
     try { appendSystemLog({ type: 'knowledge', level: 'warn', msg: 'auto capture failed: ' + error.message, chatId: chat && chat.id }); } catch {}
   }
+}
+
+function compactChatContext(chat) {
+  const messages = Array.isArray(chat?.messages) ? chat.messages : [];
+  if (messages.length <= CONTEXT_SUMMARY_TRIGGER) return chat?.summary || '';
+  const previousUntil = Math.max(0, Number(chat.compressedUntilIndex || 0));
+  const keepStart = Math.max(0, messages.length - CONTEXT_KEEP_MESSAGES);
+  if (keepStart <= previousUntil) return chat.summary || '';
+  const slice = messages.slice(previousUntil, keepStart);
+  if (!slice.length) return chat.summary || '';
+  const brief = slice.map((msg, index) => {
+    const role = msg.role === 'assistant' ? 'Assistant' : msg.role === 'user' ? 'User' : String(msg.role || 'Message');
+    const text = redactSecrets(String(msg.content || '')).replace(/\s+/g, ' ').trim().slice(0, 260);
+    return `${previousUntil + index + 1}. ${role}: ${text}`;
+  }).filter(Boolean).join('\n');
+  const prior = String(chat.summary || '').trim();
+  const next = [prior, brief].filter(Boolean).join('\n').slice(-8000);
+  chat.summary = next;
+  chat.summaryUpdatedAt = Date.now();
+  chat.compressedUntilIndex = keepStart;
+  return next;
+}
+
+function agentSummaryPrompt(list, currentAgentId) {
+  if (currentAgentId !== 'default') return '';
+  const rows = list
+    .filter(c => c && c.agentId && c.agentId !== 'default' && c.summary)
+    .sort((a, b) => Number(b.updatedAt || 0) - Number(a.updatedAt || 0))
+    .slice(0, 8)
+    .map(c => `- ${c.agentName || c.agentId}: ${String(c.summary || '').replace(/\s+/g, ' ').slice(-900)}`);
+  if (!rows.length) return '';
+  return ['[Other Agent Summaries - read only]', '默认助手可参考这些摘要理解其他 Agent 的沉淀，但不要直接改写其他 Agent 的记忆。', ...rows].join('\n');
 }
 
 function promptToggles(settings = {}) {
@@ -341,6 +377,8 @@ router.get('/', (req, res) => {
     agentName: c.agentName,
     source: c.source || 'WebUI',
     pinned: !!c.pinned,
+    chatType: c.chatType || (c.isMainAgentChat ? 'main' : 'task'),
+    isMainAgentChat: !!c.isMainAgentChat,
     updatedAt: c.updatedAt,
     createdAt: c.createdAt,
     preview: redactSecrets(c.messages?.slice(-1)[0]?.content || '').slice(0, 90),
@@ -360,6 +398,8 @@ router.post('/', (req, res) => {
     agentName: agentSnapshot.name,
     agentSnapshot,
     lockedAgent: true,
+    chatType: req.body.chatType || (req.body.isMainAgentChat ? 'main' : 'task'),
+    isMainAgentChat: !!req.body.isMainAgentChat || req.body.chatType === 'main',
     source: req.body.source || 'WebUI',
     messages: [],
     createdAt: now,
@@ -506,6 +546,9 @@ router.post('/:id/messages', async (req, res) => {
   chat.agentId = chat.agentSnapshot.id;
   chat.agentName = chat.agentSnapshot.name;
   chat.lockedAgent = true;
+  chat.chatType = chat.chatType || (chat.isMainAgentChat ? 'main' : 'task');
+  chat.isMainAgentChat = !!chat.isMainAgentChat || chat.chatType === 'main';
+  const rollingSummary = compactChatContext(chat);
 
   const requestedSkillIds = Array.isArray(chat.agentSnapshot.skillIds) && chat.agentSnapshot.skillIds.length
     ? chat.agentSnapshot.skillIds.map(String)
@@ -576,6 +619,9 @@ router.post('/:id/messages', async (req, res) => {
     ].join('\n');
     addSystemPart('Agent Profile: ' + agentLabel, agentPrompt, { source: 'profile', agentId: activeAgentSnapshot.id });
   }
+  if (rollingSummary) addSystemPart('滚动上下文摘要', '[Conversation Summary]\n' + rollingSummary, { source: 'context-summary', compressedUntilIndex: chat.compressedUntilIndex || 0 });
+  const otherAgentSummary = agentSummaryPrompt(list, activeAgentSnapshot.id);
+  if (otherAgentSummary) addSystemPart('其他 Agent 摘要', otherAgentSummary, { source: 'agent-summaries' });
   if (toggles.skills) skills.forEach(s => {
     const limited = limitPromptText(s.prompt);
     addSystemPart(`技能 ${s.name}`, `[技能 ${s.name}] ${limited.text}`, {
@@ -596,7 +642,7 @@ router.post('/:id/messages', async (req, res) => {
     ].join('\n'), { source: 'knowledge-search', items: knowledgeSnippets.map(({ title, relativePath, score }) => ({ title, relativePath, score })) });
   }
   const systemPrompt = systemParts.join('\n\n');
-  const historyLimit = Math.max(4, Math.min(Number(settings.history) || 16, 60));
+  const historyLimit = Math.max(4, Math.min(Number(settings.history) || 16, CONTEXT_KEEP_MESSAGES));
   const recentMessages = chat.messages.slice(-historyLimit).map((msg, index, arr) => (
     index === arr.length - 1 && msg === userMsg
       ? { ...msg, content: redactSecrets(String(req.body.content || userMsg.content || '')) }
@@ -872,3 +918,4 @@ router.post('/gc-stream', async (req, res) => {
   }
 });
 module.exports = router;
+
