@@ -1,4 +1,8 @@
 ﻿# Hermes Agent WebUI
+<img width="2252" height="1277" alt="Clipboard - 2026-05-31 13 18 57" src="https://github.com/user-attachments/assets/4d66ae8a-d3d0-4ba7-b030-b2588d43a46e" />
+<img width="2545" height="1415" alt="Clipboard - 2026-05-31 13 20 17" src="https://github.com/user-attachments/assets/b2cf3dcf-a439-4a9b-993b-45b54204e521" />
+<img width="2544" height="1418" alt="image" src="https://github.com/user-attachments/assets/da94f243-b5eb-486d-8144-7a398163e40b" />
+<img width="2546" height="1418" alt="image" src="https://github.com/user-attachments/assets/d3903248-6f3f-4e4b-9a02-b4dafcea5fdc" />
 
 Hermes Agent WebUI 是一个本地优先的 AI 工作台，围绕聊天、模型配置、Agent Profile、技能、记忆、图片生成、Markdown 预览和历史归档设计。
 
