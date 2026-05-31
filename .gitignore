@@ -9,3 +9,4 @@ awesome-design-md/
 .DS_Store
 Thumbs.db
 docs/output-md/
+.codegraph/

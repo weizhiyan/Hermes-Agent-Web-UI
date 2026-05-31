@@ -114,7 +114,8 @@ function ensureMarkdownFrontmatter(content, meta = {}) {
   const body = stripFrontmatter(raw).trimStart();
   const title = String(meta.title || existing.title || firstHeading(raw) || '未命名文档').trim();
   const tags = [...new Set([...normalizeTags(existing.tags), ...normalizeTags(existing.tag), ...normalizeTags(meta.tags)])].slice(0, 12);
-  const folder = normalizeDocFolder(meta.folder || existing.folder || existing.type || existing.category, [title, tags.join(' '), raw].join('\n'));
+  // Default to 临时收件箱 unless explicitly specified — user or AI can reclassify later
+  const folder = String(meta.folder || existing.folder || existing.type || existing.category || '').trim() || '临时收件箱';
   const type = String(meta.type || existing.type || existing.category || folder).trim();
   const summary = String(meta.summary || existing.summary || existing.description || summarizeMarkdown(raw)).replace(/\r?\n/g, ' ').trim();
   const status = String(meta.status || existing.status || 'draft').trim();

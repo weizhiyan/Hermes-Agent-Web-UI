@@ -588,9 +588,11 @@ async function* hermesStream(prompt, history, modelCfg, fullCfg = {}) {
       wslConfigFile = syncWslHermesProviderConfig(providerName, selectedModel);
       let cmd;
       const envExportCmd = wslExportEnv(customEnv);
+      // 动态解析 WSL 网关 IP，避免重启后 IP 变化导致 502
+      const relayExport = 'export WEBUI_RELAY_BASE_URL="http://$(ip route 2>/dev/null | awk \'/default/ {print $3; exit}\'):${PORT:-3381}/v1"; ';
       const syncConfigCmd = wslConfigFile
-        ? `export PATH="$HOME/.local/bin:$HOME/bin:/usr/local/bin:/usr/bin:/bin:$PATH"; ${envExportCmd}mkdir -p ~/.hermes && cp ${shQuote(wslPathForWindowsFile(wslConfigFile))} ~/.hermes/config.yaml && `
-        : `export PATH="$HOME/.local/bin:$HOME/bin:/usr/local/bin:/usr/bin:/bin:$PATH"; ${envExportCmd}`;
+        ? `export PATH="$HOME/.local/bin:$HOME/bin:/usr/local/bin:/usr/bin:/bin:$PATH"; ${envExportCmd}${relayExport}mkdir -p ~/.hermes && cp ${shQuote(wslPathForWindowsFile(wslConfigFile))} ~/.hermes/config.yaml && `
+        : `export PATH="$HOME/.local/bin:$HOME/bin:/usr/local/bin:/usr/bin:/bin:$PATH"; ${envExportCmd}${relayExport}`;
       if (tmpFile) {
         const posixPath = '.claude/' + path.basename(tmpFile);
         cmd = `${syncConfigCmd}hermes chat -q "$(< ${posixPath})" -Q`;

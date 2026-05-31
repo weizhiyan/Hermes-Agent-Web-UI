@@ -1,4 +1,4 @@
-﻿const express = require('express');
+const express = require('express');
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
@@ -60,6 +60,18 @@ function modelConfigForScope(scope = 'webui') {
     return { ...(root[scope] || root.webui || root.agent || {}) };
   }
   return { ...(root || {}) };
+}
+
+function imageModelConfig() {
+  const root = store.read('models', {});
+  if (!root || typeof root !== 'object' || (!root.webui && !root.agent)) return modelConfigForScope('webui');
+  const webui = root.webui || {};
+  const agent = root.agent || {};
+  const webuiLibrary = Array.isArray(webui.library) ? webui.library : [];
+  const agentLibrary = Array.isArray(agent.library) ? agent.library : [];
+  const webuiHasImage = !!webui.scenarios?.image || webuiLibrary.some(isImageLibraryModel);
+  if (webuiHasImage) return { ...webui };
+  return { ...agent, library: agentLibrary };
 }
 
 const IMAGE_KEY = 'images';
@@ -346,28 +358,62 @@ function imageEndpoint(base, mode = 'generations') {
   return `${clean}/v1/images/${mode}`;
 }
 
+function isImageLibraryModel(model = {}) {
+  const tags = Array.isArray(model.tags) ? model.tags.map(t => String(t).toLowerCase()) : [];
+  return ['openai-image', 'openai_image'].includes(model.apiFormat)
+    || model.kind === 'image'
+    || (tags.includes('image') && !tags.includes('vision'));
+}
+
 function resolveImageModel(modelId = 'auto') {
-  const cfg = modelConfigForScope('webui');
+  const cfg = imageModelConfig();
   const lib = Array.isArray(cfg.library) ? cfg.library : [];
   const wanted = modelId && modelId !== 'auto' ? modelId : (cfg.scenarios?.image || '');
-  const model = lib.find(m => m.id === wanted || m.name === wanted);
+  const imageModels = lib.filter(m => m.enabled !== false && isImageLibraryModel(m));
+  let model = lib.find(m => m.id === wanted || m.name === wanted);
+  if (!model && imageModels.length) model = imageModels[0];
   if (!model) {
-    const err = new Error('请先在 设置 > 模型配置 > 图像生成 场景中选择一个真实图像模型。');
+    const err = new Error('请先在 设置 > 模型配置 中添加接口格式为 OpenAI 图像的模型，并绑定到图像生成场景。');
     err.status = 400;
     throw err;
   }
   if (model.enabled === false) {
+    if (imageModels.length) return imageModels[0];
     const err = new Error('当前图像模型已被禁用，请先启用后再生成。');
     err.status = 400;
     throw err;
   }
   const fmt = model.apiFormat || 'openai-image';
   if (!['openai-image', 'openai_image'].includes(fmt)) {
-    const err = new Error(`当前模型 API 格式是 ${fmt}，图像生成请配置为 OpenAI 图片接口。`);
+    if (imageModels.length) return imageModels[0];
+    const err = new Error(`当前图像场景绑定的是 ${model.name || model.id}，API 格式是 ${fmt}。请改为 OpenAI 图像接口模型。`);
     err.status = 400;
     throw err;
   }
   return model;
+}
+
+function resolveImageModels(modelId = 'auto') {
+  const cfg = imageModelConfig();
+  const lib = Array.isArray(cfg.library) ? cfg.library : [];
+  const imageModels = lib.filter(m => m.enabled !== false && isImageLibraryModel(m));
+  const primary = resolveImageModel(modelId);
+  const seen = new Set();
+  return [primary, ...imageModels].filter(m => {
+    const key = m?.id || `${m?.provider || ''}:${m?.name || ''}:${m?.base || ''}`;
+    if (!m || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function providerLabel(model = {}) {
+  return [model.provider, model.name].filter(Boolean).join(' / ') || model.id || '图像模型';
+}
+
+function isTransientImageError(error = {}) {
+  const status = Number(error.status || error.code || 0);
+  return status === 408 || status === 409 || status === 425 || status === 429 || status >= 500;
 }
 
 async function fetchJsonWithRetry(url, model, body) {
@@ -391,18 +437,18 @@ async function fetchJsonWithRetry(url, model, body) {
     });
     if (retry.ok) return retry.json();
     const retryText = await retry.text().catch(() => '');
-    const error = new Error(`图像接口失败 HTTP ${retry.status}: ${retryText.slice(0, 300)}`);
+    const error = new Error(`Image API failed HTTP ${retry.status}: ${retryText.slice(0, 300)}`);
     error.status = retry.status;
     throw error;
   }
-  const error = new Error(`图像接口失败 HTTP ${first.status}: ${firstText.slice(0, 300)}`);
+  const error = new Error(`Image API failed HTTP ${first.status}: ${firstText.slice(0, 300)}`);
   error.status = first.status;
   throw error;
 }
 
 async function fetchMultipartWithRetry(url, model, buildForm) {
-  const makeRequest = async (includeResponseFormat) => {
-    const form = buildForm(includeResponseFormat);
+  const makeRequest = async (includeResponseFormat, imageFieldMode = 'indexed') => {
+    const form = buildForm(includeResponseFormat, imageFieldMode);
     return fetch(url, {
       method: 'POST',
       headers: authHeaders(model, false),
@@ -410,19 +456,23 @@ async function fetchMultipartWithRetry(url, model, buildForm) {
       signal: AbortSignal.timeout(120000),
     });
   };
-  const first = await makeRequest(true);
-  if (first.ok) return first.json();
-  const firstText = await first.text().catch(() => '');
-  if (/response_format|unknown parameter|unsupported/i.test(firstText)) {
-    const retry = await makeRequest(false);
-    if (retry.ok) return retry.json();
-    const retryText = await retry.text().catch(() => '');
-    const error = new Error(`图生图接口失败 HTTP ${retry.status}: ${retryText.slice(0, 300)}`);
-    error.status = retry.status;
-    throw error;
+  const attempts = [
+    { includeResponseFormat: true, imageFieldMode: 'indexed' },
+    { includeResponseFormat: false, imageFieldMode: 'indexed' },
+    { includeResponseFormat: false, imageFieldMode: 'repeat' },
+    { includeResponseFormat: false, imageFieldMode: 'array' },
+  ];
+  let lastStatus = 500;
+  let lastText = '';
+  for (const attempt of attempts) {
+    const response = await makeRequest(attempt.includeResponseFormat, attempt.imageFieldMode);
+    if (response.ok) return response.json();
+    lastStatus = response.status;
+    lastText = await response.text().catch(() => '');
+    if (!/response_format|unknown parameter|unsupported|image_\d+|image\[\]|missing.*image|invalid.*image|field/i.test(lastText)) break;
   }
-  const error = new Error(`图生图接口失败 HTTP ${first.status}: ${firstText.slice(0, 300)}`);
-  error.status = first.status;
+  const error = new Error(`Image edit API failed HTTP ${lastStatus}: ${lastText.slice(0, 300)}`);
+  error.status = lastStatus;
   throw error;
 }
 
@@ -491,7 +541,7 @@ async function saveGeneratedItem(item, req, meta = {}) {
   });
 }
 
-const IMAGE2_DIR = path.resolve(__dirname, '..', '..', '..', '记忆', 'skill', 'image2');
+const IMAGE2_DIR = path.resolve(process.env.HERMES_IMAGE2_SKILL_DIR || '/mnt/e/AI/记忆/skills/image2');
 
 function readTextIfExists(filePath, maxChars = 12000) {
   try {
@@ -713,7 +763,8 @@ async function generateImageFromPrompt({ prompt = '', sourcePrompt = '', optimiz
   }
 
   const reqLike = { body: { publicBase } };
-  const selectedModel = resolveImageModel(model);
+  const candidateModels = resolveImageModels(model);
+  let selectedModel = candidateModels[0];
   const records = readRecords();
   const inputs = inputIds
     .map(id => records.find(r => r.id === id))
@@ -724,41 +775,57 @@ async function generateImageFromPrompt({ prompt = '', sourcePrompt = '', optimiz
     .filter(r => r && ['input', 'output'].includes(r.kind) && isInsideImageRoot(r.path));
   const finalPrompt = cleanPrompt || '请基于参考图片生成一张新的图片。';
   let json;
-
-  if (inputs.length > 0) {
-    const url = imageEndpoint(selectedModel.base, 'edits');
-    if (!url) {
-      const err = new Error('image edit url missing');
-      err.status = 400;
-      throw err;
+  const failures = [];
+  for (const candidate of candidateModels) {
+    selectedModel = candidate;
+    try {
+      if (inputs.length > 0) {
+        const url = imageEndpoint(candidate.base, 'edits');
+        if (!url) {
+          const err = new Error('image edit url missing');
+          err.status = 400;
+          throw err;
+        }
+        json = await fetchMultipartWithRetry(url, candidate, (includeResponseFormat, imageFieldMode = 'indexed') => {
+          const form = new FormData();
+          form.append('model', candidate.name);
+          form.append('prompt', finalPrompt);
+          form.append('n', '1');
+          form.append('size', size || '1024x1024');
+          if (includeResponseFormat) form.append('response_format', 'b64_json');
+          inputs.forEach((input, index) => {
+            const buffer = fs.readFileSync(input.path);
+            const blob = new Blob([buffer], { type: input.mime || 'image/png' });
+            const fieldName = imageFieldMode === 'repeat'
+              ? 'image'
+              : (imageFieldMode === 'array' ? 'image[]' : (index === 0 ? 'image' : `image_${index}`));
+            form.append(fieldName, blob, input.originalName || input.filename || `input_${index}.png`);
+          });
+          return form;
+        });
+      } else {
+        const url = imageEndpoint(candidate.base, 'generations');
+        if (!url) {
+          const err = new Error('image generation url missing');
+          err.status = 400;
+          throw err;
+        }
+        json = await fetchJsonWithRetry(url, candidate, {
+          model: candidate.name,
+          prompt: finalPrompt,
+          n: 1,
+          size: size || '1024x1024',
+        });
+      }
+      break;
+    } catch (e) {
+      failures.push(`${providerLabel(candidate)}：${e.message || e}`);
+      if (!isTransientImageError(e) || candidateModels.indexOf(candidate) === candidateModels.length - 1) {
+        const err = new Error(failures.length > 1 ? `所有图像模型均失败：${failures.join('；')}` : (e.message || 'image generation failed'));
+        err.status = e.status || 500;
+        throw err;
+      }
     }
-    json = await fetchMultipartWithRetry(url, selectedModel, (includeResponseFormat) => {
-      const form = new FormData();
-      form.append('model', selectedModel.name);
-      form.append('prompt', finalPrompt);
-      form.append('n', '1');
-      form.append('size', size || '1024x1024');
-      if (includeResponseFormat) form.append('response_format', 'b64_json');
-      inputs.forEach((input, index) => {
-        const buffer = fs.readFileSync(input.path);
-        const blob = new Blob([buffer], { type: input.mime || 'image/png' });
-        form.append(index === 0 ? 'image' : `image_${index}`, blob, input.originalName || input.filename || `input_${index}.png`);
-      });
-      return form;
-    });
-  } else {
-    const url = imageEndpoint(selectedModel.base, 'generations');
-    if (!url) {
-      const err = new Error('image generation url missing');
-      err.status = 400;
-      throw err;
-    }
-    json = await fetchJsonWithRetry(url, selectedModel, {
-      model: selectedModel.name,
-      prompt: finalPrompt,
-      n: 1,
-      size: size || '1024x1024',
-    });
   }
 
   const items = extractImageItems(json);
@@ -866,4 +933,3 @@ router.get('/', (_req, res) => {
 
 module.exports = router;
 module.exports.generateImageFromPrompt = generateImageFromPrompt;
-

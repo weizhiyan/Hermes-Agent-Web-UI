@@ -20,6 +20,7 @@ const modalRoutes = require('./routes/modal');
 const memoryRoutes = require('./routes/memory');
 const imageRoutes = require('./routes/images');
 const relayRoutes = require('./routes/relay');
+const knowledgeRoutes = require('./routes/knowledge');
 const feishuStream = require('./services/feishuStream');
 const paths = require('./services/paths');
 
@@ -90,6 +91,7 @@ app.use('/api/cli', cliRoutes);
 app.use('/api/sse', modalRoutes);
 app.use('/api/memory', memoryRoutes);
 app.use('/api/images', imageRoutes);
+app.use('/api/knowledge', knowledgeRoutes);
 
 // Protect sensitive directories
 app.use((req, res, next) => {
@@ -103,6 +105,8 @@ app.use((req, res, next) => {
 // Serve latest root-level UI (index.html + app-new.js)
 app.use('/', express.static(path.join(__dirname, '..')));
 app.use('/frontend', express.static(path.join(__dirname, '..', 'frontend')));
+// Serve knowledge graph React app
+app.use('/knowledge-graph', express.static(path.join(__dirname, '..', 'frontend', 'knowledge-graph', 'dist')));
 
 app.use((err, req, res, _next) => {
   console.error('[error]', err);

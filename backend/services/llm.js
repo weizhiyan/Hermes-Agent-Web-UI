@@ -1,5 +1,8 @@
-﻿const { hermesStream } = require('./hermes');
+﻿const fs = require('fs');
+const path = require('path');
+const { hermesStream } = require('./hermes');
 const store = require('./store');
+const paths = require('./paths');
 
 const RELAY_PROVIDER_RE = /new\s*api|one\s*api|openai|openrouter|siliconflow|together|moonshot|kimi|zhipu|xiaomi|mimo|mi\s*model|\u5c0f\u7c73|\u667a\u8c31|\u4e2d\u8f6c|gateway|relay/i;
 const AGENT_FORCE_RE = /agent\s*模式|hermes\s*模式|工具调用|用工具|调用工具|终端|命令行|shell|powershell|cmd|git\s|npm\s|pnpm\s|yarn\s|docker\s|curl|api|接口/i;
@@ -79,6 +82,49 @@ function canUseDirectApi(item = {}) {
 function requestModelName(item = {}, fallback = '') {
   return item?.model || item?.name || fallback || '';
 }
+function normalizeStoredImagePath(target = '') {
+  const text = String(target || '');
+  const wsl = text.match(/^\/mnt\/([a-zA-Z])\/(.*)$/);
+  if (wsl && process.platform === 'win32') return wsl[1].toUpperCase() + ':\\' + wsl[2].replace(/\//g, '\\');
+  const win = text.match(/^([a-zA-Z]):[\\/](.*)$/);
+  if (win && process.platform !== 'win32') return '/mnt/' + win[1].toLowerCase() + '/' + win[2].replace(/\\/g, '/');
+  return text;
+}
+function isInside(root, target) {
+  const rel = path.relative(root, target);
+  return !!rel && !rel.startsWith('..') && !path.isAbsolute(rel);
+}
+function imagePathFromAttachment(item = {}) {
+  const candidates = [
+    normalizeStoredImagePath(item.path || ''),
+    item.filename ? path.join(paths.imageInputDir(), item.filename) : '',
+    item.filename ? path.join(paths.imageOutputDir(), item.filename) : '',
+  ].filter(Boolean);
+  const roots = paths.roots().map(root => path.resolve(root));
+  return candidates.find(candidate => {
+    try {
+      const full = path.resolve(candidate);
+      return fs.existsSync(full) && roots.some(root => full === root || isInside(root, full));
+    } catch (_) { return false; }
+  }) || '';
+}
+function imageDataUrlFromAttachment(item = {}) {
+  const filePath = imagePathFromAttachment(item);
+  if (!filePath) return '';
+  const mime = item.mime || (filePath.toLowerCase().endsWith('.webp') ? 'image/webp' : (filePath.toLowerCase().endsWith('.jpg') || filePath.toLowerCase().endsWith('.jpeg') ? 'image/jpeg' : 'image/png'));
+  try { return 'data:' + mime + ';base64,' + fs.readFileSync(filePath).toString('base64'); } catch (_) { return ''; }
+}
+function messageContentForProvider(message = {}) {
+  const attachments = Array.isArray(message.attachments) ? message.attachments : [];
+  if (!attachments.length) return message.content;
+  const content = [{ type: 'text', text: String(message.content || '') }];
+  for (const item of attachments.slice(0, 6)) {
+    const dataUrl = imageDataUrlFromAttachment(item);
+    const url = dataUrl || item.publicUrl || item.url || '';
+    if (url) content.push({ type: 'image_url', image_url: { url } });
+  }
+  return content.length > 1 ? content : message.content;
+}
 
 function timeoutSignal(ms) {
   if (typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function') {
@@ -137,7 +183,7 @@ async function* hermesApiServerStream(cfg, messages) {
   if (key) headers.Authorization = 'Bearer ' + key;
   const body = JSON.stringify({
     model,
-    messages: messages.map(m => ({ role: m.role, content: m.content })),
+    messages: messages.map(m => ({ role: m.role, content: messageContentForProvider(m) })),
     stream: true,
   });
   let resp;
@@ -237,7 +283,7 @@ async function* directApiStream(cfg, messages) {
   try {
     body = JSON.stringify({
       model,
-      messages: messages.map(m => ({ role: m.role, content: m.content })),
+      messages: messages.map(m => ({ role: m.role, content: messageContentForProvider(m) })),
       stream: true,
       temperature: params.temperature ?? 0.7,
       max_tokens: params.maxTokens || 4096,
@@ -328,15 +374,20 @@ async function* chatStream(cfg, messages) {
     return;
   }
 
-  const scene = cfg._scene || 'chat';
+  const requestedScene = cfg._scene || 'chat';
+  const hasImages = messages.some(m => Array.isArray(m.attachments) && m.attachments.length);
+  const scene = hasImages && requestedScene === 'chat' && cfg.scenarios?.vision ? 'vision' : requestedScene;
   const sceneModel = cfg.scenarios?.[scene] || cfg.scenarios?.chat || cfg._requestedModel || cfg.current || '';
   const libraryItem = selectedLibraryModel(cfg, sceneModel);
   const modelName = requestModelName(libraryItem || {}, sceneModel || settings.hermesModel || '');
   cfg._requestedModel = libraryItem?.id || sceneModel;
   cfg._selectedLibraryModel = libraryItem || null;
 
-  const route = shouldUseHermesAgent({ cfg, settings, last, libraryItem });
-  yield { type: 'perf', stage: 'route-selected', route: route.useHermes ? 'hermes' : 'direct', reason: route.reason };
+  let route = shouldUseHermesAgent({ cfg, settings, last, libraryItem });
+  if (hasImages && scene === 'vision' && canUseDirectApi(libraryItem)) {
+    route = { useHermes: false, reason: 'vision-attachment-direct' };
+  }
+  yield { type: 'perf', stage: 'route-selected', route: route.useHermes ? 'hermes' : 'direct', reason: route.reason, scene };
   if (!route.useHermes) {
     const provider = detectProvider(cfg);
     const selected = cfg._requestedModel || cfg.current || '';

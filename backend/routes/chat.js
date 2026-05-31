@@ -587,6 +587,14 @@ router.post('/:id/messages', async (req, res) => {
       ...extra,
     });
   }
+  if (Array.isArray(req.body.attachments) && req.body.attachments.length) {
+    addSystemPart('图片识别模式', [
+      '【图片识别模式】',
+      '本轮用户已上传图片，后端会把图片内容直接作为多模态输入提供给视觉模型。',
+      '你应该直接观察并描述/分析图片内容；不要要求用户提供本地路径、不要要求读取 settings.json/models.json、不要输出 ls/cat 命令。',
+      '如果无法识别，请只说明视觉模型返回的具体错误，不要猜测 WebUI 配置缺失。'
+    ].join('\n'), { source: 'vision-mode' });
+  }
   if (toggles.webuiRules) {
     addSystemPart('WebUI 对话执行规则', WEBUI_SELF_PROTECTION_PROMPT, { source: 'builtin' });
     addSystemPart('WebUI 运行路径', [
@@ -678,6 +686,18 @@ router.post('/:id/messages', async (req, res) => {
   const modelRoot = store.read('models', {});
   const modelScope = settingsForMode.quickMode ? 'webui' : 'agent';
   const cfg = (modelRoot && (modelRoot.webui || modelRoot.agent)) ? (modelRoot[modelScope] || modelRoot.webui || modelRoot.agent || {}) : modelRoot;
+  const hasImageAttachments = Array.isArray(req.body.attachments) && req.body.attachments.length > 0;
+  if (hasImageAttachments && modelRoot && (modelRoot.webui || modelRoot.agent) && !cfg.scenarios?.vision) {
+    const altScope = modelScope === 'webui' ? 'agent' : 'webui';
+    const altCfg = modelRoot[altScope] || {};
+    const altVisionId = altCfg.scenarios?.vision || '';
+    const altVisionModel = Array.isArray(altCfg.library) ? altCfg.library.find(m => m && m.enabled !== false && (m.id === altVisionId || m.name === altVisionId)) : null;
+    if (altVisionModel) {
+      cfg.library = Array.isArray(cfg.library) ? [...cfg.library] : [];
+      if (!cfg.library.some(m => m && m.id === altVisionModel.id)) cfg.library.push(altVisionModel);
+      cfg.scenarios = { ...(cfg.scenarios || {}), vision: altVisionModel.id };
+    }
+  }
   cfg._scene = req.body.scene || 'chat';
   cfg._abortSignal = abortController.signal;
   if (req.body.model && req.body.model !== 'auto') cfg._requestedModel = req.body.model;

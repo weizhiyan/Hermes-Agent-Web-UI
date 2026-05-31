@@ -563,7 +563,17 @@ router.get('/md-library', (req, res) => {
       ...DOC_FOLDERS.map(name => ({ name, type: name, tag: name, folder: name, files: filesFlat.filter(f => f.folder === name) })),
       ...folderGroups.filter(group => !DOC_FOLDERS.includes(group.name)),
     ];
-    const vaultCategories = VAULT_CATEGORIES.map(item => ({ ...item, files: filesFlat.filter(f => f.folder === item.folder || (item.aliases || []).includes(f.folder)) }));
+    const knownCategoryFolders = new Set();
+    const vaultCategories = VAULT_CATEGORIES.map(item => {
+      knownCategoryFolders.add(item.folder);
+      for (const alias of item.aliases || []) knownCategoryFolders.add(alias);
+      return { ...item, files: filesFlat.filter(f => f.folder === item.folder || (item.aliases || []).includes(f.folder)) };
+    });
+    for (const group of folderGroups) {
+      if (!group.name || knownCategoryFolders.has(group.name)) continue;
+      const id = 'folder-' + Buffer.from(group.name).toString('base64url');
+      vaultCategories.push({ id, label: group.name, folder: group.name, dynamic: true, files: group.files || [] });
+    }
     const types = groupBy(filesFlat, f => f.mdType, '其他');
     const tagItems = [];
     const tagMap = new Map();
@@ -679,10 +689,18 @@ router.post('/md-library/copy', (req, res) => {
 
 router.post('/md-library/move', (req, res) => {
   const filePath = path.resolve(normalizeIncomingPath(req.body?.path || ''));
-  const folder = normalizeDocFolder(String(req.body?.folder || '').trim(), '');
+  const rawFolder = String(req.body?.folder || '').trim();
   if (!filePath || !allowed(filePath)) return res.fail('path not allowed', 403, 403);
   try {
     const root = mdLibraryRoot();
+    const currentFolders = new Set();
+    if (fs.existsSync(root)) {
+      for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
+        if (entry.isDirectory() && !entry.name.startsWith('.')) currentFolders.add(entry.name);
+      }
+    }
+    const folder = currentFolders.has(rawFolder) ? rawFolder : normalizeDocFolder(rawFolder, '');
+    if (!folder || folder === '临时收件箱' && rawFolder !== '临时收件箱') return res.fail('invalid folder', 400, 400);
     if (!(filePath === root || filePath.startsWith(root + path.sep))) return res.fail('only md library files can be moved', 403, 403);
     const stat = fs.statSync(filePath);
     if (!stat.isFile()) return res.fail('not a file', 400, 400);

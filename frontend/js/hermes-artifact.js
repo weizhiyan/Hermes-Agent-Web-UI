@@ -184,6 +184,9 @@
   let currentTab = 'preview';
   let viewVersionIndex = -1;
   let historyMode = 'category:outputs';
+  let knowledgeGraphView = 'graph';
+  let _kgResizeObs = null;
+  let historySubFilter = 'all';
   let historyCategoryMenuOpen = false;
   let historyCategoryMenuPos = null;
   let historyData = null;
@@ -373,6 +376,188 @@
     </div>`;
   }
 
+
+  function knowledgeNodeTone(file) {
+    const text = [file.mdType, file.folder, file.type, ...(Array.isArray(file.tags) ? file.tags : [])].join(' ');
+    if (/临时|未分类|inbox|temp/i.test(text)) return 'gray';
+    if (/规则|偏好|Prompt|模板|项目经验|输出文档|高质量|复用/i.test(text)) return 'green';
+    if (/生图|图片|image|工作流/i.test(text)) return 'yellow';
+    if (/问题|沉淀|修改|优化/i.test(text)) return 'orange';
+    if (/混乱|重构|错误/i.test(text)) return 'red';
+    return 'gray';
+  }
+
+  function knowledgeGraphTheme() {
+    const css = getComputedStyle(document.documentElement);
+    const pick = (name, fallback) => (css.getPropertyValue(name) || fallback || '').trim();
+    return { bg: pick('--c-surface1', '#fff'), ink: pick('--c-ink', '#202124'), muted: pick('--c-ink-muted', '#8a8f98'), edge: pick('--c-hairline', 'rgba(0,0,0,.12)'), center: pick('--c-accent', '#1f7aff'), green: '#35a56a', yellow: '#d6a431', orange: '#e06f3d', red: '#d94b4b', gray: '#9aa3af' };
+  }
+
+  function knowledgeNodeTooltip(node) {
+    if (!node) return '';
+    if (node.type === 'root') return '<strong>知识库</strong><span>当前 Markdown / Prompt / 用户问题沉淀的关系入口。</span>';
+    if (node.type === 'group') return '<strong>' + esc(node.label || '分类') + '</strong><span>分类节点，连接该分类下的知识点。</span>';
+    return '<strong>' + esc(node.label || '未命名') + '</strong><span>' + esc(node.meta || '点击打开 Markdown') + '</span>';
+  }
+
+  function ensureKnowledgeTooltip(stage) {
+    let tip = stage.querySelector('.knowledge-graph-tooltip');
+    if (!tip) {
+      tip = document.createElement('div');
+      tip.className = 'knowledge-graph-tooltip';
+      stage.appendChild(tip);
+    }
+    return tip;
+  }
+
+  function showKnowledgeTooltip(stage, node, x, y) {
+    const tip = ensureKnowledgeTooltip(stage);
+    tip.innerHTML = knowledgeNodeTooltip(node);
+    tip.style.left = Math.min(stage.clientWidth - 220, Math.max(12, x + 14)) + 'px';
+    tip.style.top = Math.min(stage.clientHeight - 96, Math.max(12, y + 14)) + 'px';
+    tip.classList.add('show');
+  }
+
+  function hideKnowledgeTooltip(stage) {
+    const tip = stage && stage.querySelector('.knowledge-graph-tooltip');
+    if (tip) tip.classList.remove('show');
+  }
+
+  function buildKnowledgeGraphData(categories, all) {
+    const groups = (categories || []).filter(group => (group.files || []).length);
+    const sourceGroups = groups.length ? groups : [{ id: 'all', label: '全部', files: all || [] }];
+    const nodes = [{ id: 'root', label: '知识库', type: 'root', tone: 'center', size: 38 }];
+    const edges = [];
+    sourceGroups.slice(0, 9).forEach((group, groupIndex) => {
+      const groupId = 'group_' + (group.id || groupIndex);
+      nodes.push({ id: groupId, label: group.label || group.folder || group.name || '临时', type: 'group', tone: knowledgeNodeTone({ folder: group.label || group.folder || group.name }), size: 23, groupIndex });
+      edges.push({ source: 'root', target: groupId });
+      (group.files || []).slice(0, 18).forEach((file, fileIndex) => {
+        const title = file.title || file.file || file.name || '未命名';
+        const id = groupId + '_file_' + fileIndex;
+        nodes.push({ id, label: title, type: 'file', tone: knowledgeNodeTone(file), size: 8 + Math.min(5, Math.max(0, Math.round((String(title).length || 1) / 12))), path: file.path || '', name: title, groupIndex, fileIndex, meta: [file.mdType || file.folder || '', formatDocDate(file.mtime)].filter(Boolean).join(' · ') });
+        edges.push({ source: groupId, target: id });
+      });
+    });
+    return { nodes, edges };
+  }
+
+  function renderKnowledgeMap(categories, all) {
+    const total = Array.isArray(all) ? all.length : 0;
+    return '<div class="knowledge-map-panel">'
+      + '<div class="knowledge-map-intro"><strong>AI 协作型知识地图</strong><span>中心是知识库，外围是分类与问题/Prompt/文档节点。点击小节点打开 Markdown。</span></div>'
+      + '<div class="knowledge-map-legend"><span class="tone-green">高质量</span><span class="tone-yellow">普通</span><span class="tone-orange">待优化</span><span class="tone-red">混乱</span><span class="tone-gray">临时</span></div>'
+      + '<div class="knowledge-graph-stage" id="knowledgeGraphStage" data-count="' + total + '"></div>'
+      + '</div>';
+  }
+
+  function radialKnowledgePositions(data, width, height) {
+    const cx = width / 2;
+    const cy = height / 2;
+    const groups = data.nodes.filter(n => n.type === 'group');
+    const filesByGroup = new Map(groups.map(g => [g.id, data.nodes.filter(n => n.type === 'file' && n.id.startsWith(g.id + '_file_'))]));
+    const radius = Math.min(width, height) * 0.22;
+    const outer = Math.min(width, height) * 0.42;
+    const pos = new Map([['root', { x: cx, y: cy }]]);
+    groups.forEach((group, index) => {
+      const angle = (-Math.PI / 2) + index * Math.PI * 2 / Math.max(groups.length, 1);
+      const gx = cx + Math.cos(angle) * radius;
+      const gy = cy + Math.sin(angle) * radius;
+      pos.set(group.id, { x: gx, y: gy });
+      const files = filesByGroup.get(group.id) || [];
+      const spread = Math.min(Math.PI / 2.15, Math.PI * 2 / Math.max(groups.length, 2) * 0.82);
+      files.forEach((file, fileIndex) => {
+        const t = files.length <= 1 ? 0.5 : fileIndex / (files.length - 1);
+        const fa = angle - spread / 2 + spread * t;
+        const fr = outer * (0.68 + (fileIndex % 4) * 0.105);
+        pos.set(file.id, { x: gx + Math.cos(fa) * fr * 0.58, y: gy + Math.sin(fa) * fr * 0.58 });
+      });
+    });
+    return pos;
+  }
+
+  function renderKnowledgeGraphSvg(stage, data) {
+    const theme = knowledgeGraphTheme();
+    const rect = stage.getBoundingClientRect();
+    const width = Math.max(520, Math.round(rect.width || stage.clientWidth || 760));
+    const height = Math.max(420, Math.round(rect.height || 520));
+    const pos = radialKnowledgePositions(data, width, height);
+    const colorOf = tone => tone === 'center' ? theme.center : (theme[tone] || theme.gray);
+    const edges = data.edges.map(edge => {
+      const a = pos.get(edge.source), b = pos.get(edge.target);
+      return a && b ? '<line x1="' + a.x.toFixed(1) + '" y1="' + a.y.toFixed(1) + '" x2="' + b.x.toFixed(1) + '" y2="' + b.y.toFixed(1) + '" />' : '';
+    }).join('');
+    const nodes = data.nodes.map(node => {
+      const p = pos.get(node.id) || { x: width / 2, y: height / 2 };
+      const label = node.type === 'file' ? '' : '<text x="' + p.x.toFixed(1) + '" y="' + (p.y + node.size + 13).toFixed(1) + '">' + esc(node.label).slice(0, 8) + '</text>';
+      const click = node.type === 'file' && node.path ? ' data-path="' + encodeURIComponent(node.path) + '" data-name="' + encodeURIComponent(node.name || node.label) + '"' : '';
+      const hover = ' data-node-id="' + node.id + '"';
+      return '<g class="kg-node kg-' + node.type + '"' + click + hover + ' style="--node-color:' + colorOf(node.tone) + '"><circle cx="' + p.x.toFixed(1) + '" cy="' + p.y.toFixed(1) + '" r="' + node.size + '"/><title>' + esc([node.label, node.meta].filter(Boolean).join(' · ')) + '</title>' + label + '</g>';
+    }).join('');
+    stage.innerHTML = '<svg class="knowledge-graph-svg" viewBox="0 0 ' + width + ' ' + height + '" role="img" aria-label="知识地图"><rect width="' + width + '" height="' + height + '" rx="18"/><g class="kg-edges">' + edges + '</g><g class="kg-nodes">' + nodes + '</g></svg>';
+    const nodeById = new Map(data.nodes.map(item => [item.id, item]));
+    stage.querySelectorAll('.kg-node[data-node-id]').forEach(el => {
+      el.addEventListener('mouseenter', event => showKnowledgeTooltip(stage, nodeById.get(el.dataset.nodeId), event.offsetX, event.offsetY));
+      el.addEventListener('mousemove', event => showKnowledgeTooltip(stage, nodeById.get(el.dataset.nodeId), event.offsetX, event.offsetY));
+      el.addEventListener('mouseleave', () => hideKnowledgeTooltip(stage));
+    });
+    stage.querySelectorAll('.kg-file[data-path]').forEach(node => node.addEventListener('click', () => previewHistoryFile(node.dataset.path || '', node.dataset.name || '')));
+  }
+
+  function renderKnowledgeGraphG6(stage, data) {
+    if (!global.G6 || !global.G6.Graph) return false;
+    const theme = knowledgeGraphTheme();
+    try {
+      stage.innerHTML = '';
+      if (stage._kgGraph && typeof stage._kgGraph.destroy === 'function') stage._kgGraph.destroy();
+      const { Graph } = global.G6;
+      const graph = new Graph({
+        container: stage,
+        autoFit: 'view',
+        data: { nodes: data.nodes.map(node => ({ id: node.id, data: node, style: { labelText: node.type === 'file' ? '' : node.label, size: node.size * 2, fill: node.tone === 'center' ? theme.center : (theme[node.tone] || theme.gray), stroke: theme.bg, lineWidth: node.type === 'root' ? 2 : 1 } })), edges: data.edges.map(edge => ({ source: edge.source, target: edge.target, style: { stroke: theme.edge, lineWidth: 1 } })) },
+        node: { style: { labelFill: theme.muted, labelFontSize: 11, labelPlacement: 'bottom' } },
+        edge: { style: { stroke: theme.edge, lineWidth: 1 } },
+        layout: { type: 'd3-force', link: { distance: 88, strength: 0.45 }, manyBody: { strength: -180 }, collide: { radius: 18 } },
+        behaviors: ['drag-canvas', 'zoom-canvas', 'drag-element'],
+        animation: false,
+      });
+      graph.on('node:pointerenter', evt => {
+        const item = evt.item || evt.target;
+        const model = typeof item?.getModel === 'function' ? item.getModel() : item?.data;
+        const nodeData = model?.data || model;
+        const box = stage.getBoundingClientRect();
+        showKnowledgeTooltip(stage, nodeData, (evt.client?.x || evt.clientX || box.width / 2) - box.left, (evt.client?.y || evt.clientY || box.height / 2) - box.top);
+      });
+      graph.on('node:pointermove', evt => {
+        const item = evt.item || evt.target;
+        const model = typeof item?.getModel === 'function' ? item.getModel() : item?.data;
+        const nodeData = model?.data || model;
+        const box = stage.getBoundingClientRect();
+        showKnowledgeTooltip(stage, nodeData, (evt.client?.x || evt.clientX || box.width / 2) - box.left, (evt.client?.y || evt.clientY || box.height / 2) - box.top);
+      });
+      graph.on('node:pointerleave', () => hideKnowledgeTooltip(stage));
+      graph.on('node:click', evt => {
+        const item = evt.item || evt.target;
+        const model = typeof item?.getModel === 'function' ? item.getModel() : item?.data;
+        const nodeData = model?.data || model;
+        if (nodeData?.type === 'file' && nodeData.path) previewHistoryFile(encodeURIComponent(nodeData.path), encodeURIComponent(nodeData.name || nodeData.label || ''));
+      });
+      graph.render();
+      stage._kgGraph = graph;
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function initKnowledgeMapGraph(categories, all) {
+    const stage = $('#knowledgeGraphStage');
+    if (!stage) return;
+    const data = buildKnowledgeGraphData(categories, all);
+    requestAnimationFrame(() => {
+      if (!renderKnowledgeGraphG6(stage, data)) renderKnowledgeGraphSvg(stage, data);
+    });
+  }
   function applyLayout() {
     const wb = $('#chatWorkbench');
     const shell = $('#artifactShell');
@@ -432,12 +617,47 @@
     return currentTitle || '?????';
   }
 
+  function notifyArtifactContextChanged() {
+    try { if (typeof global.syncArtifactContextChip === 'function') global.syncArtifactContextChip(); } catch (_) {}
+  }
+
+  function getCurrentMarkdownContext() {
+    const path = currentFilePath || (historyPreview && historyPreview.path) || '';
+    const title = currentTitle || artifactDisplayTitle() || fileNameFromPath(path || '');
+    const body = getSourceText ? getSourceText() : '';
+    if (!path || !/\.md$/i.test(path)) return null;
+    return { title, path, type: 'markdown', previewing: true, size: body ? body.length : 0 };
+  }
+
   function syncDocumentHeader() {
     const head = $('#artifactDocumentHead');
     const titleEl = $('#artifactDocumentTitle');
     const show = currentTab !== 'history' || !!historyPreview;
     if (head) head.style.display = show ? 'flex' : 'none';
     if (titleEl) titleEl.textContent = artifactDisplayTitle();
+  }
+
+  function historyDisplayTitle() {
+    if (historyMode === 'graph') return '知识图谱';
+    if (historyMode === 'category:images') return '图片';
+    if (historyMode === 'tag') return '标签';
+    if (String(historyMode || '').startsWith('category:')) {
+      const id = String(historyMode).slice(9);
+      const categories = historyData?.vaultCategories || [];
+      const hit = categories.find(item => item.id === id);
+      return hit?.label || hit?.folder || '输出文档';
+    }
+    return '输出文档';
+  }
+
+  function currentArtifactTheme() {
+    const explicit = document.documentElement.getAttribute('data-theme');
+    if (explicit === 'light' || explicit === 'dark') return explicit;
+    try {
+      const stored = localStorage.getItem('hermes.theme');
+      if (stored === 'light' || stored === 'dark') return stored;
+    } catch (_) {}
+    return 'light';
   }
 
   function backFromDocumentHeader() {
@@ -453,11 +673,23 @@
         (m === 'PREVIEW_ONLY' && layout === 'PREVIEW_ONLY');
       b.classList.toggle('active', active);
     });
-    document.querySelectorAll('.artifact-view-toggle').forEach((wrap) => {
-      wrap.dataset.active = currentTab === 'source' ? 'source' : 'preview';
-    });
-    document.querySelectorAll('.artifact-view-btn').forEach((t) => {
+    const docToggle = $('#artifactViewToggle');
+    const kgToggle = $('#knowledgeViewToggle');
+    const showKgToggle = currentTab === 'history' && historyMode === 'graph' && !historyPreview;
+    const showDocToggle = currentTab !== 'history' || !!historyPreview;
+    if (docToggle) {
+      docToggle.style.display = showDocToggle ? 'inline-grid' : 'none';
+      docToggle.dataset.active = currentTab === 'source' ? 'source' : 'preview';
+    }
+    if (kgToggle) {
+      kgToggle.style.display = showKgToggle ? 'inline-grid' : 'none';
+      kgToggle.dataset.active = knowledgeGraphView;
+    }
+    document.querySelectorAll('#artifactViewToggle .artifact-view-btn').forEach((t) => {
       t.classList.toggle('active', t.dataset.tab === currentTab);
+    });
+    document.querySelectorAll('#knowledgeViewToggle .artifact-view-btn').forEach((t) => {
+      t.classList.toggle('active', t.dataset.kgView === knowledgeGraphView);
     });
     syncToolbarState();
   }
@@ -470,6 +702,27 @@
   function syncToolbarState() {
     const exportWrap = $('#artifactExportWrap');
     if (!exportWrap) return;
+    const titleEl = $('#artifactTitleText');
+    if (titleEl && currentTab === 'history' && !historyPreview) titleEl.textContent = historyDisplayTitle();
+    const actionBtn = $('#artifactHistoryActionBtn');
+    if (actionBtn) {
+      const showSync = currentTab === 'history' && historyMode === 'graph';
+      const showClassify = currentTab === 'history' && historyMode === 'category:outputs' && historySubFilter === 'inbox';
+      actionBtn.style.display = (showSync || showClassify) ? 'inline-flex' : 'none';
+      if (showSync) {
+        actionBtn.textContent = '同步问题';
+        actionBtn.dataset.tip = '从聊天记录同步用户问题';
+        actionBtn.setAttribute('aria-label', '同步问题');
+        actionBtn.onclick = () => syncAndRefreshGraph();
+      } else if (showClassify) {
+        actionBtn.textContent = '自动分类';
+        actionBtn.dataset.tip = 'AI 自动分类临时收件箱文件';
+        actionBtn.setAttribute('aria-label', '自动分类');
+        actionBtn.onclick = () => autoClassify();
+      } else {
+        actionBtn.onclick = null;
+      }
+    }
     const showExport = shouldShowArtifactExport();
     exportWrap.classList.toggle('is-hidden', !showExport);
     exportWrap.setAttribute('aria-hidden', showExport ? 'false' : 'true');
@@ -1226,9 +1479,14 @@
 <div class="artifact-inner">
   <div class="artifact-toolbar">
     <div class="artifact-toolbar-left">
-      <div class="artifact-view-toggle" role="tablist" aria-label="文档视图切换" data-active="preview">
+      <div class="artifact-view-toggle" role="tablist" aria-label="文档视图切换" data-active="preview" id="artifactViewToggle">
         <button type="button" class="artifact-view-btn active artifact-tooltip" data-tab="preview" data-tip="预览" onclick="HermesArtifact.setTab('preview')" aria-label="预览">${renderToolbarIcon('eye')}</button>
         <button type="button" class="artifact-view-btn artifact-tooltip" data-tab="source" data-tip="代码" onclick="HermesArtifact.setTab('source')" aria-label="代码">${renderToolbarIcon('code')}</button>
+      </div>
+      <div class="artifact-view-toggle kg-parent-view-toggle" role="tablist" aria-label="知识图谱视图切换" data-active="graph" id="knowledgeViewToggle" style="display:none">
+        <button type="button" class="artifact-view-btn artifact-tooltip" data-kg-view="graph" data-tip="知识图谱" onclick="HermesArtifact.setKnowledgeGraphView('graph')" aria-label="知识图谱"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="6" cy="7" r="2.4"/><circle cx="17" cy="6" r="2.4"/><circle cx="18" cy="17" r="2.4"/><circle cx="7" cy="18" r="2.4"/><path d="m8.3 8.3 7.1 6.9"/><path d="m15 7-6.5 9"/><path d="M8.8 18h6.7"/></svg></button>
+        <button type="button" class="artifact-view-btn artifact-tooltip" data-kg-view="list" data-tip="列表" onclick="HermesArtifact.setKnowledgeGraphView('list')" aria-label="列表"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M8 6h12"/><path d="M8 12h12"/><path d="M8 18h12"/><path d="M4 6h.01"/><path d="M4 12h.01"/><path d="M4 18h.01"/></svg></button>
+        <button type="button" class="artifact-view-btn artifact-tooltip" data-kg-view="stats" data-tip="统计图" onclick="HermesArtifact.setKnowledgeGraphView('stats')" aria-label="统计图"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M5 20V10"/><path d="M12 20V4"/><path d="M19 20v-7"/></svg></button>
       </div>
       <span class="artifact-toolbar-title" id="artifactTitleText">Artifact</span>
       <span class="artifact-version-text" id="artifactVersionText"></span>
@@ -1239,6 +1497,7 @@
         <button type="button" class="artifact-library-caret artifact-tooltip" data-tip="\u9009\u62e9\u77e5\u8bc6\u5206\u7c7b" aria-label="\u9009\u62e9\u77e5\u8bc6\u5206\u7c7b" onclick="HermesArtifact.toggleHistoryCategoryMenu()">${renderToolbarIcon('chevron-down')}</button>
         <div class="doc-library-more-menu artifact-library-menu" id="artifactLibraryMenu" style="display:none"></div>
       </div>
+      <button type="button" class="artifact-history-action artifact-tooltip" id="artifactHistoryActionBtn" style="display:none"></button>
       <button type="button" class="artifact-icon-btn artifact-refresh-btn artifact-tooltip" id="artifactRefreshBtn" data-tip="刷新" aria-label="刷新" onclick="HermesArtifact.refreshCurrentView()">${renderToolbarIcon('refresh')}</button>
       <button type="button" class="artifact-icon-btn artifact-tooltip" data-tip="关闭面板" aria-label="关闭面板" onclick="HermesArtifact.setLayout('chat')">${renderToolbarIcon('close')}</button>
     </div>
@@ -1260,9 +1519,18 @@
     <textarea id="artifactSource" class="artifact-source artifact-source-editor" style="display:none" spellcheck="false"></textarea>
     <div id="artifactHistory" class="artifact-history" style="display:none"></div>
   </div>
+  <div class="image-lightbox" id="imageLightbox">
+    <div class="lightbox-backdrop" onclick="HermesArtifact.closeImageLightbox()"></div>
+    <div class="lightbox-content">
+      <button class="lightbox-close" onclick="HermesArtifact.closeImageLightbox()" aria-label="关闭">✕</button>
+      <img class="lightbox-img" id="lightboxImg" alt="预览" />
+      <div class="lightbox-prompt" id="lightboxPrompt" onclick="HermesArtifact.copyLightboxPrompt()" title="点击复制提示词"></div>
+    </div>
+  </div>
   <button type="button" class="artifact-edge-resizer" aria-label="调整预览宽度" title="拖拽调整预览宽度"></button>
 </div>`;
   }
+
 
   function initWorkbench() {
     loadSplit();
@@ -1401,7 +1669,7 @@
               <span class="history-card-meta-left">
                 ${esc(date)}
                 <span class="history-card-type">${esc(f.mdType || f.type || f.folder || 'Markdown')}</span>
-                ${tags.map(tag => `<span class="history-card-tag">${esc(tag)}</span>`).join('')}
+                ${tags.map(tag => `<span class="history-card-tag" data-tag="${esc(tag)}">${esc(tag)}</span>`).join('')}
               </span>
               <span class="history-card-size">${esc(fmtBytes(f.size))}</span>
             </div>
@@ -1410,20 +1678,46 @@
       </div>`;
   }
 
-  function renderToolbarCategoryMenu(moreCategories, tags, all) {
+  function postKnowledgeGraphView() {
+    const frame = document.getElementById('kgGraphFrame');
+    if (!frame || !frame.contentWindow) return;
+    try { frame.contentWindow.postMessage({ type: 'set-view', view: knowledgeGraphView }, '*'); } catch {}
+  }
+
+  function setKnowledgeGraphView(view) {
+    if (!['graph', 'list', 'stats'].includes(view)) return;
+    knowledgeGraphView = view;
+    syncToolbarActive();
+    postKnowledgeGraphView();
+  }
+
+  function renderToolbarCategoryMenu() {
     const menu = $('#artifactLibraryMenu');
     if (!menu) return;
-    const categoryButtons = (moreCategories || []).map(item => `<button class="${historyMode === 'category:'+item.id ? 'active' : ''}" onclick="HermesArtifact.setHistoryMode('category:${esc(item.id)}')">${esc(item.label || item.folder)}<span>${(item.files || []).length}</span></button>`).join('');
-    const tagLabel = '\u6807\u7b7e';
-    const allLabel = '\u5168\u90e8';
-    menu.innerHTML = categoryButtons + `<button class="${historyMode === 'tag' ? 'active' : ''}" onclick="HermesArtifact.setHistoryMode('tag')">${tagLabel}<span>${(tags || []).length}</span></button><button class="${historyMode === 'all' ? 'active' : ''}" onclick="HermesArtifact.setHistoryMode('all')">${allLabel}<span>${(all || []).length}</span></button>`;
+    const categories = historyData?.vaultCategories || [];
+    const categoryButtons = categories.map(item => {
+      const id = String(item.id || item.folder || 'outputs');
+      const label = item.label || item.folder || '文档';
+      const count = (item.files || []).length;
+      return `<button class="${historyMode === 'category:' + id ? 'active' : ''}" onclick="HermesArtifact.setHistoryMode('category:${esc(id)}')">${esc(label)}<span>${count}</span></button>`;
+    }).join('');
+    menu.innerHTML = `
+      ${categoryButtons || `<button class="${historyMode === 'category:outputs' ? 'active' : ''}" onclick="HermesArtifact.setHistoryMode('category:outputs')">输出文档<span>${(historyData?.filesFlat || []).length}</span></button>`}
+      <button class="${historyMode === 'category:images' ? 'active' : ''}" onclick="HermesArtifact.setHistoryMode('category:images')">图片</button>
+      <button class="${historyMode === 'graph' ? 'active' : ''}" onclick="HermesArtifact.setHistoryMode('graph')">知识图谱</button>
+    `;
     menu.style.display = historyCategoryMenuOpen ? 'flex' : 'none';
   }
+
   function renderHistoryList() {
     const hist = $('#artifactHistory');
     if (!hist || !historyData) return;
     syncToolbarState();
     syncDocumentHeader();
+    renderToolbarCategoryMenu();
+    const menuAll = historyData.filesFlat || [];
+    const menuTags = historyData.tags || [];
+    const menuCategories = historyData.vaultCategories || [];
     if (historyPreview) {
       hist.innerHTML = `
         <div class="artifact-history-preview-head">
@@ -1453,19 +1747,46 @@
     const outputCategory = categories.find(item => item.id === 'outputs') || { id: 'outputs', label: '输出文档', folder: '输出文档', files: all.filter(f => ['输出文档','工作文档','AI分享','教程','笔记'].includes(f.folder)) };
     const currentCategoryId = String(historyMode || '').startsWith('category:') ? String(historyMode).slice(9) : 'outputs';
     const currentCategory = categories.find(item => item.id === currentCategoryId) || outputCategory;
-    const moreCategories = categories.filter(item => item.id !== 'outputs');
-    renderToolbarCategoryMenu(moreCategories, tags, all);
-    const categoryTabs = `<div class="artifact-history-tabs doc-library-tabs">
-      <button class="${historyMode === 'category:outputs' ? 'active' : ''}" onclick="HermesArtifact.setHistoryMode('category:outputs')" aria-pressed="${historyMode === 'category:outputs' ? 'true' : 'false'}">输出文档<span class="history-tab-count">${(outputCategory.files || []).length}</span></button>
-    </div>`;
-    const tabs = categoryTabs;
-    const libraryHead = renderDocLibraryHeader(all, folders, tags);
+    const documentCategories = categories.filter(item => item.id !== 'inbox');
+    const viewTitles = { 'category:outputs': '输出文档', 'category:images': '图片', 'graph': '知识图谱' };
+    const viewTitle = viewTitles[historyMode] || (currentCategory.label || currentCategory.folder || '输出文档');
+    const viewHeader = '';
     if (!all.length) {
-      hist.innerHTML = libraryHead + tabs + renderDocListEmpty();
+      hist.innerHTML = viewHeader + renderDocListEmpty();
+      return;
+    }
+    if (historyMode === 'graph') {
+      const kgTheme = currentArtifactTheme();
+      hist.innerHTML = viewHeader + '<div class="kg-iframe-wrap"><iframe id="kgGraphFrame" src="/knowledge-graph/?theme=' + kgTheme + '&v=' + Date.now() + '" style="width:100%;height:100%;border:none" frameborder="0"></iframe></div>';
+      const wrap = hist.querySelector('.kg-iframe-wrap');
+      function _syncKgHeight() {
+        if (!wrap || !hist) return;
+        const rect = hist.getBoundingClientRect();
+        wrap.style.height = Math.max(360, window.innerHeight - rect.top) + 'px';
+      }
+      _syncKgHeight();
+      if (_kgResizeObs) _kgResizeObs.disconnect();
+      _kgResizeObs = new ResizeObserver(_syncKgHeight);
+      _kgResizeObs.observe(hist);
+      const frame = document.getElementById('kgGraphFrame');
+      if (frame) {
+        frame.addEventListener('load', () => {
+          try {
+            frame.contentWindow.postMessage({ type: 'theme', theme: currentArtifactTheme(), apiBase: window.location.origin }, '*');
+            postKnowledgeGraphView();
+            setTimeout(postKnowledgeGraphView, 80);
+          } catch {}
+        });
+      }
+      return;
+    }
+    if (historyMode === 'category:images') {
+      hist.innerHTML = viewHeader + '<div class="image-waterfall-loading" style="text-align:center;padding:20px;color:var(--c-ink-muted)">加载图片中...</div>';
+      loadImageWaterfall();
       return;
     }
     if (historyMode === 'tag') {
-      hist.innerHTML = libraryHead + tabs + (tags.length ? tags.map(group => {
+      hist.innerHTML = viewHeader + (tags.length ? tags.map(group => {
         const files = (group.files || []);
         if (!files.length) return '';
         return `
@@ -1476,42 +1797,208 @@
       }).join('') || renderDocListEmpty('当前标签下还没有文档。') : renderDocListEmpty('还没有带标签的文档。'));
       return;
     }
+    if (historyMode === 'category:outputs') {
+      // 输出文档视图 — 按当前真实文件夹动态生成子 tab
+      const inboxCategory = categories.find(item => item.id === 'inbox') || { id: 'inbox', label: '临时收件箱', folder: '临时收件箱', files: all.filter(f => f.folder === '临时收件箱') };
+      const allCount = all.length;
+      const tabs = [
+        `<button class="${historySubFilter === 'all' ? 'active' : ''}" onclick="HermesArtifact.setSubFilter('all')">全部 (${allCount})</button>`,
+        ...documentCategories.map(item => `<button class="${historySubFilter === 'cat:' + item.id ? 'active' : ''}" onclick="HermesArtifact.setSubFilter('cat:${esc(String(item.id))}')">${esc(item.label || item.folder || '文档')} (${(item.files || []).length})</button>`),
+        `<button class="${historySubFilter === 'inbox' ? 'active' : ''}" onclick="HermesArtifact.setSubFilter('inbox')">临时收件箱 (${(inboxCategory.files || []).length})</button>`,
+        `<button class="doc-auto-classify-btn" onclick="HermesArtifact.autoClassify()">自动分类</button>`,
+      ];
+      const subTabs = `<div class="doc-sub-tabs">${tabs.join('')}</div>`;
+      let files, title;
+      if (historySubFilter === 'inbox') {
+        files = inboxCategory.files || [];
+        title = '临时收件箱';
+      } else if (String(historySubFilter || '').startsWith('cat:')) {
+        const subId = String(historySubFilter).slice(4);
+        const hit = categories.find(item => item.id === subId);
+        files = hit ? (hit.files || []) : [];
+        title = hit ? (hit.label || hit.folder || '文档') : '文档';
+      } else {
+        files = all;
+        title = '全部文档';
+      }
+      hist.innerHTML = viewHeader + subTabs + `<div class="history-month-group">
+        <div class="history-month-title">${esc(title)} (${files.length})</div>
+        <div class="history-cards">${files.length ? files.map(renderHistoryCard).join('') : renderDocListEmpty('暂无文档')}</div>
+      </div>`;
+      return;
+    }
     if (String(historyMode || '').startsWith('category:')) {
       const files = currentCategory.files || [];
-      const title = currentCategory.label || currentCategory.folder || '输出文档';
-      hist.innerHTML = libraryHead + tabs + `<div class="history-month-group">
+      const title = currentCategory.label || currentCategory.folder || '文档';
+      hist.innerHTML = viewHeader + `<div class="history-month-group">
         <div class="history-month-title">${esc(title)} (${files.length})</div>
         <div class="history-cards">${files.length ? files.map(renderHistoryCard).join('') : renderDocListEmpty('这个分类还没有文档。')}</div>
       </div>`;
       return;
     }
     const files = (all);
-    hist.innerHTML = libraryHead + tabs + `<div class="history-month-group">
+    hist.innerHTML = viewHeader + `<div class="history-month-group">
       <div class="history-month-title">全部 · 按时间 (${files.length})</div>
       <div class="history-cards">${files.length ? files.map(renderHistoryCard).join('') : renderDocListEmpty('暂无文档')}</div>
     </div>`;
   }
   function setHistoryMode(mode) {
+    if (_kgResizeObs && mode !== 'graph') { _kgResizeObs.disconnect(); _kgResizeObs = null; }
     historyMode = mode;
+    historySubFilter = 'all';
     historyPreview = null;
     historyCategoryMenuOpen = false;
     historyCategoryMenuPos = null;
     if (currentTab !== 'history') showHistory();
+    syncToolbarActive();
     renderHistoryList();
+  }
+  function setSubFilter(f) {
+    historySubFilter = f;
+    renderHistoryList();
+  }
+
+  // --- Image waterfall ---
+  let imageWaterfallData = null;
+
+  async function loadImageWaterfall() {
+    const hist = $('#artifactHistory');
+    if (!hist) return;
+    try {
+      const res = await fetch(apiBase() + '/api/images/', { cache: 'no-store' });
+      const data = await res.json();
+      const images = (Array.isArray(data) ? data : (data.data || data.images || [])).filter(img => img.kind === 'output' && (img.url || img.filename));
+      imageWaterfallData = images;
+      renderImageWaterfall(images);
+    } catch (e) {
+      const loading = hist.querySelector('.image-waterfall-loading');
+      if (loading) loading.textContent = '加载图片失败：' + esc(e.message);
+    }
+  }
+
+  function renderImageWaterfall(images) {
+    const hist = $('#artifactHistory');
+    if (!hist) return;
+    const tabs = hist.querySelector('.doc-library-tabs');
+    const tabsHtml = tabs ? tabs.outerHTML : '';
+    const head = hist.querySelector('.doc-library-head');
+    const headHtml = head ? head.outerHTML : '';
+    if (!images || !images.length) {
+      hist.innerHTML = headHtml + tabsHtml + '<div class="history-empty-docs"><h3>暂无图片</h3><p>生成图片后会出现在这里。</p></div>';
+      return;
+    }
+    const cards = images.map(img => {
+      const imgUrl = img.url || ('/api/images/file/' + encodeURIComponent(img.filename));
+      const prompt = esc(img.prompt || img.sourcePrompt || '无提示词');
+      return `<div class="image-waterfall-card" onclick="HermesArtifact.openImageLightbox('${esc(imgUrl)}', '${prompt.replace(/'/g, "\\'")}')">
+        <img src="${esc(imgUrl)}" alt="${prompt}" loading="lazy" />
+        <div class="image-waterfall-prompt" title="${prompt}" onclick="event.stopPropagation();HermesArtifact.copyImagePrompt(this)">${prompt}</div>
+      </div>`;
+    }).join('');
+    hist.innerHTML = headHtml + tabsHtml + '<div class="image-waterfall">' + cards + '</div>';
+  }
+
+  function openImageLightbox(url, prompt) {
+    const lb = document.getElementById('imageLightbox');
+    if (!lb) return;
+    const img = lb.querySelector('.lightbox-img');
+    const promptEl = lb.querySelector('.lightbox-prompt');
+    if (img) { img.src = url; }
+    if (promptEl) { promptEl.textContent = prompt || '无提示词'; promptEl.title = prompt || ''; }
+    lb.classList.add('open');
+  }
+
+  function closeImageLightbox() {
+    const lb = document.getElementById('imageLightbox');
+    if (lb) lb.classList.remove('open');
+  }
+
+  function copyImagePrompt(el) {
+    const text = el ? (el.textContent || el.title || '') : '';
+    if (!text) return;
+    navigator.clipboard.writeText(text).then(() => showToast('提示词已复制')).catch(() => {});
+  }
+
+  function copyLightboxPrompt() {
+    const promptEl = document.querySelector('#imageLightbox .lightbox-prompt');
+    if (!promptEl) return;
+    navigator.clipboard.writeText(promptEl.textContent || '').then(() => showToast('提示词已复制')).catch(() => {});
+  }
+
+  function showToast(msg) {
+    let t = document.getElementById('hermesToast');
+    if (!t) { t = document.createElement('div'); t.id = 'hermesToast'; t.className = 'hermes-toast'; document.body.appendChild(t); }
+    t.textContent = msg;
+    t.classList.add('show');
+    setTimeout(() => t.classList.remove('show'), 1800);
+  }
+
+  // --- Sync prompts ---
+  async function syncPrompts() {
+    const actionBtn = $('#artifactHistoryActionBtn');
+    const oldText = actionBtn ? actionBtn.textContent : '';
+    if (actionBtn) { actionBtn.disabled = true; actionBtn.textContent = '同步中…'; }
+    showToast('正在同步提示词…');
+    try {
+      const res = await fetch(apiBase() + '/api/knowledge/sync-prompts', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+      const data = await res.json();
+      if (data && data.code === 0) {
+        const d = data.data || {};
+        const parts = [];
+        if (d.synced) parts.push('新增 ' + d.synced + ' 条');
+        if (d.duplicated) parts.push('重复 ' + d.duplicated + ' 条');
+        showToast('同步完成：' + (parts.join('，') || '无新内容'));
+      } else {
+        showToast('同步失败：' + (data && data.msg ? data.msg : '未知错误'));
+      }
+    } catch (e) {
+      showToast('同步失败：' + e.message);
+    } finally {
+      if (actionBtn) { actionBtn.disabled = false; actionBtn.textContent = oldText || '同步问题'; }
+    }
+  }
+  async function syncAndRefreshGraph() {
+    await syncPrompts();
+    const frame = document.getElementById('kgGraphFrame');
+    if (frame) {
+      try { frame.contentWindow.postMessage({ type: 'refresh' }, '*'); } catch {}
+    }
+  }
+
+  // --- Auto classify ---
+  async function autoClassify() {
+    const actionBtn = $('#artifactHistoryActionBtn');
+    const oldText = actionBtn ? actionBtn.textContent : '';
+    if (actionBtn) { actionBtn.disabled = true; actionBtn.textContent = '分类中…'; }
+    showToast('正在自动分类…');
+    try {
+      const res = await fetch(apiBase() + '/api/knowledge/auto-classify', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+      const data = await res.json();
+      if (data && data.code === 0) {
+        const d = data.data || {};
+        const errors = Array.isArray(d.errors) ? d.errors.length : 0;
+        showToast('已分类 ' + (d.moved || 0) + ' 个文件' + (d.skipped ? '，跳过 ' + d.skipped + ' 个' : '') + (errors ? '，错误 ' + errors + ' 个' : ''));
+        loadHistory();
+      } else {
+        showToast('分类失败：' + (data && data.msg ? data.msg : '未知错误'));
+      }
+    } catch (e) {
+      showToast('分类失败：' + e.message);
+    } finally {
+      if (actionBtn) { actionBtn.disabled = false; actionBtn.textContent = oldText || '自动分类'; }
+    }
   }
   function toggleHistoryCategoryMenu() {
     historyCategoryMenuOpen = !historyCategoryMenuOpen;
     historyCategoryMenuPos = null;
     if (currentTab !== 'history') {
-      // Show category popover without switching tab; load data if needed
       if (!historyData) {
-        loadHistory().then(() => renderToolbarCategoryMenu(historyData?.categories, historyData?.tags, historyData?.all));
+        loadHistory().then(() => renderToolbarCategoryMenu());
       } else {
-        renderToolbarCategoryMenu(historyData?.categories, historyData?.tags, historyData?.all);
+        renderToolbarCategoryMenu();
       }
       return;
     }
-
     renderHistoryList();
   }
 
@@ -1549,16 +2036,19 @@
         recordCompletedArtifacts([{ attrs: { title: name, type: 'markdown' }, content: data.data.content }]);
         currentTitle = name;
         currentFilePath = path;
+        try { if (global.state) global.state.artifactContextIgnored = false; } catch (_) {}
         window.__hermesLastArtifactBody = data.data.content;
         window.__hermesCurrentSourceBody = data.data.content;
         historyPreview = null;
         setTab('preview');
         openRef(name);
+        notifyArtifactContextChanged();
       }
     } catch (e) {
       currentTitle = name || '没有内容';
       currentFilePath = path || '';
       openEmpty(currentTitle, e && e.message ? e.message : '读取本地 Markdown 失败。');
+      notifyArtifactContextChanged();
     }
   }
 
@@ -1623,13 +2113,79 @@
     }
   }
 
+  function historyMoveCategories(currentFolder = '') {
+    const seen = new Set();
+    const out = [];
+    const add = (folder, label, count) => {
+      const f = String(folder || '').trim();
+      if (!f || seen.has(f)) return;
+      seen.add(f);
+      out.push({ folder: f, label: String(label || f).trim(), count: Number(count || 0), current: f === currentFolder });
+    };
+    (historyData?.vaultCategories || []).forEach(item => add(item.folder || item.label, item.label || item.folder, (item.files || []).length));
+    (historyData?.folders || []).forEach(item => add(item.folder || item.name, item.name || item.folder, (item.files || []).length));
+    return out.filter(item => item.folder !== '根目录').sort((a, b) => {
+      if (a.current && !b.current) return -1;
+      if (!a.current && b.current) return 1;
+      return b.count - a.count || a.label.localeCompare(b.label, 'zh-CN');
+    });
+  }
+
+  function askMoveHistoryFileCategory(file, currentFolder) {
+    return new Promise(resolve => {
+      const categories = historyMoveCategories(currentFolder);
+      if (!categories.length) { resolve(''); return; }
+      if (typeof global.openModal !== 'function') {
+        resolve(categories.find(item => !item.current)?.folder || '');
+        return;
+      }
+      const buttons = categories.map(item => `
+        <button type="button" class="doc-move-category-btn ${item.current ? 'current' : ''}" data-folder="${esc(item.folder)}" ${item.current ? 'disabled' : ''}>
+          <span>${esc(item.label)}</span>
+          <small>${item.current ? '当前分类' : (item.count + ' 个文档')}</small>
+        </button>`).join('');
+      global.openModal(`
+        <div class="doc-rename-modal doc-move-modal">
+          <div class="doc-rename-head">
+            <div class="doc-rename-icon" aria-hidden="true">
+              <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+                <path d="M3.5 5.5h5l1.4 1.8h6.6v8.2h-13v-10Z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>
+                <path d="M7 11h6M10.5 8.5 13 11l-2.5 2.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+            </div>
+            <div class="doc-rename-title">
+              <h3>移动分类</h3>
+              <p>根据当前知识库分类选择目标位置。</p>
+            </div>
+          </div>
+          <div class="doc-move-file" title="${esc(file)}">当前：${esc(currentFolder || '未分类')}</div>
+          <div class="doc-move-category-list">${buttons}</div>
+          <div class="rename-actions">
+            <button class="btn btn-ghost" id="historyMoveCancel">取消</button>
+          </div>
+        </div>
+      `, { className: 'doc-rename-shell' });
+      setTimeout(() => {
+        const done = value => {
+          if (typeof global.closeModal === 'function') global.closeModal();
+          resolve(value || '');
+        };
+        document.querySelectorAll('.doc-move-category-btn:not([disabled])').forEach(btn => {
+          btn.addEventListener('click', () => done(btn.dataset.folder || ''));
+        });
+        const cancel = document.getElementById('historyMoveCancel');
+        if (cancel) cancel.onclick = () => done('');
+      }, 0);
+    });
+  }
+
   async function moveHistoryFile(encodedPath) {
     const file = decodeURIComponent(encodedPath || '');
     document.querySelectorAll('.history-card-menu.open').forEach(menu => menu.classList.remove('open'));
     if (!file) return;
     const currentFolder = (historyData && historyData.filesFlat || []).find(item => item.path === file)?.folder || '';
-    const nextFolder = global.prompt ? global.prompt('移动到分类文件夹：', currentFolder || '工作文档') : '';
-    if (!nextFolder || !nextFolder.trim()) return;
+    const nextFolder = await askMoveHistoryFileCategory(file, currentFolder);
+    if (!nextFolder || !nextFolder.trim() || nextFolder.trim() === currentFolder) return;
     try {
       const res = await fetch(apiBase() + '/api/system/md-library/move', {
         method: 'POST',
@@ -1778,13 +2334,16 @@
   function backToHistoryList() {
     historyPreview = null;
     renderHistoryList();
+    notifyArtifactContextChanged();
   }
 
   function showHistory() {
     historyPreview = null;
+    currentFilePath = '';
     layout = layout === 'CHAT_ONLY' ? 'SPLIT_VIEW' : layout;
     applyLayout();
     setTab('history');
+    notifyArtifactContextChanged();
   }
 
   function getCurrentBody() {
@@ -1972,6 +2531,8 @@
     getVersionList,
     typeLabel,
     showHistory,
+    getCurrentMarkdownContext,
+    setKnowledgeGraphView,
     openHistoryFile,
     previewHistoryFile,
     toggleHistoryMore,
@@ -1987,7 +2548,15 @@
     backToHistoryList,
     backFromDocumentHeader,
     setHistoryMode,
+    setSubFilter,
     toggleHistoryCategoryMenu,
+    syncPrompts,
+    syncAndRefreshGraph,
+    autoClassify,
+    openImageLightbox,
+    closeImageLightbox,
+    copyImagePrompt,
+    copyLightboxPrompt,
     insertLocalEditPrompt,
     getLocalEditContext,
     clearLocalEditContext,
@@ -1996,3 +2565,6 @@
 
   global.HermesArtifact = API;
 })(typeof window !== 'undefined' ? window : this);
+
+
+

@@ -40,6 +40,14 @@
   --c-block-navy:#1f1d3d; /* UI：头像/标签候选色，深蓝色块 */
   --c-magenta:#ff3d8b; /* UI：特殊强调色、备用高亮色 */
 
+  /* ===== 形状 / 圆角规范 ===== */
+  --r-control-sm:8px; /* 小 chip、菜单项、小控件 */
+  --r-control-md:10px; /* 普通按钮、输入框、下拉框、工具栏按钮 */
+  --r-control-lg:12px; /* 主按钮、Tab、筛选器、列表操作按钮 */
+  --r-card:20px; /* 卡片：文档、模型、设置、文件、知识列表 */
+  --r-panel:32px; /* 面板/弹窗：modal、popover、dropdown、右侧面板 */
+  --r-chat-input:24px; /* 特例：对话输入框 */
+  --r-round:999px; /* 特例：发送按钮、头像、状态点 */
   /* ===== 沉浸式对话颜色 ===== */
   --chat-page-bg:#ffffff; /* Chat：对话页面背景 */
   --chat-ink:#0d0d0d; /* Chat：AI 回复主文字 */
@@ -148,6 +156,14 @@
   --c-block-navy:#1f1d3d; /* UI：头像/标签候选色，深蓝色块 */
   --c-magenta:#ff3d8b; /* UI：特殊强调色、备用高亮色 */
 
+  /* ===== 形状 / 圆角规范 ===== */
+  --r-control-sm:8px; /* 小 chip、菜单项、小控件 */
+  --r-control-md:10px; /* 普通按钮、输入框、下拉框、工具栏按钮 */
+  --r-control-lg:12px; /* 主按钮、Tab、筛选器、列表操作按钮 */
+  --r-card:20px; /* 卡片：文档、模型、设置、文件、知识列表 */
+  --r-panel:32px; /* 面板/弹窗：modal、popover、dropdown、右侧面板 */
+  --r-chat-input:24px; /* 特例：对话输入框 */
+  --r-round:999px; /* 特例：发送按钮、头像、状态点 */
   /* ===== 沉浸式对话颜色 ===== */
   --chat-page-bg:#0a0a0a; /* Chat：对话页面背景 */
   --chat-ink:#f5f5f5; /* Chat：AI 回复主文字 */
@@ -219,3 +235,4 @@
   --md-source-num-border:var(--c-hairline-soft); /* MD：源码行号边框 */
   --md-source-num-bg:transparent; /* MD：源码行号背景 */
 }
+

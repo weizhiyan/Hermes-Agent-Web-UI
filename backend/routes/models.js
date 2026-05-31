@@ -12,6 +12,7 @@ const DEFAULTS = {
   scenarios: {
     chat: '',
     reasoning: '',
+    vision: '',
     image: '',
     fallback: '',
   },
@@ -152,6 +153,82 @@ function snippet(text = '', max = 300) {
   return String(text || '').replace(/\s+/g, ' ').trim().slice(0, max);
 }
 
+
+const TINY_PNG_BASE64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=';
+
+function uniqueTags(tags = []) {
+  return [...new Set((Array.isArray(tags) ? tags : []).map(t => String(t || '').trim()).filter(Boolean))];
+}
+
+function inferVisualCapabilitiesFromName(model = '', provider = '') {
+  const text = `${model || ''} ${provider || ''}`.toLowerCase();
+  const imageVision = /vision|vl|omni|gpt-4o|gpt-4\.1|qwen.*vl|qvq|glm-4v|gemini|claude-3|pixtral|llava|视觉|多模态|看图|识图/.test(text);
+  const videoVision = /video|gemini|qwen.*vl|qvq|视频|多模态/.test(text);
+  return { image: imageVision, video: videoVision };
+}
+
+function buildTextTestBody(apiFormat, model) {
+  if (apiFormat === 'ollama') return { model, messages: [{ role: 'user', content: '请只回复 ok' }], stream: false };
+  if (apiFormat === 'anthropic_messages') return { model, messages: [{ role: 'user', content: '请只回复 ok' }], max_tokens: 8 };
+  return { model, messages: [{ role: 'user', content: '请只回复 ok' }], max_tokens: 8 };
+}
+
+function buildVisionTestBody(apiFormat, model) {
+  if (apiFormat === 'anthropic_messages') {
+    return {
+      model,
+      max_tokens: 8,
+      messages: [{
+        role: 'user',
+        content: [
+          { type: 'image', source: { type: 'base64', media_type: 'image/png', data: TINY_PNG_BASE64 } },
+          { type: 'text', text: '这是视觉能力检测。请只回复 ok。' },
+        ],
+      }],
+    };
+  }
+  if (apiFormat === 'ollama') {
+    return { model, messages: [{ role: 'user', content: '这是视觉能力检测。请只回复 ok。', images: [TINY_PNG_BASE64] }], stream: false };
+  }
+  return {
+    model,
+    messages: [{
+      role: 'user',
+      content: [
+        { type: 'text', text: '这是视觉能力检测。请只回复 ok。' },
+        { type: 'image_url', image_url: { url: `data:image/png;base64,${TINY_PNG_BASE64}` } },
+      ],
+    }],
+    max_tokens: 8,
+  };
+}
+
+function extractChatText(apiFormat, json = {}) {
+  if (apiFormat === 'anthropic_messages') {
+    return Array.isArray(json.content) ? json.content.filter(x => x?.type === 'text').map(x => x.text || '').join('') : '';
+  }
+  return json.choices?.[0]?.message?.content || json.message?.content || json.response || '';
+}
+
+function capabilityConfigSuggestion({ providerName = '', model = '', apiFormat = 'openai-chat', textOk = false, imageVisionOk = false }) {
+  const inferred = inferVisualCapabilitiesFromName(model, providerName);
+  const tags = ['chat'];
+  if (/reason|r1|thinking|o1|o3|o4|deep|推理/i.test(model)) tags.push('reasoning');
+  if (imageVisionOk || inferred.image) tags.push('vision');
+  if (inferred.video) tags.push('video');
+  if (apiFormat === 'openai-image' || apiFormat === 'openai_image') tags.push('image');
+  return {
+    tags: uniqueTags(tags),
+    kind: (imageVisionOk || inferred.image) && !(apiFormat === 'openai-image' || apiFormat === 'openai_image') ? 'vision' : (apiFormat === 'openai-image' || apiFormat === 'openai_image' ? 'image' : 'chat'),
+    scenarios: {
+      chat: textOk,
+      vision: !!(imageVisionOk || inferred.image),
+      video: !!inferred.video,
+      image: apiFormat === 'openai-image' || apiFormat === 'openai_image',
+    },
+  };
+}
+
 function testHints({ status, apiFormat, authType, base, provider, bodyText, error }) {
   const hints = [];
   const text = `${provider || ''} ${base || ''}`;
@@ -185,6 +262,7 @@ function normalizeScenarios(scenarios = {}, library = []) {
   return {
     chat: ids.has(scenarios.chat) ? scenarios.chat : '',
     reasoning: ids.has(scenarios.reasoning) ? scenarios.reasoning : '',
+    vision: ids.has(scenarios.vision) ? scenarios.vision : '',
     image: ids.has(scenarios.image) ? scenarios.image : '',
     fallback: ids.has(scenarios.fallback) ? scenarios.fallback : '',
   };
@@ -381,7 +459,7 @@ router.post('/fetch-remote', async (req, res) => {
 
 /** 测试模型连接 */
 router.post('/test', async (req, res) => {
-  const { provider } = req.body || {};
+  const { provider, mode = 'auto', testMode = '' } = req.body || {};
   const base = provider?.base?.replace(/\/+$/, '') || '';
   const model = provider?.model || '';
   const key = provider?.key || '';
@@ -389,6 +467,8 @@ router.post('/test', async (req, res) => {
   const apiFormat = inferApiFormat(provider || {});
   const authType = inferAuthType(provider || {});
   const authHeader = provider?.authHeader || '';
+  const requestedMode = String(testMode || mode || 'auto').toLowerCase();
+  const textOnly = ['text', 'text-only', 'chat', '文本', '仅文本'].includes(requestedMode);
 
   if (!base || !model) {
     return res.json({
@@ -457,33 +537,22 @@ router.post('/test', async (req, res) => {
         hints: found ? [] : ['请确认图像模型名称是 Provider 返回的精确 ID，或在获取模型列表后重新勾选保存。'],
       });
     }
+    const requestHeaders = apiFormat === 'anthropic_messages'
+      ? anthropicHeaders({ key, authType, authHeader })
+      : authHeaders({ key, authType, authHeader });
     const result = await fetch(url, {
       method: 'POST',
-      headers: apiFormat === 'anthropic_messages'
-        ? anthropicHeaders({ key, authType, authHeader })
-        : authHeaders({ key, authType, authHeader }),
-      body: JSON.stringify(
-        apiFormat === 'ollama' ? {
-          model,
-          messages: [{ role: 'user', content: 'hi' }],
-          stream: false,
-        } : apiFormat === 'anthropic_messages' ? {
-          model,
-          messages: [{ role: 'user', content: 'hi' }],
-          max_tokens: 8,
-        } : {
-          model,
-          messages: [{ role: 'user', content: 'hi' }],
-          max_tokens: 5,
-        }
-      ),
-      signal: AbortSignal.timeout(8000),
+      headers: requestHeaders,
+      body: JSON.stringify(buildTextTestBody(apiFormat, model)),
+      signal: AbortSignal.timeout(12000),
     });
     if (!result.ok) {
       const text = await result.text().catch(() => '');
       const bodySnippet = snippet(text);
       return res.json({
         ...meta,
+        mode: textOnly ? 'text' : 'auto',
+        capabilities: { text: false, image: false, video: false },
         status: result.status,
         statusText: result.statusText,
         bodySnippet,
@@ -492,17 +561,54 @@ router.post('/test', async (req, res) => {
       });
     }
     const json = await result.json();
-    const choice = json.choices?.[0];
-    const anthropicText = Array.isArray(json.content)
-      ? json.content.filter(x => x?.type === 'text').map(x => x.text || '').join('')
-      : '';
+    const responseText = extractChatText(apiFormat, json).slice(0, 80);
+    const inferred = inferVisualCapabilitiesFromName(model, providerName);
+    let imageVisionOk = false;
+    let visionError = '';
+
+    if (!textOnly && ['openai-chat', 'ollama', 'anthropic_messages'].includes(apiFormat)) {
+      try {
+        const visionResult = await fetch(url, {
+          method: 'POST',
+          headers: requestHeaders,
+          body: JSON.stringify(buildVisionTestBody(apiFormat, model)),
+          signal: AbortSignal.timeout(15000),
+        });
+        if (visionResult.ok) {
+          imageVisionOk = true;
+        } else {
+          const visionText = await visionResult.text().catch(() => '');
+          visionError = `${visionResult.status} ${visionResult.statusText}${visionText ? ': ' + snippet(visionText, 160) : ''}`;
+        }
+      } catch (e) {
+        visionError = e.message || 'vision test failed';
+      }
+    }
+
+    const suggestedConfig = capabilityConfigSuggestion({ providerName, model, apiFormat, textOk: true, imageVisionOk });
+    const caps = {
+      text: true,
+      image: !!(imageVisionOk || inferred.image),
+      video: !!inferred.video,
+      imageVerified: !!imageVisionOk,
+      videoVerified: false,
+    };
+    const hints = [];
+    if (textOnly) hints.push('已按“仅文本对话”模式测试：不会检测/修改视觉能力配置。');
+    else if (imageVisionOk) hints.push('已通过一张 1x1 PNG 自动检测到图片识别能力，可自动写入 vision 标签并绑定图片识别场景。');
+    else if (inferred.image) hints.push('模型名看起来支持视觉，但接口视觉探测未通过；已作为候选视觉能力返回，请按服务商文档确认。');
+    if (caps.video) hints.push('模型名疑似支持视频/多模态；当前仅自动标记 video 标签，视频接口格式需按服务商文档确认。');
     return res.json({
       ...meta,
       ok: true,
+      mode: textOnly ? 'text' : 'auto',
       status: result.status,
       model: json.model || model,
-      response: (choice?.message?.content || anthropicText || '').slice(0, 80),
-      hints: [],
+      response: responseText,
+      capabilities: caps,
+      suggestedConfig,
+      visionError: imageVisionOk ? '' : visionError,
+      hints,
     });
   } catch (e) {
     const error = e.message || '\u8fde\u63a5\u5931\u8d25';
@@ -515,7 +621,7 @@ router.post('/test', async (req, res) => {
 });
 
 router.post('/benchmark', async (req, res) => {
-  const { provider } = req.body || {};
+  const { provider, mode = 'auto', testMode = '' } = req.body || {};
   const base = provider?.base?.replace(/\/+$/, '') || '';
   const model = provider?.model || '';
   const key = provider?.key || '';
@@ -523,6 +629,8 @@ router.post('/benchmark', async (req, res) => {
   const apiFormat = inferApiFormat(provider || {});
   const authType = inferAuthType(provider || {});
   const authHeader = provider?.authHeader || '';
+  const requestedMode = String(testMode || mode || 'auto').toLowerCase();
+  const textOnly = ['text', 'text-only', 'chat', '文本', '仅文本'].includes(requestedMode);
   const url = chatUrl(base, apiFormat);
   const startedAt = Date.now();
   const resultMeta = { ok: false, provider: providerName, model, apiFormat, testedUrl: url, firstTokenMs: 0, totalMs: 0, outputChars: 0, response: '', error: '' };

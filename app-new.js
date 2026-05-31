@@ -134,6 +134,49 @@ function imageSrc(item){
   return '';
 }
 
+function currentArtifactContext(){
+  try{
+    if(typeof HermesArtifact==='undefined' || typeof HermesArtifact.getCurrentMarkdownContext!=='function') return null;
+    const ctx=HermesArtifact.getCurrentMarkdownContext();
+    if(!ctx || !ctx.path) return null;
+    return ctx;
+  }catch(_){ return null; }
+}
+
+function activeArtifactContext(){
+  const ctx=currentArtifactContext();
+  return ctx && !state.artifactContextIgnored ? ctx : null;
+}
+
+function shortFileName(path='', title=''){
+  const raw=String(path||title||'当前文档');
+  const name=raw.split(/[\\/]/).pop()||String(title||'当前文档');
+  return name.replace(/\.md$/i,'');
+}
+
+function toggleArtifactContextIgnored(){
+  state.artifactContextIgnored=!state.artifactContextIgnored;
+  save();
+  syncArtifactContextChip();
+}
+
+function renderArtifactContextChip(){
+  const ctx=currentArtifactContext();
+  if(!ctx) return '';
+  const ignored=!!state.artifactContextIgnored;
+  const title=shortFileName(ctx.path,ctx.title);
+  return `<div class="chat-context-chip${ignored?' ignored':''}" title="${ignored?'已忽略当前 Markdown 文件':'当前 Markdown 文件：'+esc(ctx.path)}">
+    <span class="chat-context-file">${SVG.file}</span>
+    <span class="chat-context-text">${ignored?'已忽略':esc(title)}</span>
+    <button type="button" class="chat-context-eye" onclick="toggleArtifactContextIgnored()" aria-label="${ignored?'恢复引用当前文件':'忽略当前文件'}" title="${ignored?'恢复引用当前文件':'忽略当前文件'}">${SVG.eye}</button>
+  </div>`;
+}
+
+function syncArtifactContextChip(){
+  const slot=$('#chatArtifactContextSlot');
+  if(slot) slot.innerHTML=renderArtifactContextChip();
+}
+
 async function apiGet(path) {
   try {
     const r = await fetch(apiBase() + path, { cache:'no-store', headers: { 'Accept': 'application/json', 'Cache-Control':'no-cache' } });
@@ -323,6 +366,7 @@ const state={
   streamAbort: null,
   currentAssistantMsgId: null,
   _artifactNeedsHydrate: true,
+  artifactContextIgnored: LS.get('hermes.artifactContextIgnored', false),
   memories: LS.get('hermes.memories',{core:'',context:'',episodes:[]}),
   memory: { data:null, selectedType:'core', selectedId:null, current:null, mode:'preview', loading:false, failed:false, editDraft:null, conversationView:'all', sidebarScroll:0 },
   selectedChannel: null,
@@ -335,9 +379,11 @@ const state={
   }),
 };
 if (typeof window !== 'undefined') window.state = state;
+if (typeof window !== 'undefined') window.scheduleAppRender = scheduleAppRender;
+if (typeof window !== 'undefined') window.syncArtifactContextChip = syncArtifactContextChip;
 
 function blankModelsConfigClient(){
-  return { params:{temperature:0.7,maxTokens:4096,topP:1}, current:'', library:[], scenarios:{chat:'',reasoning:'',image:'',fallback:''} };
+  return { params:{temperature:0.7,maxTokens:4096,topP:1}, current:'', library:[], scenarios:{chat:'',reasoning:'',vision:'',image:'',fallback:''} };
 }
 function isScopedModelsRoot(data){
   return !!(data && typeof data==='object' && (data.webui || data.agent));
@@ -386,6 +432,14 @@ function syncStateModelFromModelsConfig(cfg=activeModelsConfig()){
     topP: cfg.params?.topP || state.model.topP || 1,
     maxTokens: cfg.params?.maxTokens || state.model.maxTokens || 4096,
   };
+}
+async function persistModelsConfig(cfg=activeModelsConfig()){
+  const data=await apiPut('/api/models'+modelScopeParam(), cfg);
+  if(!data){toast('模型配置保存失败，请检查后端连接','error');return null}
+  setActiveModelsConfig(data);
+  syncStateModelFromModelsConfig(data);
+  save();
+  return data;
 }
 function setModelConfigScope(scope){
   state.modelConfigScope = scope==='agent' ? 'agent' : 'webui';
@@ -475,6 +529,7 @@ function save(){
   LS.set('hermes.gateways',state.gateways);
   LS.set('hermes.groupChat',state.groupChat);
   LS.set('hermes.activeProfile',state.activeProfile);
+  LS.set('hermes.artifactContextIgnored',!!state.artifactContextIgnored);
 }
 
 function navigate(page){
@@ -613,9 +668,9 @@ function renderChat(){
       <div class="session-sidebar" id="sessionSidebar">
         <div class="session-sidebar-header">
           <div class="session-create-row">
-            <button class="agent-switch-btn" id="chatAgentSwitchBtn" onclick="newChat(getActiveProfile())" title="使用当前 Agent 新建对话">
+            <button class="agent-switch-btn" id="chatAgentSwitchBtn" onclick="newChat(getMainWebProfile())" title="新建主 Agent 对话">
               <span class="chat-agent-avatar">+</span>
-              <span class="agent-switch-copy"><strong>新建对话</strong><small>当前 Agent</small></span>
+              <span class="agent-switch-copy"><strong>新建对话</strong><small>主 Agent</small></span>
             </button>
             <button class="history-btn compact" onclick="openHistoryPopup()" title="历史记录">${SVG.history}</button>
           </div>
@@ -688,6 +743,7 @@ function renderChat(){
                 <button class="input-action-btn toolbar-icon-btn" onclick="toggleSkillPopup()" title="技能" aria-label="技能" id="skillPopupBtn">${SVG.skills}</button>
               </div>
               <div class="chat-input-right">
+                <div id="chatArtifactContextSlot" class="chat-artifact-context-slot">${renderArtifactContextChip()}</div>
                 <button class="input-action-btn" onclick="toggleModelPopup()" title="选择模型" id="modelPopupBtn" style="font-size:var(--fs-xs);font-family:var(--font-mono);width:auto;padding:0 8px">${esc(state.chatModelOverride==='auto'?'自动':(getModelById(state.chatModelOverride)?.name||state.model.model))}</button>
                 <button class="send-btn${state.isStreaming?' stop':''}" id="sendBtn" onclick="${state.isStreaming?'stopGeneration()':'sendMessage()'}" title="${state.isStreaming?'终止任务':'发送'}">${state.isStreaming?'<span class="stop-square"></span>':SVG.send}</button>
               </div>
@@ -712,6 +768,24 @@ function renderChat(){
       <aside class="artifact-shell" id="artifactShell" aria-label="Artifact"></aside>
       </div>
     </div>`;
+}
+
+function refreshChatWithoutArtifact(){
+  const currentShell=document.querySelector('#artifactShell.open');
+  if(!currentShell) return false;
+  const temp=document.createElement('div');
+  temp.innerHTML=renderChat();
+  const nextSession=temp.querySelector('#sessionSidebar');
+  const nextMain=temp.querySelector('#chatMainPane');
+  const session=document.querySelector('#sessionSidebar');
+  const main=document.querySelector('#chatMainPane');
+  if(!nextSession||!nextMain||!session||!main) return false;
+  session.replaceWith(nextSession);
+  main.replaceWith(nextMain);
+  initChat();
+  enhanceMessageMarkdown(document.getElementById('chatMainPane'));
+  syncArtifactContextChip();
+  return true;
 }
 
 let skillCenterTab = 'skills';
@@ -1155,7 +1229,8 @@ function getDefaultChatAgent(){
 }
 
 function renderAgentDock(){
-  const activeId=currentChat()?.agentId||getDefaultChatAgent()?.id||state.activeProfile||'default';
+  const cur=currentChat();
+  const activeId=isFixedAgentMainChat(cur) ? (cur?.agentId||'') : (state.activeProfile||getDefaultChatAgent()?.id||'default');
   return visibleChatAgents().map(p=>{
     const disabled=p.enabled===false;
     const active=activeId===p.id;
@@ -1170,7 +1245,7 @@ async function openAgentMainChat(id){
   const profile=getProfiles().find(p=>p.id===id)||getActiveProfile();
   if(profile?.enabled===false){toast('Agent 已关闭','info');return}
   state.activeProfile=profile.id;
-  const existing=state.chats.find(c=>!isCliChat(c)&&c.agentId===profile.id&&c.isMainAgentChat);
+  const existing=state.chats.find(c=>isFixedAgentMainChat(c)&&c.agentId===profile.id);
   save();
   if(existing){await selectChat(existing.id);return}
   await newChat(profile,{isMainAgentChat:true,chatType:'main',title:profile.name+' · 主对话'});
@@ -1573,7 +1648,9 @@ function renderSessionSearch(query){
 
 function renderSessionList(query=''){
   const q=String(query||'').trim().toLowerCase();
-  const sorted = [...state.chats].filter(c=>!q || String(c.title||'').toLowerCase().includes(q) || String(c.agentName||'').toLowerCase().includes(q) || String(c.preview||'').toLowerCase().includes(q)).sort(compareChatCreatedDesc);
+  const sorted = visibleSessionChats()
+    .filter(c=>!q || String(c.title||'').toLowerCase().includes(q) || String(c.agentName||'').toLowerCase().includes(q) || String(c.preview||'').toLowerCase().includes(q))
+    .sort(compareChatCreatedDesc);
   const groups={webui:[],terminal:[]};
   sorted.forEach(c=>{
     groups[isCliChat(c)?'terminal':'webui'].push(c);
@@ -2365,6 +2442,15 @@ function currentChatFull(){return state.chatFullData[state.currentChat]}
 function isCliChat(c){
   return !!c && (((c.source||'').toLowerCase()==='cli') || sourceTagClass(c.source||'')==='terminal' || c.readOnly);
 }
+function isFixedAgentMainChat(c){
+  return !!c && !isCliChat(c) && (c.isMainAgentChat || c.chatType === 'main');
+}
+function isDefaultWebChat(c){
+  return !!c && !isCliChat(c) && !isFixedAgentMainChat(c);
+}
+function visibleSessionChats(){
+  return state.chats.filter(c => isCliChat(c) || isDefaultWebChat(c));
+}
 
 async function removeChat(id,{silent=false}={}){
   const c=state.chats.find(x=>x.id===id);
@@ -2377,7 +2463,7 @@ async function removeChat(id,{silent=false}={}){
   }
   state.chats=state.chats.filter(x=>x.id!==id);
   delete state.chatFullData[id];
-  if(state.currentChat===id) state.currentChat=state.chats.sort(compareChatCreatedDesc)[0]?.id||null;
+  if(state.currentChat===id) state.currentChat=visibleSessionChats().sort(compareChatCreatedDesc)[0]?.id||null;
   if(!silent) toast(cli?'已从 WebUI 隐藏该终端会话':'已删除', 'info');
   return true;
 }
@@ -2430,11 +2516,10 @@ async function selectChat(id){
   const artifactHistory=document.querySelector('#artifactHistory');
   const keepKnowledgeOpen=!!(artifactShell && artifactHistory && getComputedStyle(artifactHistory).display!=='none');
   state.currentChat = id;
-  state._artifactNeedsHydrate = true;
+  state._artifactNeedsHydrate = !keepKnowledgeOpen;
   if (typeof HermesArtifact !== 'undefined') {
     try {
-      if (keepKnowledgeOpen) state._keepKnowledgeOpen = true;
-      else { HermesArtifact.resetSession(); HermesArtifact.setLayout('chat'); }
+      if (!keepKnowledgeOpen) { HermesArtifact.resetSession(); HermesArtifact.setLayout('chat'); }
     } catch (_) {}
   }
   // Load full chat data from backend if not cached
@@ -2469,18 +2554,18 @@ async function selectChat(id){
   }
   const selected=state.chats.find(x=>x.id===id);
   const agentId=selected?.agentId||state.chatFullData[id]?.agentId||'';
-  if(agentId){
+  if(agentId && isFixedAgentMainChat(selected)){
     const p=getProfiles().find(x=>x.id===agentId&&x.enabled!==false);
     if(p) state.activeProfile=p.id;
   }
-  renderPage();
+  if(keepKnowledgeOpen){
+    refreshChatWithoutArtifact();
+  }else{
+    renderPage();
+  }
   requestAnimationFrame(()=>{
     const list=$('#sessionItems');
     if(list) list.scrollTop=sessionScrollTop;
-    if(state._keepKnowledgeOpen){
-      state._keepKnowledgeOpen=false;
-      openKnowledgePanel();
-    }
   });
 }
 
@@ -2810,8 +2895,11 @@ async function sendImageGenerationMessage(txt,pendingImages=[]){
     }
   }finally{
     assistantMsg._streaming=false;
+    state.forceImageGeneration=false;
     renderMsgUpdate(msgId,assistantMsg);
+    flushMsgUpdates();
     setStreamingState(false,null,null);
+    save();
   }
 }
 
@@ -2827,7 +2915,7 @@ async function sendMessage(){
   
   // Create chat if needed
   if(!state.currentChat) {
-    const profile=getActiveProfile();
+    const profile=getMainWebProfile();
     const data = await apiPost('/api/chats', { title: '新建对话', agentId: profile?.id||'', agentName: profile?.name||'' });
     if (data) {
       state.chats.push({ id: data.id, title: data.title, source:data.source||'WebUI', messages: [], updatedAt: data.updatedAt, createdAt:data.createdAt, agentId: profile?.id||'' });
@@ -2858,6 +2946,7 @@ async function sendMessage(){
   const localEditContext=typeof HermesArtifact!=='undefined' && typeof HermesArtifact.getLocalEditContext==='function'
     ? HermesArtifact.getLocalEditContext()
     : null;
+  const artifactContext=activeArtifactContext();
   const localEditAgentContext=localEditContext ? [
     '\n\n<webui_local_edit_context>',
     '任务类型：知识库文档局部编辑',
@@ -2869,10 +2958,19 @@ async function sendMessage(){
     localEditContext.selectedText||'',
     '</webui_local_edit_context>'
   ].join('\n') : '';
-  const contentWithAttachments=txt+agentAttachmentContext+localEditAgentContext;
+  const artifactAgentContext=artifactContext && !localEditContext ? [
+    '\n\n<webui_current_markdown_context>',
+    '任务类型：当前 Markdown 文档上下文',
+    `文档标题：${artifactContext.title||shortFileName(artifactContext.path)}`,
+    `文档路径：${artifactContext.path}`,
+    '说明：用户正在预览这个本地 Markdown 文件。若用户要求修改/优化/续写，请优先针对该文件；需要写回时请读取并保存同一路径。',
+    '</webui_current_markdown_context>'
+  ].join('\n') : '';
+  const contentWithAttachments=txt+agentAttachmentContext+localEditAgentContext+artifactAgentContext;
   const userMsgId = 'u_' + Date.now();
   const userMsg = {role:'user',content:txt,agentContent:contentWithAttachments,ts:Date.now(),attachments:pendingImages,_msgId:userMsgId};
   if(localEditContext) userMsg.localEditContext=localEditContext;
+  if(artifactContext && !localEditContext) userMsg.artifactContext=artifactContext;
   c.messages.push(userMsg);
   if(c.title==='新建对话') c.title=(txt||'图片任务').slice(0,24);
   c.updatedAt=Date.now();
@@ -2916,7 +3014,7 @@ async function sendMessage(){
     content: contentWithAttachments,
     displayContent: txt,
     attachments: pendingImages,
-    scene:'chat',
+    scene:pendingImages.length?'vision':'chat',
     model:requestModel,
     profileId:profile?.id,
     profileName:profile?.name||'默认助手',
@@ -3958,6 +4056,9 @@ function agentChatPayload(profile){
   return { title:'新建对话', agentId:snap.id, agentName:snap.name, modelId:snap.modelId, profileId:snap.id, profileName:snap.name, profilePrompt:snap.systemPrompt, profileSkillIds:snap.skillIds, agentRole:snap.role||'', knowledgeFocus:snap.knowledgeFocus||[] };
 }
 
+function getMainWebProfile(){
+  return getProfiles().find(p=>p.id==='default'&&p.enabled!==false) || getProfiles().find(p=>p.id==='default') || getActiveProfile();
+}
 function getActiveProfile(){
   const profiles=getProfiles();
   let p=profiles.find(p=>p.id===state.activeProfile&&p.enabled!==false);
@@ -5456,14 +5557,28 @@ function renderModels(){
   const scenarios=[
     {key:'chat',title:'普通对话',desc:'默认聊天、日常问答和轻量任务。'},
     {key:'reasoning',title:'深度推理',desc:'复杂分析、规划和长链路任务。'},
+    {key:'vision',title:'图片识别',desc:'看图、识图和多模态图片分析。'},
     {key:'image',title:'图像生成',desc:'绘图、改图和图片 Prompt 工作流。'},
     {key:'fallback',title:'失败退回',desc:'主模型不可用时自动兜底。'}
   ];
   const enabledLib=lib.filter(m=>m.enabled!==false);
-  const optionHtml=(selected)=>'<option value="">选择模型</option>'+enabledLib.map(m=>'<option value="'+esc(m.id)+'"'+(selected===m.id?' selected':'')+'>'+esc(m.name)+' · '+esc(m.provider||'custom')+'</option>').join('');
+  const isImageLibraryModel=(m)=>{
+    const tags=(m.tags||[]).map(t=>String(t).toLowerCase());
+    return ['openai-image','openai_image'].includes(m.apiFormat)||m.kind==='image'||(tags.includes('image')&&!tags.includes('vision'));
+  };
+  const isVisionLibraryModel=(m)=>{
+    const tags=(m.tags||[]).map(t=>String(t).toLowerCase());
+    return !isImageLibraryModel(m) && (m.kind==='vision'||tags.includes('vision')||/vision|omni|vl|视觉|多模态|看图|识图/i.test([m.name,m.provider,...(m.tags||[])].join(' ')));
+  };
+  const modelsForScenario=(key)=>key==='image'
+    ? enabledLib.filter(isImageLibraryModel)
+    : (key==='vision'?enabledLib.filter(isVisionLibraryModel):enabledLib.filter(m=>!isImageLibraryModel(m)));
+  const optionHtml=(selected,key)=>'<option value="">选择模型</option>'+modelsForScenario(key).map(m=>'<option value="'+esc(m.id)+'"'+(selected===m.id?' selected':'')+'>'+esc(m.name)+' · '+esc(m.provider||'custom')+'</option>').join('');
   const cards=scenarios.map(item=>{
     const selected=scenarioModel(item.key);
-    return '<div class="scenario-card"><div><strong>'+esc(item.title)+'</strong><p>'+esc(item.desc)+'</p></div><select onchange="setScenarioModel(\''+item.key+'\',this.value)">'+optionHtml(selected)+'</select></div>';
+    const list=modelsForScenario(item.key);
+    const warning=item.key==='image'&&!list.length?'<div class="scenario-warning">请先添加接口格式为 OpenAI 图像的模型。</div>':(item.key==='vision'&&!list.length?'<div class="scenario-warning">请先添加带 vision 标签或多模态名称的聊天模型。</div>':'');
+    return '<div class="scenario-card"><div><strong>'+esc(item.title)+'</strong><p>'+esc(item.desc)+'</p></div><select onchange="setScenarioModel(\''+item.key+'\',this.value)">'+optionHtml(selected,item.key)+'</select>'+warning+'</div>';
   }).join('');
   const groups={};
   lib.forEach(m=>{ const k=m.provider||'Custom'; (groups[k]||(groups[k]=[])).push(m); });
@@ -5582,16 +5697,24 @@ async function addSelectedFetchedModels(){
   selected.forEach(name=>{
     existing.set(f.provider+':'+name,{
       id:f.provider+':'+name,provider:f.provider,name,base:f.base,key:f.key,enabled:true,
-      tags:inferModelTags(name),kind:'chat',apiFormat:f.apiFormat,authType:f.authType,authHeader:f.authHeader,
+      tags:[...new Set([...(inferModelTags(name)), ...(f.apiFormat==='openai-image'?['image']:[])])],kind:f.apiFormat==='openai-image'?'image':(inferModelTags(name).includes('vision')?'vision':'chat'),apiFormat:f.apiFormat,authType:f.authType,authHeader:f.authHeader,
     });
   });
   cfg.library=[...existing.values()];
   cfg.current=cfg.current||f.provider+':'+selected[0];
   cfg.scenarios={...(cfg.scenarios||{})};
-  if(!cfg.scenarios.chat) cfg.scenarios.chat=f.provider+':'+selected[0];
-  const reasoning=selected.find(n=>inferModelTags(n).includes('reasoning'));
-  if(reasoning&&!cfg.scenarios.reasoning) cfg.scenarios.reasoning=f.provider+':'+reasoning;
-  await persistModelsConfig(cfg);
+  const firstId=f.provider+':'+selected[0];
+  if(f.apiFormat==='openai-image'){
+    if(!cfg.scenarios.image) cfg.scenarios.image=firstId;
+  }else{
+    if(!cfg.scenarios.chat) cfg.scenarios.chat=firstId;
+    const reasoning=selected.find(n=>inferModelTags(n).includes('reasoning'));
+    if(reasoning&&!cfg.scenarios.reasoning) cfg.scenarios.reasoning=f.provider+':'+reasoning;
+    const vision=selected.find(n=>inferModelTags(n).includes('vision'));
+    if(vision&&!cfg.scenarios.vision) cfg.scenarios.vision=f.provider+':'+vision;
+  }
+  const data=await persistModelsConfig(cfg);
+  if(!data) return;
   toast('已添加 '+selected.length+' 个模型','success');
   renderPage();
 }
@@ -5644,10 +5767,20 @@ async function doSaveModel(existingId,shouldTest=false){
   const tags=[...document.querySelectorAll('.addModelTag:checked')].map(c=>c.value);
   const id=existingId||`${provider}:${name}`;
   const enabled=$('#addModelEnabled')?.value!=='0';
-  const item={...old,id,provider,name,base:values.base,key:values.key,enabled,tags:tags.length?tags:inferModelTags(name),kind:'chat',apiFormat:values.apiFormat,authType:values.authType,authHeader:values.authHeader};
+  const finalTags=tags.length?tags:inferModelTags(name);
+  if(values.apiFormat==='openai-image'&&!finalTags.includes('image')) finalTags.push('image');
+  const item={...old,id,provider,name,base:values.base,key:values.key,enabled,tags:finalTags,kind:values.apiFormat==='openai-image'?'image':(finalTags.includes('vision')?'vision':'chat'),apiFormat:values.apiFormat,authType:values.authType,authHeader:values.authHeader};
   const data=await apiPost('/api/models/library'+modelScopeParam(),item);
   if(data){
     setActiveModelsConfig(data);
+    const savedCfg=activeModelsConfig();
+    if(values.apiFormat==='openai-image' && !savedCfg.scenarios?.image){
+      savedCfg.scenarios={...(savedCfg.scenarios||{}),image:id};
+      await persistModelsConfig(savedCfg);
+    }else if(finalTags.includes('vision') && !savedCfg.scenarios?.vision){
+      savedCfg.scenarios={...(savedCfg.scenarios||{}),vision:id};
+      await persistModelsConfig(savedCfg);
+    }
     state.model={...state.model,provider,model:name,base:values.base,key:values.key};
     save();
     closeModal();
@@ -5669,6 +5802,14 @@ function buildModelTestModal(model,result){
   const hints=Array.isArray(result.hints)?result.hints:[];
   const canQuickFix=(result.apiFormat==='ollama'||model.apiFormat==='ollama') && !/127\.0\.0\.1:11434|localhost:11434|ollama/i.test(`${model.base} ${model.provider}`);
   const canAnthropicFix=(model.apiFormat||result.apiFormat)==='openai-chat' && /claude|kiro|anthropic/i.test(`${model.name} ${model.provider}`);
+  const caps=result.capabilities||{};
+  const suggested=result.suggestedConfig||{};
+  const capItems=[];
+  if('text' in caps) capItems.push('文本对话：'+(caps.text?'支持':'未通过'));
+  if('image' in caps) capItems.push('图片识别：'+(caps.image?(caps.imageVerified?'已验证':'疑似支持'):'未检测到'));
+  if('video' in caps) capItems.push('视频识别：'+(caps.video?(caps.videoVerified?'已验证':'疑似支持'):'未检测到'));
+  const suggestedTags=Array.isArray(suggested.tags)?suggested.tags:[];
+  const autoApplied=!!result.autoApplied;
   return `<div class="model-test-modal">
     <div class="model-test-head ${ok?'ok':'fail'}">
       <span>${ok?'连接成功':'连接失败'}</span>
@@ -5678,12 +5819,17 @@ function buildModelTestModal(model,result){
       <div><span>测试地址</span><code>${esc(result.testedUrl||'未生成')}</code></div>
       <div><span>API 格式</span><code>${esc(apiFormatLabel(result.apiFormat||model.apiFormat))}</code></div>
       <div><span>认证方式</span><code>${esc(result.authHeader||authTypeLabel(model.authType,model.authHeader))}</code></div>
+      <div><span>测试模式</span><code>${esc((result.mode==='text'||result.mode==='text-only')?'仅文本对话':'自动检测能力')}</code></div>
       <div><span>状态</span><code>${esc(result.status?`${result.status} ${result.statusText||''}`:(ok?'OK':'未连接'))}</code></div>
+      ${suggestedTags.length?`<div><span>建议标签</span><code>${esc(suggestedTags.join(', '))}</code></div>`:''}
     </div>
+    ${capItems.length?`<div class="model-test-hints"><strong>能力检测</strong>${capItems.map(h=>`<p>${esc(h)}</p>`).join('')}${autoApplied?'<p>已自动写入模型标签/类型，并补全对应应用场景。</p>':''}</div>`:''}
+    ${result.visionError?`<div class="model-test-error">视觉探测未通过：${esc(result.visionError)}</div>`:''}
     ${result.error?`<div class="model-test-error">${esc(result.error)}</div>`:''}
     ${result.bodySnippet?`<pre class="model-test-snippet">${esc(result.bodySnippet)}</pre>`:''}
     ${hints.length?`<div class="model-test-hints"><strong>建议排查</strong>${hints.map(h=>`<p>${esc(h)}</p>`).join('')}</div>`:''}
     <div class="model-editor-actions">
+      ${ok&&suggestedTags.length&&!autoApplied?`<button class="btn btn-secondary" onclick="applyModelCapabilityConfig('${esc(model.id)}',${esc(JSON.stringify(result))})">写入检测配置</button>`:''}
       ${canQuickFix?`<button class="btn btn-secondary" onclick="quickFixOpenAICompat('${esc(model.id)}')">改为 OpenAI 兼容 + Bearer 后重试</button>`:''}
       ${canAnthropicFix?`<button class="btn btn-secondary" onclick="quickFixAnthropicMessages('${esc(model.id)}')">改为 Anthropic Messages 后重试</button>`:''}
       <button class="btn btn-secondary" onclick="editLibraryModel('${esc(model.id)}')">编辑配置</button>
@@ -5738,20 +5884,47 @@ async function benchmarkLibraryModel(id){
   }
 }
 
+async function applyModelCapabilityConfig(id,result,opts={}){
+  const suggested=result?.suggestedConfig||{};
+  const tags=Array.isArray(suggested.tags)?suggested.tags:[];
+  if(!tags.length) return false;
+  const cfg=activeModelsConfig();
+  const item=(cfg.library||[]).find(x=>x.id===id);
+  if(!item) return false;
+  item.tags=[...new Set([...(item.tags||[]),...tags])];
+  if(suggested.kind) item.kind=suggested.kind;
+  cfg.scenarios={...(cfg.scenarios||{})};
+  const scenes=suggested.scenarios||{};
+  if(scenes.chat && !cfg.scenarios.chat) cfg.scenarios.chat=id;
+  if(scenes.vision) cfg.scenarios.vision=id;
+  if(scenes.image && !cfg.scenarios.image) cfg.scenarios.image=id;
+  if(item.tags.includes('reasoning') && !cfg.scenarios.reasoning) cfg.scenarios.reasoning=id;
+  const data=await persistModelsConfig(cfg);
+  if(data) setActiveModelsConfig(data);
+  if(!opts.silent){toast('已写入能力检测配置','success');closeModal();renderPage();}
+  return !!data;
+}
 async function testLibraryModel(id){
   const m=getModelById(id);
   if(!m){toast('模型不存在','error');return}
   const btn=$(`#modelTestBtn_${domId(id)}`);
+  const mode=$(`#modelTestMode_${domId(id)}`)?.value||'auto';
   if(btn){btn.disabled=true;btn.textContent='测试中...'}
   try{
-    const r=await fetch(apiBase()+'/api/models/test',{method:'POST',cache:'no-store',headers:{'Content-Type':'application/json','Cache-Control':'no-cache'},body:JSON.stringify({provider:{provider:m.provider,base:m.base,model:m.name,key:m.key,apiFormat:m.apiFormat,authType:m.authType,authHeader:m.authHeader}})});
+    const r=await fetch(apiBase()+'/api/models/test',{method:'POST',cache:'no-store',headers:{'Content-Type':'application/json','Cache-Control':'no-cache'},body:JSON.stringify({mode,testMode:mode,provider:{provider:m.provider,base:m.base,model:m.name,key:m.key,apiFormat:m.apiFormat,authType:m.authType,authHeader:m.authHeader}})});
     const j=await r.json().catch(()=>({}));
-    openModal(buildModelTestModal(m,j));
-    toast(j.ok?'连接成功':'连接失败',j.ok?'success':'error');
+    if(j.ok && mode!=='text' && j.suggestedConfig){
+      j.autoApplied=await applyModelCapabilityConfig(id,j,{silent:true});
+    }
+    const latest=getModelById(id)||m;
+    openModal(buildModelTestModal(latest,j));
+    toast(j.ok?(j.autoApplied?'连接成功，已自动配置能力':'连接成功'):'连接失败',j.ok?'success':'error');
+    if(j.autoApplied) renderPage();
   }catch(e){
-    openModal(buildModelTestModal(m,{ok:false,error:e.message,hints:['后端测试接口不可达，请确认 WebUI 后端服务已启动。']}));
+    openModal(buildModelTestModal(m,{ok:false,mode,error:e.message,hints:['后端测试接口不可达，请确认 WebUI 后端服务已启动。']}));
   }finally{
-    if(btn){btn.disabled=false;btn.textContent='测试'}
+    const nextBtn=$(`#modelTestBtn_${domId(id)}`);
+    if(nextBtn){nextBtn.disabled=false;nextBtn.textContent='测试'}
   }
 }
 
@@ -6016,8 +6189,8 @@ function renderSettings(){
         <div class="settings-item"><div><div class="settings-label">历史归档目录</div><div class="settings-desc">对话自动导出的 Markdown 历史；留空使用 数据根目录\\history-md。</div></div>
           <input id="sHistoryDir" value="${esc(state.settings.historyDir||'')}" placeholder="留空自动匹配数据根目录\\history-md" style="width:420px">
         </div>
-        <div class="settings-item"><div><div class="settings-label">MD 输出库目录</div><div class="settings-desc">右侧“历史文件”读取 Agent 输出文章/报告等 Markdown 的独立文件夹；留空使用 backend/data/output-md。</div></div>
-          <input id="sMdLibraryDir" value="${esc(state.settings.mdLibraryDir||'')}" placeholder="留空自动匹配数据根目录\\output-md" style="width:420px">
+        <div class="settings-item"><div><div class="settings-label">?????</div><div class="settings-desc">??? Markdown ?????????????????????????????????????</div></div>
+          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><input id="sMdLibraryDir" value="${esc(state.settings.mdLibraryDir||'')}" placeholder="??????????????\output-md" style="width:420px"><button class="btn btn-secondary" type="button" onclick="openPathFromSetting('md')">????</button></div>
         </div>
         <div class="settings-item"><div><div class="settings-label">迁移检查</div><div class="settings-desc">如果旧 backend/data 和外部目录同时存在，建议确认后再手动合并数据，避免覆盖。</div></div>
           <button class="btn btn-secondary" onclick="openPathFromSetting('data')">打开当前数据目录</button>
@@ -6633,7 +6806,6 @@ function profileModal(profile){
           <div class="agent-avatar-actions">
             <button class="btn btn-xs btn-secondary" onclick="document.getElementById('pfAvatarInput').click()">更换头像</button>
             <button class="btn btn-xs btn-ghost" onclick="resetProfileAvatar()">恢复默认头像</button>
-            <button class="btn btn-xs btn-secondary" onclick="closeModal();skillCenterTab='memory';navigate('skills');setTimeout(()=>openAgentMemory('${esc(p.id||'default')}'),0)">查看记忆</button>
           </div>
           <input id="pfAvatarInput" type="file" accept="image/*" style="display:none" onchange="handleProfileAvatarInput(this)">
         </div>
@@ -7435,4 +7607,8 @@ function toggleSecretInput(id, btn){
   input.type=show?'text':'password';
   if(btn) btn.classList.toggle('active', show);
 }
+
+
+
+
 
