@@ -6,6 +6,7 @@ const { spawn } = require('child_process');
 const store = require('../services/store');
 const { chatStream } = require('../services/llm');
 const { discoverExternalSkills, externalSkillRoots, normalizeFsPath, samePath, skillFiles: discoverSkillFiles } = require('../services/skillDiscovery');
+const { builtinSkills, isBuiltinLike } = require('../services/builtinSkills');
 
 const router = express.Router();
 
@@ -18,7 +19,7 @@ function modelConfigForScope(scope = 'webui') {
 }
 const KEY = 'skills';
 const LOCAL_DIR = path.join(store.DATA_DIR, 'skills-local');
-const DEFAULTS = [];
+const DEFAULTS = builtinSkills();
 
 function ensureDir() {
   if (!fs.existsSync(LOCAL_DIR)) fs.mkdirSync(LOCAL_DIR, { recursive: true });
@@ -47,7 +48,7 @@ function skillFiles(item) {
 function normalize(list) {
   const incoming = Array.isArray(list) ? list : [];
   const byId = new Map(incoming.map(item => [item.id, item]));
-  const external = discoverExternalSkills().map(item => {
+  const external = discoverExternalSkills().filter(item => !isBuiltinLike(item)).map(item => {
     const old = incoming.find(x => x && (x.id === item.id || samePath(x.path, item.path) || x.name === item.name));
     return old ? { ...item, on: old.on !== undefined ? old.on : item.on, enabled: old.enabled !== undefined ? old.enabled : old.on, pinned: old.pinned, useCount: old.useCount, viewCount: old.viewCount } : item;
   });
@@ -59,6 +60,7 @@ function normalize(list) {
     .filter(item => item && item.id && !DEFAULTS.some(def => def.id === item.id))
     .filter(item => item.source !== 'builtin')
     .filter(item => item.source !== 'external')
+    .filter(item => !isBuiltinLike(item))
     .filter(item => !external.some(ext => ext.id === item.id || samePath(ext.path, item.path) || ext.name === item.name))
     .map(item => ({ ...item, path: item.path ? normalizeFsPath(item.path) : item.path, source: item.source || ((item.tags || []).includes('用户制作') ? 'user' : 'custom') }))
     .filter(item => {

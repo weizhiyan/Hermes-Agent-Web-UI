@@ -9,6 +9,8 @@ const { directApiStream } = require('../services/llm');
 const { captureKnowledge } = require('../services/knowledgeCapture');
 
 const router = express.Router();
+const IMAGE_API_TIMEOUT_MS = Math.max(120000, Number(process.env.WEBUI_IMAGE_API_TIMEOUT_MS || 600000));
+const IMAGE_DOWNLOAD_TIMEOUT_MS = Math.max(60000, Number(process.env.WEBUI_IMAGE_DOWNLOAD_TIMEOUT_MS || 180000));
 
 
 function captureImageGenerationRecord({ sourcePrompt = '', prompt = '', inputs = [], outputs = [], model = '', provider = '', mode = '', chatId = '', optimizedByAgent = false } = {}) {
@@ -250,6 +252,24 @@ function parseDataUrl(dataUrl = '', explicitMime = '') {
   return { buffer, mime: explicitMime || 'image/png' };
 }
 
+function detectImageMime(buffer) {
+  if (!Buffer.isBuffer(buffer) || buffer.length < 12) return '';
+  if (buffer[0] === 0x89 && buffer[1] === 0x50 && buffer[2] === 0x4e && buffer[3] === 0x47) return 'image/png';
+  if (buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) return 'image/jpeg';
+  if (buffer.slice(0, 4).toString('ascii') === 'RIFF' && buffer.slice(8, 12).toString('ascii') === 'WEBP') return 'image/webp';
+  if (buffer.slice(0, 6).toString('ascii') === 'GIF87a' || buffer.slice(0, 6).toString('ascii') === 'GIF89a') return 'image/gif';
+  return '';
+}
+
+function assertValidImageBuffer(buffer, source = 'image') {
+  const mime = detectImageMime(buffer);
+  if (!mime) {
+    const head = Buffer.isBuffer(buffer) ? buffer.slice(0, 80).toString('utf8').replace(/\s+/g, ' ').trim() : '';
+    throw new Error(`${source} did not return a valid image file${head ? `: ${head.slice(0, 80)}` : ''}`);
+  }
+  return mime;
+}
+
 function readRecords() {
   return store.read(IMAGE_KEY, []);
 }
@@ -373,20 +393,20 @@ function resolveImageModel(modelId = 'auto') {
   let model = lib.find(m => m.id === wanted || m.name === wanted);
   if (!model && imageModels.length) model = imageModels[0];
   if (!model) {
-    const err = new Error('请先在 设置 > 模型配置 中添加接口格式为 OpenAI 图像的模型，并绑定到图像生成场景。');
+    const err = new Error('WebUI image generation is not configured yet. Please open Settings > Model Configuration, add an OpenAI Image compatible model, and bind it to the Image Generation scenario.');
     err.status = 400;
     throw err;
   }
   if (model.enabled === false) {
     if (imageModels.length) return imageModels[0];
-    const err = new Error('当前图像模型已被禁用，请先启用后再生成。');
+    const err = new Error('The configured WebUI image model is disabled. Please enable an image model before generating images.');
     err.status = 400;
     throw err;
   }
   const fmt = model.apiFormat || 'openai-image';
   if (!['openai-image', 'openai_image'].includes(fmt)) {
     if (imageModels.length) return imageModels[0];
-    const err = new Error(`当前图像场景绑定的是 ${model.name || model.id}，API 格式是 ${fmt}。请改为 OpenAI 图像接口模型。`);
+    const err = new Error(`The Image Generation scenario is bound to ${model.name || model.id}, but its API format is ${fmt}. Please switch it to an OpenAI Image compatible model.`);
     err.status = 400;
     throw err;
   }
@@ -416,13 +436,32 @@ function isTransientImageError(error = {}) {
   return status === 408 || status === 409 || status === 425 || status === 429 || status >= 500;
 }
 
+function shouldFallbackImageEditToGeneration(error = {}) {
+  const status = Number(error.status || error.code || 0);
+  const message = String(error.message || '').toLowerCase();
+  if ([400, 401, 403, 404, 405, 408, 409, 415, 422, 425, 429, 500, 502, 503, 504, 524].includes(status)) return true;
+  return /edit api failed|unsupported|not found|invalid token|missing.*image|invalid.*image|multipart|timeout|timed out|field/i.test(message);
+}
+
+function buildImageToImageFallbackPrompt(prompt = '') {
+  const clean = redactSecrets(String(prompt || '').trim());
+  const prefix = [
+    'Use the provided reference image as the visual basis',
+    'preserve the main subject, identity, composition, pose, layout, color mood, and visual style from the reference image',
+    'apply only the requested changes and keep unrelated areas consistent with the reference image',
+  ].join(', ');
+  if (!clean) return prefix;
+  if (/use the provided reference image as the visual basis|preserve the main subject|reference image/i.test(clean)) return clean;
+  return `${prefix}, ${clean}`;
+}
+
 async function fetchJsonWithRetry(url, model, body) {
   const headers = authHeaders(model, true);
   const first = await fetch(url, {
     method: 'POST',
     headers,
     body: JSON.stringify({ ...body, response_format: body.response_format || 'b64_json' }),
-    signal: AbortSignal.timeout(120000),
+    signal: AbortSignal.timeout(IMAGE_API_TIMEOUT_MS),
   });
   if (first.ok) return first.json();
   const firstText = await first.text().catch(() => '');
@@ -433,7 +472,7 @@ async function fetchJsonWithRetry(url, model, body) {
       method: 'POST',
       headers,
       body: JSON.stringify(retryBody),
-      signal: AbortSignal.timeout(120000),
+      signal: AbortSignal.timeout(IMAGE_API_TIMEOUT_MS),
     });
     if (retry.ok) return retry.json();
     const retryText = await retry.text().catch(() => '');
@@ -453,7 +492,7 @@ async function fetchMultipartWithRetry(url, model, buildForm) {
       method: 'POST',
       headers: authHeaders(model, false),
       body: form,
-      signal: AbortSignal.timeout(120000),
+      signal: AbortSignal.timeout(IMAGE_API_TIMEOUT_MS),
     });
   };
   const attempts = [
@@ -503,15 +542,20 @@ async function saveGeneratedItem(item, req, meta = {}) {
   } else if (base64 && /^[A-Za-z0-9+/=\s]+$/.test(String(base64).slice(0, 200))) {
     buffer = Buffer.from(String(base64).replace(/\s+/g, ''), 'base64');
   } else if (sourceUrl) {
-    const r = await fetch(sourceUrl, { signal: AbortSignal.timeout(60000) });
-    if (!r.ok) throw new Error(`下载生成图片失败 HTTP ${r.status}`);
+    const r = await fetch(sourceUrl, { signal: AbortSignal.timeout(IMAGE_DOWNLOAD_TIMEOUT_MS) });
+    if (!r.ok) throw new Error(`Download generated image failed HTTP ${r.status}`);
+    const contentType = String(r.headers.get('content-type') || '').split(';')[0].trim().toLowerCase();
     const arr = await r.arrayBuffer();
     buffer = Buffer.from(arr);
-    mime = r.headers.get('content-type') || mime;
+    mime = contentType || mime;
   }
 
   if (!buffer || !buffer.length) {
-    throw new Error('图像接口没有返回可识别的图片数据。');
+    throw new Error('Image API did not return recognizable image data.');
+  }
+  const detectedMime = assertValidImageBuffer(buffer, sourceUrl || 'Image API');
+  if (!String(mime || '').toLowerCase().startsWith('image/') || detectImageMime(buffer) !== mime) {
+    mime = detectedMime;
   }
 
   const ext = mimeToExt(mime);
@@ -645,10 +689,10 @@ router.post('/optimize-prompt', async (req, res) => {
     return res.ok({
       prompt: optimized || cleanPrompt,
       sourcePrompt: redactSecrets(String(userPrompt || prompt || '').trim()),
-      usedAgent: false,
+      usedOptimizer: false,
       fallback: true,
-      error: '未配置可用于 Image Agent 的文本模型，已使用本地 image2 规则兜底。',
-      skill: image2.skill ? 'image-agent/image2' : 'image-agent/default',
+      error: '未配置可用于 WebUI image optimizer 的文本模型，已使用本地 image2 规则兜底。',
+      skill: image2.skill ? 'webui-image-rules' : 'webui-image-default',
       skillPath: image2.skill ? image2.path : '',
       mode: promptMode,
     });
@@ -667,10 +711,10 @@ router.post('/optimize-prompt', async (req, res) => {
     res.ok({
       prompt: optimized || cleanPrompt,
       sourcePrompt: redactSecrets(String(userPrompt || prompt || '').trim()),
-      usedAgent: !!optimized && optimized !== cleanPrompt && !isBadOptimizedPrompt(rawOptimized),
+      usedOptimizer: !!optimized && optimized !== cleanPrompt && !isBadOptimizedPrompt(rawOptimized),
       fallback: isBadOptimizedPrompt(rawOptimized),
       error: err.slice(0, 300),
-      skill: image2.skill ? 'image-agent/image2' : 'image-agent/default',
+      skill: image2.skill ? 'webui-image-rules' : 'webui-image-default',
       skillPath: image2.skill ? image2.path : '',
       mode: promptMode,
     });
@@ -679,10 +723,10 @@ router.post('/optimize-prompt', async (req, res) => {
     res.ok({
       prompt: optimized || cleanPrompt,
       sourcePrompt: redactSecrets(String(userPrompt || prompt || '').trim()),
-      usedAgent: false,
+      usedOptimizer: false,
       fallback: true,
       error: redactSecrets(e.message || 'optimize failed'),
-      skill: 'image-agent/fallback',
+      skill: 'webui-image-fallback',
       skillPath: '',
       mode: promptMode,
     });
@@ -696,11 +740,14 @@ function appendChatMessages(chatId, userContent, assistantContent, modelName, im
   if (!chat) return null;
   const now = Date.now();
   chat.messages = Array.isArray(chat.messages) ? chat.messages : [];
-  chat.messages.push({ role: 'user', content: redactSecrets(userContent), ts: now, attachments: imageRecords.inputs || [] });
+  const userMsg = { role: 'user', content: redactSecrets(userContent), ts: now, attachments: imageRecords.inputs || [] };
+  if (imageRecords.userMsgId) userMsg._msgId = String(imageRecords.userMsgId);
+  chat.messages.push(userMsg);
   chat.messages.push({
     role: 'assistant',
     content: redactSecrets(assistantContent),
     ts: Date.now(),
+    _msgId: imageRecords.assistantMsgId ? String(imageRecords.assistantMsgId) : undefined,
     imageGeneration: {
       model: modelName,
       outputs: imageRecords.outputs || [],
@@ -752,7 +799,7 @@ router.post('/upload', (req, res) => {
   }
 });
 
-async function generateImageFromPrompt({ prompt = '', sourcePrompt = '', optimizedByAgent = false, attachmentIds = [], model = 'auto', size = '1024x1024', chatId = '', publicBase = '' } = {}) {
+async function generateImageFromPrompt({ prompt = '', sourcePrompt = '', optimizedByAgent = false, attachmentIds = [], model = 'auto', size = '1024x1024', chatId = '', publicBase = '', userMsgId = '', assistantMsgId = '' } = {}) {
   const cleanPrompt = redactSecrets(String(prompt || '').trim());
   const cleanSourcePrompt = redactSecrets(String(sourcePrompt || prompt || '').trim());
   const inputIds = Array.isArray(attachmentIds) ? attachmentIds : [];
@@ -776,6 +823,8 @@ async function generateImageFromPrompt({ prompt = '', sourcePrompt = '', optimiz
   const finalPrompt = cleanPrompt || '请基于参考图片生成一张新的图片。';
   let json;
   const failures = [];
+  let usedImageEditFallback = false;
+  let imageEditFailures = [];
   for (const candidate of candidateModels) {
     selectedModel = candidate;
     try {
@@ -819,9 +868,30 @@ async function generateImageFromPrompt({ prompt = '', sourcePrompt = '', optimiz
       }
       break;
     } catch (e) {
-      failures.push(`${providerLabel(candidate)}：${e.message || e}`);
+      failures.push(`${providerLabel(candidate)}?${e.message || e}`);
+      if (inputs.length > 0) imageEditFailures.push(e);
       if (!isTransientImageError(e) || candidateModels.indexOf(candidate) === candidateModels.length - 1) {
-        const err = new Error(failures.length > 1 ? `所有图像模型均失败：${failures.join('；')}` : (e.message || 'image generation failed'));
+        if (inputs.length > 0 && imageEditFailures.some(shouldFallbackImageEditToGeneration)) {
+          for (const generationCandidate of candidateModels) {
+            try {
+              selectedModel = generationCandidate;
+              const generationUrl = imageEndpoint(generationCandidate.base, 'generations');
+              if (!generationUrl) continue;
+              json = await fetchJsonWithRetry(generationUrl, generationCandidate, {
+                model: generationCandidate.name,
+                prompt: buildImageToImageFallbackPrompt(finalPrompt),
+                n: 1,
+                size: size || '1024x1024',
+              });
+              usedImageEditFallback = true;
+              break;
+            } catch (fallbackError) {
+              failures.push(`${providerLabel(generationCandidate)}????????${fallbackError.message || fallbackError}`);
+            }
+          }
+          if (json) break;
+        }
+        const err = new Error(failures.length > 1 ? `??????????${failures.join('?')}` : (e.message || 'image generation failed'));
         err.status = e.status || 500;
         throw err;
       }
@@ -829,6 +899,7 @@ async function generateImageFromPrompt({ prompt = '', sourcePrompt = '', optimiz
   }
 
   const items = extractImageItems(json);
+  if (!items.length) throw new Error('?? API ?????????????????? API Key?');
   const outputs = [];
   for (const item of items) {
     if (outputs.length >= 4) break;
@@ -856,7 +927,7 @@ async function generateImageFromPrompt({ prompt = '', sourcePrompt = '', optimiz
   const userContent = `图像生成：${cleanSourcePrompt || finalPrompt}${inputMd}`;
   const imageCaptureInputs = inputs.map(i => ({ id: i.id, path: i.path, url: i.url, publicUrl: toPublicUrl(reqLike, i.id), name: i.originalName || i.filename }));
   const imageCaptureOutputs = outputs.map(o => ({ id: o.id, path: o.path, url: o.url, publicUrl: o.publicUrl, name: o.filename, prompt: o.prompt, sourcePrompt: o.sourcePrompt }));
-  const imageMode = inputs.length ? 'image-to-image' : 'text-to-image';
+  const imageMode = inputs.length ? (usedImageEditFallback ? 'image-to-image-fallback' : 'image-to-image') : 'text-to-image';
   const chat = appendChatMessages(chatId, userContent, assistantContent, selectedModel.name, {
     inputs: imageCaptureInputs,
     outputs: imageCaptureOutputs,
@@ -864,7 +935,9 @@ async function generateImageFromPrompt({ prompt = '', sourcePrompt = '', optimiz
     sourcePrompt: cleanSourcePrompt,
     optimizedByAgent: !!optimizedByAgent,
     mode: imageMode,
-    optimizeSkill: optimizedByAgent ? 'image-agent/image2' : '',
+    optimizeSkill: optimizedByAgent ? 'webui-image-rules' : '',
+    userMsgId,
+    assistantMsgId,
   });
 
   captureImageGenerationRecord({
@@ -875,6 +948,7 @@ async function generateImageFromPrompt({ prompt = '', sourcePrompt = '', optimiz
     model: selectedModel.name,
     provider: selectedModel.provider,
     mode: imageMode,
+    editFallback: usedImageEditFallback,
     chatId: chat?.id || chatId,
     optimizedByAgent: !!optimizedByAgent,
   });
@@ -886,6 +960,7 @@ async function generateImageFromPrompt({ prompt = '', sourcePrompt = '', optimiz
     sourcePrompt: cleanSourcePrompt,
     optimizedByAgent: !!optimizedByAgent,
     mode: imageMode,
+    editFallback: usedImageEditFallback,
     inputs,
     outputs,
     content: assistantContent,
@@ -894,9 +969,9 @@ async function generateImageFromPrompt({ prompt = '', sourcePrompt = '', optimiz
 }
 
 router.post('/generate', async (req, res) => {
-  const { prompt = '', sourcePrompt = '', optimizedByAgent = false, attachmentIds = [], model = 'auto', size = '1024x1024', chatId = '', publicBase = '' } = req.body || {};
+  const { prompt = '', sourcePrompt = '', optimizedByAgent = false, attachmentIds = [], model = 'auto', size = '1024x1024', chatId = '', publicBase = '', userMsgId = '', assistantMsgId = '' } = req.body || {};
   try {
-    const data = await generateImageFromPrompt({ prompt, sourcePrompt, optimizedByAgent, attachmentIds, model, size, chatId, publicBase });
+    const data = await generateImageFromPrompt({ prompt, sourcePrompt, optimizedByAgent, attachmentIds, model, size, chatId, publicBase, userMsgId, assistantMsgId });
     res.ok(data);
   } catch (e) {
     res.fail(e.message || 'image generation failed', e.status || 500, e.status || 500);

@@ -411,7 +411,15 @@ async function* chatStream(cfg, messages) {
     yield { type: 'perf', stage: 'route-fallback', route: 'hermes', reason: 'direct-provider-missing' };
   }
 
-  const modelCfg = { model: modelName };
+  // Image scene: use chat model for LLM, image model goes to webui_image_generate tool
+  let hermesModel = modelName;
+  if (scene === 'image') {
+    const chatLibraryItem = selectedLibraryModel(cfg, cfg.scenarios?.chat || cfg.current || '');
+    hermesModel = requestModelName(chatLibraryItem) || modelName;
+    // Also swap _selectedLibraryModel to the chat model so Hermes CLI uses correct provider/env vars
+    if (chatLibraryItem) cfg._selectedLibraryModel = chatLibraryItem;
+  }
+  const modelCfg = { model: hermesModel };
   const hermesApiUrl = String(cfg.hermesApiServerUrl || settings.hermesApiServerUrl || '').trim();
   if (hermesApiUrl) {
     const apiResult = yield* hermesApiServerStream(cfg, messages);

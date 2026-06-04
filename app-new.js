@@ -1,4 +1,4 @@
-﻿const $=s=>document.querySelector(s);
+const $=s=>document.querySelector(s);
 const $$=s=>[...document.querySelectorAll(s)];
 const LS={
   get(k,d){try{const v=localStorage.getItem(k);return v?JSON.parse(v):d}catch(_){return d}},
@@ -127,9 +127,9 @@ function updateScrollToBottomButton(){
 
 function imageSrc(item){
   if(!item) return '';
-  const value=item.url||item.publicUrl;
-  if(value) return mediaUrl(value);
   if(item.id) return mediaUrl('/api/images/file/'+encodeURIComponent(item.id));
+  const value=item.publicUrl||item.url;
+  if(value) return mediaUrl(value);
   if(item.path) return mediaUrl('/api/system/file-raw?path='+encodeURIComponent(item.path));
   return '';
 }
@@ -203,7 +203,7 @@ async function apiPostRaw(path, body) {
     });
     return await r.json();
   } catch (error) {
-    return { code: 1, data: null, msg: error.message || '????' };
+    return { code: 1, data: null, msg: error.message || '请求失败' };
   }
 }
 
@@ -252,6 +252,16 @@ async function apiPut(path, body) {
     return j.code === 0 ? j.data : null;
   } catch { return null; }
 }
+async function apiPatch(path, body) {
+  try {
+    const r = await fetch(apiBase() + path, {
+      method: 'PATCH', cache:'no-store', headers: { 'Content-Type': 'application/json', 'Cache-Control':'no-cache' },
+      body: JSON.stringify(body),
+    });
+    const j = await r.json();
+    return j.code === 0 ? j.data : null;
+  } catch { return null; }
+}
 async function apiDel(path) {
   try {
     const r = await fetch(apiBase() + path, { method: 'DELETE', cache:'no-store', headers:{'Cache-Control':'no-cache'} });
@@ -289,7 +299,7 @@ async function apiStream(path, body, callbacks) {
     const dec = new TextDecoder();
     let buf = '';
     let firstEventAt = 0;
-    const STREAM_TIMEOUT_MS = 60000; // 60s no data = timeout
+    const STREAM_TIMEOUT_MS = 300000; // 5min no data = timeout
     while (true) {
       const readPromise = reader.read();
       const timeoutPromise = new Promise((_, reject) => {
@@ -327,7 +337,7 @@ async function apiStream(path, body, callbacks) {
           case 'tool_complete': callbacks.onToolComplete?.(data); break;
           case 'title': callbacks.onTitle?.(data); break;
           case 'perf': callbacks.onPerf?.(data); break;
-          case 'done': callbacks.onDone?.(data); break;
+          case 'done': await callbacks.onDone?.(data); break;
           case 'error': callbacks.onError?.(data.msg); break;
         }
       }
@@ -451,10 +461,77 @@ function setModelConfigScope(scope){
 
 const FIXED_AGENT_PROFILES = [
   { id:'default', name:'主 Agent', role:'主 Agent / 调度入口', modelScene:'chat', color:'var(--c-block-lime)', systemPrompt:'你是 Hermes 的默认助手，也是主 Agent。你负责日常对话、理解用户意图、维护用户规则与偏好，并在需要时查看文档梳理、产品设计、表达增强、生图研究沉淀的知识摘要。你不直接污染其他 Agent 的工作记忆；当任务明显属于某个 Agent 时，提醒用户切换或基于对应知识给出建议。', knowledgeFocus:['rules','questions','workflow'] },
-  { id:'coder', name:'文档梳理', role:'工程实现 / 输出文档', modelScene:'reasoning', color:'var(--c-block-lilac)', systemPrompt:'你负责文档梳理、输出文档、工程实现、代码审查、架构拆解、接口说明、测试建议和 Markdown 技术文档输出。回答要重视可维护性、最小改动、测试稳定性和可复用项目经验沉淀。', knowledgeFocus:['docs','projects','workflow','prompts'] },
-  { id:'pm', name:'产品设计', role:'产品经理 / UI 与 B 端设计', modelScene:'reasoning', color:'var(--c-block-cream)', systemPrompt:'你负责产品经理、UI 设计、B 端设计、需求拆解、业务流程、信息架构、交互验收和版本规划。回答要突出目标、用户路径、状态规则、验收标准和优先级。', knowledgeFocus:['projects','docs','questions','workflow'] },
-  { id:'designer', name:'表达增强', role:'表达增强 / 细节优化', modelScene:'chat', color:'var(--c-block-mint)', systemPrompt:'你负责表达增强、文案润色、视觉层级、微交互和零碎创意整理。回答要更轻、更准，帮助用户把想法变清楚、变好看、变易懂。', knowledgeFocus:['prompts','docs','rules'] },
-  { id:'researcher', name:'生图研究', role:'生图提示词 / 视觉研究', modelScene:'image', color:'var(--c-block-coral)', systemPrompt:'你专门负责生图提示词、艺术风格、海报 UI、视觉参考、图像生成流程和图片归类沉淀。回答要强调画面结构、风格关键词、负面提示词、参数建议和可复用 Prompt 模板。', knowledgeFocus:['images','prompts','docs'] },
+  { id:'coder', name:'文档梳理', role:'工程实现 / 输出文档', modelScene:'reasoning', color:'var(--c-block-lilac)', systemPrompt:`你是文档梳理 Agent，专注于辅助用户生成、修改、上传、整理和维护文档。
+
+身份定位：
+- 把零散对话、需求、资料整理成结构清晰的 Markdown 文档。
+- 辅助生成产品文档、方案文档、复盘文档、说明文档、输出文档。
+- 根据用户要求修改已有文档，保持原有结构和上下文连续性。
+- 帮助整理上传内容、文件内容和知识库材料，形成可复用沉淀。
+
+工作方式：
+- 先判断用户要“新建文档、修改文档、整理资料、提炼摘要、输出模板”中的哪一种。
+- 优先保留用户原意，不擅自改变结论、范围和事实。
+- 输出时使用清晰标题、列表、表格、步骤和必要的 Mermaid 图。
+- 如果目标文件、修改范围或输出格式不明确，先简短确认。
+
+边界：
+- 不替用户虚构未提供的数据、引用和结论。
+- 不把聊天历史目录当作正式输出文档目录。
+- 不抢产品设计、表达润色和生图研究 Agent 的职责。`, knowledgeFocus:['docs','projects','workflow','prompts'] },
+  { id:'pm', name:'产品设计', role:'产品经理 / UI 与 B 端设计', modelScene:'reasoning', color:'var(--c-block-cream)', systemPrompt:`你是产品设计 Agent，专注于产品定位、交互设计、UI 设计、界面分析、验收标准和产品方案。
+
+身份定位：
+- 帮助用户梳理产品目标、用户场景、功能边界和优先级。
+- 输出交互流程、页面结构、信息架构、状态设计和验收标准。
+- 分析 WebUI、B 端后台、工具型产品和 AI 工作流界面的体验问题。
+- 将模糊想法转化为可执行的产品方案、设计改动清单和验收口径。
+
+工作方式：
+- 先明确目标用户、使用场景、当前问题和成功标准。
+- 兼顾产品逻辑、交互效率、UI 层级、可开发性和一致性。
+- 对界面问题优先给出“问题 → 原因 → 修改建议 → 验收标准”。
+- 需要落地时输出清晰的任务拆分和优先级。
+
+边界：
+- 不直接替代生图提示词专家，不把 UI 分析任务泛化成视觉风格堆叠。
+- 不在缺少业务信息时强行定方案，必要时先提出关键问题。`, knowledgeFocus:['projects','docs','questions','workflow'] },
+  { id:'designer', name:'表达增强', role:'表达增强 / 细节优化', modelScene:'chat', color:'var(--c-block-mint)', systemPrompt:`你是表达增强 Agent，专注于把零碎、口语化、未成体系的内容补充完善、统一结构并增强表达。
+
+身份定位：
+- 将用户随手写下的想法整理成清晰、有层次、有说服力的表达。
+- 帮助补全遗漏背景、逻辑链路、例子、结论和行动项。
+- 统一文风、术语、标题层级和段落结构。
+- 优化分享稿、需求说明、问题描述、评论反馈、产品表达和对外文案。
+
+工作方式：
+- 先保留用户原始观点和语气，再增强结构和可读性。
+- 优先做“补充完整、理顺逻辑、压缩废话、统一格式”。
+- 可按场景输出：更自然版、更专业版、更短版、更有感染力版。
+- 对不清楚的信息用占位或提示，不替用户编造事实。
+
+边界：
+- 不改变用户核心立场。
+- 不过度营销化，不把所有内容都写成广告文案。
+- 不抢产品方案和文档工程职责。`, knowledgeFocus:['prompts','docs','rules'] },
+  { id:'researcher', name:'生图研究', role:'生图提示词 / 视觉研究', modelScene:'image', color:'var(--c-block-coral)', systemPrompt:`你是生图研究 Agent，专注于图像生成、提示词组织、视觉风格分析和 Image2 / WebUI 生图工具协作。
+
+身份定位：
+- 帮助用户把模糊生图需求整理成可执行的高质量提示词。
+- 覆盖海报、UI 设计、图标效果、IP 角色、插画、产品图、视觉探索等生图方向。
+- 优先保护不能变的内容：角色/IP/品牌/产品外观/参考图结构/核心元素。
+- 根据用户目标补充构图、镜头、材质、光影、色彩、风格和负向约束。
+
+工作方式：
+- 先理解目标，再锁定不能改变的内容，再列出必须保留的信息，最后给模型发挥空间。
+- 对纯文字生图，输出优化后的 prompt 并调用 WebUI 生图工具。
+- 对参考图/二次编辑，明确“保持原主体、构图、身份和风格，只修改用户指定部分”。
+- 可解释提示词组织思路，但不要只输出提示词而不执行用户明确要求的生图。
+
+边界：
+- 不把专有角色泛化成普通外貌描述。
+- 不新增无关文字、Logo、角色、品牌或产品信息。
+- 不把生图稳定性问题伪装成提示词问题；工具失败时说明真实错误。`, knowledgeFocus:['images','prompts','docs'] },
 ];
 
 const NAV=[
@@ -552,7 +629,7 @@ function toggleTheme(){
   const icon=$('#themeIcon');
   if(icon) icon.innerHTML=state.theme==='dark'?SVG.moon:SVG.sun;
   const hljsTheme = document.getElementById('hljsTheme');
-  if(hljsTheme) hljsTheme.href = state.theme === 'dark' ? 'https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/styles/github-dark.min.css' : 'https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/styles/github.min.css';
+  if(hljsTheme) hljsTheme.href = state.theme === 'dark' ? 'frontend/css/github-dark.min.css' : 'frontend/css/github.min.css';
   save();
 }
 
@@ -670,7 +747,7 @@ function renderChat(){
           <div class="session-create-row">
             <button class="agent-switch-btn" id="chatAgentSwitchBtn" onclick="newChat(getMainWebProfile())" title="新建主 Agent 对话">
               <span class="chat-agent-avatar">+</span>
-              <span class="agent-switch-copy"><strong>新建对话</strong><small>主 Agent</small></span>
+              <span>新建对话</span>
             </button>
             <button class="history-btn compact" onclick="openHistoryPopup()" title="历史记录">${SVG.history}</button>
           </div>
@@ -727,11 +804,11 @@ function renderChat(){
               <div class="chat-input-left">
                 <button class="input-action-btn toolbar-icon-btn" onclick="document.getElementById('fileInput').click()" title="上传文件" aria-label="上传文件">${SVG.attach}</button>
                 <div class="image-tool-wrap" onmouseenter="scheduleShowImageToolSwitch()" onmouseleave="scheduleHideImageToolSwitch()">
-                  <button class="input-action-btn toolbar-icon-btn image-gen-toggle${state.forceImageGeneration?' active':''}" onclick="insertImagePrompt()" title="${state.forceImageGeneration?'直连生图已开启：发送会跳过 Agent':'插入生成图像提示词，让 Agent 处理生图'}" aria-label="图像">${SVG.image}</button>
+                  <button class="input-action-btn toolbar-icon-btn image-gen-toggle${state.forceImageGeneration?' active':''}" onclick="insertImagePrompt()" title="${state.forceImageGeneration?'\u76f4\u8fde\u751f\u56fe\u5df2\u5f00\u542f\uff1a\u8df3\u8fc7\u4e3b Agent':'\u63d2\u5165\u751f\u6210\u56fe\u50cf\u63d0\u793a\u8bcd\uff0c\u7531 HermesAgent \u8bc6\u522b\u5e76\u8c03\u7528\u751f\u56fe\u5de5\u5177'}" aria-label="\u56fe\u50cf">${SVG.image}</button>
                   <div class="image-tool-pop" id="imageToolPop" onmouseenter="showImageToolSwitch()" onmouseleave="scheduleHideImageToolSwitch()">
                     <div>
-                      <strong>跳过 Agent 直连生图</strong>
-                      <span>关闭时只插入“生成图像：”，由 Agent 理解和调用工具。</span>
+                      <strong>\u8df3\u8fc7\u4e3b Agent \u76f4\u8fde\u751f\u56fe</strong>
+                      <span>\u70b9\u51fb\u56fe\u50cf\u6309\u94ae\u4ec5\u63d2\u5165\u201c\u751f\u6210\u56fe\u50cf\uff1a\u201d\u8bed\u4e49\u63d0\u793a\uff0c\u9ed8\u8ba4\u4ea4\u7ed9 HermesAgent \u8c03\u7528\u751f\u56fe\u5de5\u5177\uff1b\u5f00\u542f\u6b64\u5f00\u5173\u540e\u624d\u8df3\u8fc7\u4e3b Agent \u76f4\u8fde\u751f\u56fe\u3002</span>
                     </div>
                     <label class="mini-switch">
                       <input type="checkbox" ${state.forceImageGeneration?'checked':''} onchange="setDirectImageMode(this.checked)">
@@ -836,7 +913,7 @@ function renderSettingsPage(){
 function setDirectImageMode(on){
   state.forceImageGeneration=!!on;
   save();
-  toast(state.forceImageGeneration?'已开启直连生图：发送会跳过 Agent':'已关闭直连生图：由 Agent 处理生成图像提示','info');
+  toast(state.forceImageGeneration?'已开启直连生图：跳过主 Agent，使用当前提示词直接生成':'已关闭直连生图：普通描述由 HermesAgent 识别并调用生图工具','info');
   const btn=document.querySelector('.image-gen-toggle');
   if(btn) btn.classList.toggle('active',state.forceImageGeneration);
 }
@@ -1093,7 +1170,8 @@ const HERMES_COMMANDS=[
   {cmd:'/status',title:'状态',desc:'查看当前 Agent、模型、工具与运行状态'},
   {cmd:'/memory',title:'记忆',desc:'查看或整理当前对话中需要记住的内容'},
   {cmd:'/save',title:'保存',desc:'将适合归档的内容保存为 Markdown 或知识库文档'},
-  {cmd:'/summary',title:'总结',desc:'把当前对话整理成摘要、待办和关键结论'},
+  {cmd:'/skill',title:'技能',desc:'查看或调用可用的技能与工具'},
+  {cmd:'/summarize',title:'总结',desc:'把当前对话整理成摘要、待办和关键结论'},
   {cmd:'/doc',title:'文档',desc:'按知识库规范输出结构化 Markdown 文档'},
   {cmd:'/run',title:'执行命令',desc:'明确请求 Agent 通过受限后端能力执行命令，危险操作需确认'},
   {cmd:'/clear',title:'清理上下文',desc:'请求整理当前上下文，减少无关信息干扰'},
@@ -1179,7 +1257,6 @@ function handleLocalHermesCommand(text){
     openModal(`<div style="padding:24px;min-width:min(560px,92vw)">
       <h3 style="margin:0 0 12px">当前状态</h3>
       <div style="line-height:1.9">
-        <div><strong>Agent：</strong>${esc(profile?.name||'默认助手')}</div>
         <div><strong>模型：</strong>${esc(model)}</div>
         <div><strong>快速模式：</strong>${state.settings.quickMode?'已开启':'未开启'}</div>
         <div><strong>历史保留：</strong>${esc(state.settings.history||16)} 轮</div>
@@ -1230,7 +1307,7 @@ function getDefaultChatAgent(){
 
 function renderAgentDock(){
   const cur=currentChat();
-  const activeId=isFixedAgentMainChat(cur) ? (cur?.agentId||'') : (state.activeProfile||getDefaultChatAgent()?.id||'default');
+  const activeId=isFixedAgentMainChat(cur) ? (cur?.agentId||'') : '';
   return visibleChatAgents().map(p=>{
     const disabled=p.enabled===false;
     const active=activeId===p.id;
@@ -1260,7 +1337,7 @@ function renderChatAgentPopup(){
     const skillCount=(p.skillIds||[]).length;
     return `<button class="chat-agent-item${active?' active':''}${disabled?' disabled':''}" onclick="newChatWithProfile('${esc(p.id)}')">
       ${profileAvatarHtml(p,'chat-agent-avatar')}
-      <span class="chat-agent-main"><strong>${esc(p.name||'未命名 Agent')}</strong><small>${disabled?'已关闭':esc(model)}${skillCount?` · ${skillCount} 技能`:''}</small></span>
+      <div class="chat-agent-info"><strong>${esc(p.name)}</strong><span>${esc(model)} · ${skillCount} 个技能</span></div>
     </button>`;
   }).join('') || '<div class="empty-text" style="padding:12px">暂无 Agent</div>';
 }
@@ -1885,33 +1962,61 @@ function stripRawToolCallTags(content, msg){
   return content.replace(/<tool_call>[\s\S]*?<\/tool_call>/gi,'').replace(/<\/?invoke>|<\/?parameter[^>]*>/gi,'').trim();
 }
 
-function renderMsg(m){
-  let thinkingHtml=renderThinkingPanel(m);
-  let toolCallsHtml='';
-  if(m.toolCalls&&m.toolCalls.length>0){
-    toolCallsHtml='<div class="msg-tool-calls">'+m.toolCalls.map((tc,i)=>{
-      const id='tc_'+(m.ts||Date.now())+'_'+i;
-      const statusCls=tc.status==='success'?'success':tc.status==='error'?'error':'running';
-      const statusText=tc.status==='success'?'完成':tc.status==='error'?'失败':'运行中';
-      let bodyHtml='';
-      if(tc.input) bodyHtml+=`<div class="tool-input">输入\n${esc(typeof tc.input==='string'?tc.input:JSON.stringify(tc.input,null,2))}</div>`;
-      if(tc.output) bodyHtml+=`<div class="tool-output">输出\n${esc(typeof tc.output==='string'?tc.output:JSON.stringify(tc.output,null,2))}</div>`;
+function stringifyToolPreviewValue(value){
+  if(value==null) return '';
+  return typeof value==='string' ? value : JSON.stringify(value,null,2);
+}
 
-      let previewBtn = '';
-      if (tc.status === 'success' && (tc.name === 'Write' || tc.name === 'Edit')) {
-        let filePath = '';
-        try {
-          const inputObj = typeof tc.input === 'string' ? JSON.parse(tc.input) : tc.input;
-          filePath = inputObj.file_path || inputObj.path || '';
-        } catch(e) {}
-        if (filePath && filePath.endsWith('.md')) {
-          const safePath = encodeURIComponent(filePath);
-          const safeName = encodeURIComponent(filePath.split(/[/\\]/).pop());
-          previewBtn = `<button class="history-card-btn" style="margin-left:8px" onclick="event.stopPropagation(); HermesArtifact.openHistoryFile('${safePath}', '${safeName}')">预览文档</button>`;
-        }
-      }
+function cleanToolPreviewText(value){
+  const raw=stringifyToolPreviewValue(value);
+  return stripLocalEditDiffNoise(redactSecrets(raw)).trim();
+}
 
-      return `<div class="msg-tool-call">
+function getToolCallDiffInfo(tc){
+  const raw=[stringifyToolPreviewValue(tc?.input), stringifyToolPreviewValue(tc?.output)].filter(Boolean).join('\n');
+  return parseLocalEditDiffInfo(raw);
+}
+
+function getToolCallFilePath(tc){
+  try{
+    const inputObj=typeof tc?.input==='string' ? JSON.parse(tc.input) : tc?.input;
+    return inputObj?.file_path || inputObj?.path || '';
+  }catch(_){
+    return '';
+  }
+}
+
+function renderToolCallBodyHtml(tc){
+  let bodyHtml='';
+  const inputText=cleanToolPreviewText(tc?.input);
+  const outputText=cleanToolPreviewText(tc?.output);
+  if(inputText) bodyHtml+=`<div class="tool-input">输入\n${esc(inputText)}</div>`;
+  if(outputText) bodyHtml+=`<div class="tool-output">输出\n${esc(outputText)}</div>`;
+  if(!bodyHtml){
+    const diff=getToolCallDiffInfo(tc);
+    if(diff?.path) bodyHtml+=`<div class="tool-local-file">${renderLocalEditFileChip(diff.path)}</div>`;
+  }
+  return bodyHtml;
+}
+
+function renderToolPreviewButton(tc){
+  if(!(tc?.status==='success' && (tc.name==='Write' || tc.name==='Edit'))) return '';
+  const filePath=getToolCallFilePath(tc);
+  if(!filePath || !filePath.endsWith('.md')) return '';
+  const safePath=encodeURIComponent(filePath);
+  const safeName=encodeURIComponent(filePath.split(/[/\\]/).pop());
+  return `<button class="history-card-btn" style="margin-left:8px" onclick="event.stopPropagation(); HermesArtifact.openHistoryFile('${safePath}', '${safeName}')">预览文档</button>`;
+}
+
+function renderToolCallsHtml(toolCalls, msg){
+  if(!toolCalls||!toolCalls.length) return '';
+  return '<div class="msg-tool-calls">'+toolCalls.map((tc,i)=>{
+    const id='tc_'+(msg?.ts||msg?.id||Date.now())+'_'+i;
+    const statusCls=tc.status==='success'?'success':tc.status==='error'?'error':'running';
+    const statusText=tc.status==='success'?'完成':tc.status==='error'?'失败':'运行中';
+    const bodyHtml=renderToolCallBodyHtml(tc);
+    const previewBtn=renderToolPreviewButton(tc);
+    return `<div class="msg-tool-call">
         <div class="msg-tool-call-header" data-tool="${esc(tc.name)}" onclick="toggleCollapse('${id}')">
           <svg class="tool-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M4 7.5h16"/><path d="M7.5 4v7"/><path d="m4 16 4-4 4 4"/><path d="m12 16 4-4 4 4"/></svg>
           <span class="tool-name">${esc(tc.name)}</span>
@@ -1921,8 +2026,12 @@ function renderMsg(m){
         </div>
         <div class="msg-tool-call-body collapsed" id="body_${id}">${bodyHtml}</div>
       </div>`;
-    }).join('')+'</div>';
-  }
+  }).join('')+'</div>';
+}
+
+function renderMsg(m){
+  let thinkingHtml=renderThinkingPanel(m);
+  let toolCallsHtml=renderToolCallsHtml(m.toolCalls, m);
   let stepHtml='';
   if(m.step) stepHtml=`<div class="msg-step-indicator">Step ${m.step}</div>`;
   const msgId = m._msgId || String(m.ts || m.id || Date.now());
@@ -1936,6 +2045,16 @@ function renderMsg(m){
   content = content.replace(/⚠\s*Normalized model.*?for deepseek\.?\n?/g, '');
   // Strip raw <tool_call> XML tags and extract into structured tool calls
   if(m.role==='assistant') content = stripRawToolCallTags(content, m);
+  const isLocalEditAssistant=m.role==='assistant' && !!m.localEditContextId;
+  const isLocalEditCompletion=isLocalEditAssistant && !m._streaming;
+  const localEditContextForAssistant=isLocalEditCompletion ? getLocalEditContextForAssistant(m) : null;
+  let localEditCompletionHtml='';
+  if(isLocalEditCompletion){
+    localEditCompletionHtml=buildLocalEditCompletionHtml(m, localEditContextForAssistant);
+    content='';
+  }else if(m.role==='assistant' && m.localEditContextId && !m._streaming && !String(content||'').trim()){
+    content = m.localEditApplied ? '已完成修改，右侧文档已更新。' : '已完成修改。';
+  }
 
   // Hide ask_user block or raw JSON block
   if (content.includes('<ask_user>')) {
@@ -1953,7 +2072,8 @@ function renderMsg(m){
   let previewActionHtml='';
   let localEditActionHtml='';
   let fileCardsHtml='';
-  if(m.role==='assistant'&&typeof HermesArtifact!=='undefined'){
+  let localEditCardHtml='';
+  if(m.role==='assistant'&&typeof HermesArtifact!=='undefined'&&!isLocalEditAssistant){
     const p=HermesArtifact.parseHermesStream(content);
     let vis=(p.visibleText||'').trim();
     const mdCount=(p.completedArtifacts||[]).filter(a=>String(a?.attrs?.type||'markdown').toLowerCase()==='markdown').length;
@@ -1971,12 +2091,13 @@ function renderMsg(m){
     }
     content=vis;
     artifactRefsHtml=buildArtifactRefHtml(p);
-    // 有简单 chip 时隐藏上方的富卡片，保留小卡片即可
     fileCardsHtml=artifactRefsHtml?'':renderMarkdownFileCards(m);
     previewActionHtml=buildPreviewActionHtml(m.content||content);
     if(m.localEditContextId && !m._streaming){
-      localEditActionHtml=`<div class="local-edit-apply-row"><button type="button" class="local-edit-apply-btn" onclick="applyAssistantReplyToLocalEdit('${esc(m._msgId||'')}','${esc(m.localEditContextId)}')">应用到选区</button></div>`;
     }
+  }
+  if(m.role==='user' && m.localEditContext){
+    localEditCardHtml=renderLocalEditMessageCard(m.localEditContext,'chat-local-edit-card');
   }
   const modelBadge = '';
   const isLongUserMessage=m.role==='user' && (String(content||'').length>900 || String(content||'').split(/\r?\n/).length>14);
@@ -1991,7 +2112,7 @@ function renderMsg(m){
     <div class="msg-main">
       ${thinkingHtml}
       ${toolCallsHtml}
-      <div class="msg-bubble markdown-body${longClass}">${stepHtml}${imageLoadingHtml}${imagePromptHtml}${content?formatMsg(content):''}${renderMessageAttachments(m.attachments)}${fileCardsHtml}${artifactRefsHtml}${previewActionHtml}${localEditActionHtml}${modelBadge}${streamDots}${expandBtn}</div>
+      <div class="msg-bubble markdown-body${longClass}">${localEditCardHtml}${stepHtml}${imageLoadingHtml}${imagePromptHtml}${localEditCompletionHtml}${content?formatMsg(content):''}${renderMessageAttachments(m.attachments)}${fileCardsHtml}${artifactRefsHtml}${previewActionHtml}${localEditActionHtml}${modelBadge}${streamDots}${expandBtn}</div>
       ${renderMessageActions(m)}
     </div>
   </div>`;
@@ -2028,6 +2149,8 @@ function cleanMessageContent(raw){
   content = content.replace(/⚠\s*Normalized model.*?for deepseek\.?\n?/g, '');
   content = content.replace(/(?:^|\n)\s*(?:文件位置|本地路径)：[\s\S]*?(?=\n\s*\n|$)/g, '');
   content = content.replace(/(?:^|\n)\s*[-*]\s*(?:文件位置|本地路径)：?.*?(?=\n|$)/g, '');
+  content = stripLocalEditDiffNoise(content);
+  content = content.replace(/(?:^|\n)\s*[`|¦]?\s*r?eview diff\s*\n(?:\s*(?:[ab]\/{1,2}|[ab]\\|@@|diff --git|index\s|---\s|\+\+\+\s|[-+]\s).*(?:\n|$))+/gi, '\n').trim();
   content = content.replace(/```(?:diff|patch)[\s\S]*?(?:api\/images\/generate|Generate image via Hermes WebUI)[\s\S]*?```/gi, '').trim();
   content = content.replace(/```(?:python|py)[\s\S]*?(?:api\/images\/generate|Generate image via Hermes WebUI)[\s\S]*?```/gi, '').trim();
   content = content.replace(/(?:^|\n)\s*[`|¦]\s*review diff[\s\S]*?(?:api\/images\/generate|Generate image via Hermes WebUI)[\s\S]*?(?=\n\s*\n|$)/gi, '').trim();
@@ -2035,6 +2158,105 @@ function cleanMessageContent(raw){
   content = content.replace(/(?:^|\n)\s*(?:a\/mnt\/|b\/mnt\/|@@\s|[+]\s?#|[+]\s?>|[+]\s?\*\*\*|[+]\s?⚠)[\s\S]*?(?:\.\.\. omitted \d+ diff line\(s\)[^\n]*|(?=\n\s*<artifact\b)|$)/gi, '\n').trim();
   content = content.replace(/(?:^|\n)\s*\+\s*(?:import requests|URL\s*=|PAYLOAD\s*=|r\s*=|outputs\s*=|if outputs|for o in outputs)[\s\S]*?(?=\n\s*\n|$)/gi, '').trim();
   return content.trim();
+}
+
+function normalizeLocalEditPath(pathText){
+  let text=String(pathText||'').trim();
+  if(!text) return '';
+  text=text.replace(/\\/g,'/');
+  text=text.replace(/^([ab])\/{2,}/i,'$1/');
+  text=text.replace(/^[ab]\//i,'');
+  text=text.replace(/^\/mnt\/([a-z])\//i,(_,drive)=>drive.toUpperCase()+':/');
+  return text;
+}
+
+function parseLocalEditDiffInfo(raw){
+  const text=String(raw||'');
+  const re=/(?:^|\n)\s*[`|¦]?\s*r?eview diff\s*\n\s*([ab]\/{1,2}[^\n]+?)\s*(?:→|->)\s*([ab]\/{1,2}[^\n]+?)(?=\n|$)/i;
+  const match=re.exec(text);
+  if(!match) return null;
+  const before=normalizeLocalEditPath(match[1]);
+  const after=normalizeLocalEditPath(match[2]);
+  return { before, after, path: after || before };
+}
+
+function stripLocalEditDiffNoise(raw){
+  return String(raw||'')
+    .replace(/(?:^|\n)\s*(?:>\s*)?[`|¦]?\s*r?eview diff\s*\n[\s\S]*?(?=\n\s*(?:>\s*)?\*\*\s*编辑[前后]\s*[:：]?\s*\*\*|\n\s*<artifact\b|$)/gi, '\n')
+    .replace(/(?:^|\n)\s*[`|¦]?\s*r?eview diff\s*\n(?:\s*(?:[ab]\/{1,2}|[ab]\\|@@|diff --git|index\s|---\s|\+\+\+\s|[-+]\s).*(?:\n|$))+/gi, '\n')
+    .trim();
+}
+
+function localEditCompletionSummary(assistantMsg, localEditContext){
+  const after=cleanLocalEditReplacement(assistantMsg?.content||'', { allowPlain:false }) || '';
+  const original=String(localEditContext?.originalContent || localEditContext?.selectedText || '').trim();
+  if(after && original){
+    const beforePlain=original.replace(/\s+/g,' ').trim();
+    const afterPlain=after.replace(/\s+/g,' ').trim();
+    if(beforePlain && afterPlain && beforePlain !== afterPlain && beforePlain.length <= 42 && afterPlain.length <= 58){
+      return `已完成修改：将“${beforePlain}”修改为“${afterPlain}”。`;
+    }
+    if(afterPlain.length <= 90) return `已完成修改：已将选中内容更新为“${afterPlain}”。`;
+    return '已完成修改：已按你的要求优化选中内容，并更新到右侧文档。';
+  }
+  return assistantMsg?.localEditApplied ? '已完成修改，右侧文档已更新。' : '已完成修改。';
+}
+
+function renderLocalEditFileChip(pathText){
+  const path=normalizeLocalEditPath(pathText);
+  if(!path) return '';
+  const label=shortFileName(path);
+  return `<div class="local-edit-file-chip" title="${esc(path)}">`
+    + `<span class="local-edit-file-icon">${FILE_LOCATION_ICON}</span>`
+    + `<span class="local-edit-file-name">${esc(label)}</span>`
+    + `</div>`;
+}
+
+function renderLocalEditCompletionFileCard(pathText, localEditContext){
+  const path=normalizeLocalEditPath(pathText || localEditContext?.path || '');
+  if(!path) return '';
+  const label=shortFileName(path, localEditContext?.title);
+  const lineLabel=getLineLabel(localEditContext?.lineStart, localEditContext?.lineEnd);
+  const safePath=encodeURIComponent(path);
+  const safeName=encodeURIComponent(label);
+  return `<button type="button" class="artifact-ref-chip local-edit-file-card" title="${esc(path)}" onclick="event.stopPropagation(); if(typeof HermesArtifact!=='undefined') HermesArtifact.openHistoryFile('${safePath}', '${safeName}')">`
+    + `<span class="artifact-ref-icon" aria-hidden="true">${FILE_LOCATION_ICON}</span>`
+    + `<span class="artifact-ref-main">`
+    + `<strong>${esc(label)}${lineLabel ? `<span class="local-edit-file-lines">${esc(lineLabel)}</span>` : ''}</strong>`
+    + `<small class="local-edit-file-path">${esc(path)}</small>`
+    + `</span>`
+    + `<span class="artifact-ref-action">查看</span>`
+    + `</button>`;
+}
+
+function buildLocalEditCompletionHtml(assistantMsg, localEditContext){
+  const raw=String(assistantMsg?.content||'');
+  const cleanRaw=stripLocalEditDiffNoise(raw);
+  const diff=parseLocalEditDiffInfo(raw);
+  const path=(diff&&diff.path) || localEditContext?.path || '';
+  const summary=localEditCompletionSummary(assistantMsg, localEditContext);
+  const comparison=hasLocalEditComparisonBlock(cleanRaw) ? renderLocalEditComparison(cleanRaw) : '';
+  return `<div class="local-edit-completion">`
+    + renderLocalEditCompletionFileCard(path, localEditContext)
+    + `<p>${esc(summary)}</p>`
+    + (comparison ? `<div class="local-edit-comparison">${comparison}</div>` : '')
+    + `</div>`;
+}
+
+function getLocalEditContextForAssistant(msg){
+  if(!msg?.localEditContextId) return null;
+  const chat=currentChat();
+  const messages=chat?.messages||[];
+  const msgKey=getMessageKey(msg);
+  const foundIndex=messages.findIndex(item=>item===msg || (msgKey && getMessageKey(item)===msgKey));
+  const startIndex=foundIndex>=0 ? foundIndex-1 : messages.length-1;
+  for(let i=startIndex;i>=0;i--){
+    const item=messages[i];
+    if(item?.localEditContext && (!msg.localEditContextId || item.localEditContext.id===msg.localEditContextId)){
+      return item.localEditContext;
+    }
+  }
+  return msg.localEditContext || null;
 }
 
 function cleanThinkingContent(raw){
@@ -2100,6 +2322,96 @@ function getMessageKey(msg){
   return String(msg?._msgId || msg?.id || msg?.ts || '');
 }
 
+function stableMessageActionKey(msg){
+  if(!msg) return '';
+  if(!msg._actionKey) msg._actionKey = String(msg._msgId || msg.id || msg.ts || Date.now() + '_' + Math.random().toString(36).slice(2,8));
+  return String(msg._actionKey);
+}
+
+function getLineLabel(lineStart, lineEnd){
+  const start = Number(lineStart) || 0;
+  const end = Number(lineEnd) || 0;
+  if(!start) return '';
+  return start === end || !end ? `L${start}` : `L${start}-${end}`;
+}
+
+function hasLocalEditComparisonBlock(content){
+  const text=String(content||'');
+  return /\*\*\s*编辑前\s*[:：]?\s*\*\*[\s\S]*?\*\*\s*编辑后\s*[:：]?\s*\*\*/i.test(text);
+}
+
+function extractLocalEditBlock(text, label, stopLabel){
+  const value=String(text||'');
+  const header=new RegExp('\\*\\*\\s*'+label+'\\s*[:：]?\\s*\\*\\*','i').exec(value);
+  if(!header) return '';
+  let tail=value.slice(header.index + header[0].length).trim();
+  if(stopLabel){
+    const stop=new RegExp('\\n\\s*\\*\\*\\s*'+stopLabel+'\\s*[:：]?\\s*\\*\\*','i').exec(tail);
+    if(stop) tail=tail.slice(0, stop.index).trim();
+  }
+  const fenced=tail.match(/^```[^\n]*\n([\s\S]*?)\n```/);
+  if(fenced) return fenced[1].trim();
+  return tail.replace(/^```[^\n]*\n?|\n?```$/g,'').trim();
+}
+
+function renderLocalEditComparison(content){
+  const before=extractLocalEditBlock(content,'编辑前','编辑后');
+  const after=extractLocalEditBlock(content,'编辑后','编辑前');
+  if(!before && !after) return formatMsg(content);
+  return [
+    before ? `<section class="local-edit-compare-block is-before"><p>编辑前：</p><pre>${esc(before)}</pre></section>` : '',
+    after ? `<section class="local-edit-compare-block is-after"><p>编辑后：</p><pre>${esc(after)}</pre></section>` : ''
+  ].join('');
+}
+
+function buildLocalEditComparisonBlock(beforeText, afterText){
+  const before=String(beforeText||'').trim();
+  const after=String(afterText||'').trim();
+  if(!before || !after) return '';
+  return [
+    '',
+    '**编辑前：**',
+    '```md',
+    before,
+    '```',
+    '',
+    '**编辑后：**',
+    '```md',
+    after,
+    '```'
+  ].join('\n');
+}
+
+function extractLocalEditAfterBlock(text){
+  return extractLocalEditBlock(text,'编辑后','编辑前');
+}
+
+async function appendLocalEditComparisonIfMissing(assistantMsg, localEditContext){
+  if(!assistantMsg || !localEditContext || hasLocalEditComparisonBlock(assistantMsg.content)) return false;
+  const before=localEditContext.originalContent || localEditContext.selectedText || '';
+  const after=cleanLocalEditReplacement(assistantMsg.content || '');
+  const block=buildLocalEditComparisonBlock(before, after);
+  if(!block) return false;
+  assistantMsg.content = String(assistantMsg.content || '').trimEnd() + '\n\n' + block.trim();
+  return true;
+}
+
+function renderLocalEditMessageCard(ctx, extraClass=''){
+  if(!ctx) return '';
+  const fileLabel = ctx.path ? shortFileName(ctx.path) : (ctx.title || '当前文档');
+  const lineLabel = getLineLabel(ctx.lineStart, ctx.lineEnd);
+  const className = ['local-edit-card'];
+  if(extraClass) className.push(extraClass);
+  return `<div class="${className.join(' ')}">`
+    + `<span class="local-edit-card-title" title="${esc(fileLabel)}">${esc(fileLabel)}</span>`
+    + (lineLabel ? `<span class="local-edit-card-lines">${esc(lineLabel)}</span>` : '')
+    + `</div>`;
+}
+
+function getMessageCopyPayload(msg){
+  return { text: getMessageCopyText(msg), label: '已复制消息' };
+}
+
 function getAssistantRenderData(msg){
   const raw = cleanMessageContent(msg?.content || '');
   const parsed = typeof HermesArtifact !== 'undefined' ? HermesArtifact.parseHermesStream(raw) : null;
@@ -2121,6 +2433,8 @@ function renderMarkdownFileCards(msg){
 }
 
 function getMessageCopyText(msg){
+  if(!msg) return '';
+  if(msg.role !== 'assistant') return String(msg.content || '').trim();
   const data = getAssistantRenderData(msg);
   if (data.markdownArtifacts.length) return String(data.markdownArtifacts[0]?.content || data.visible || data.raw || '');
   return String(data.visible || data.raw || '');
@@ -2131,7 +2445,7 @@ function getMessageFeedbackValue(msg){
 }
 
 async function sendMessageFeedback(chatId, msgKey, feedback){
-  const value = feedback === 'like' ? 'like' : feedback === 'dislike' ? 'dislike' : '';
+  const value = feedback === 'like' ? 'like' : feedback === 'dislike' ? 'dislike' : feedback === 'partial' ? 'partial' : '';
   if (!chatId || !msgKey || !value) return false;
   const data = await apiPost(`/api/chats/${encodeURIComponent(chatId)}/messages/feedback`, { msgId: msgKey, feedback: value });
   return Boolean(data);
@@ -2141,23 +2455,34 @@ function renderMessageActions(m){
   if (!m || m.role !== 'assistant') return '';
   const active = getMessageFeedbackValue(m);
   const key = getMessageKey(m);
+  const actionKey = stableMessageActionKey(m);
   const chatId = esc(currentChat()?.id || currentChat()?._id || '');
   const likeActive = active === 'like' ? ' active' : '';
+  const partialActive = active === 'partial' ? ' active' : '';
   const dislikeActive = active === 'dislike' ? ' active' : '';
   const msgTime = formatChatDate(m, 'full');
   return `<div class="msg-actions" data-msg-key="${esc(key)}">
-    <button type="button" class="msg-action-btn" onclick="copyMessageContent('${esc(key)}')" title="??" aria-label="??">${COPY_ICON}</button>
-    <button type="button" class="msg-action-btn like-action${likeActive}" onclick="setMessageFeedback('${chatId}','${esc(key)}','like')" title="??" aria-label="??">${likeActive ? LIKE_FILLED_ICON : LIKE_ICON}</button>
-    <button type="button" class="msg-action-btn dislike-action${dislikeActive}" onclick="setMessageFeedback('${chatId}','${esc(key)}','dislike')" title="???" aria-label="???">${dislikeActive ? DISLIKE_FILLED_ICON : DISLIKE_ICON}</button>
+    <button type="button" class="msg-action-btn" onclick="copyMessageContent('${esc(actionKey)}')" title="复制" aria-label="复制">${COPY_ICON}</button>
+    <button type="button" class="msg-action-btn like-action${likeActive}" onclick="setMessageFeedback('${chatId}','${esc(key)}','like')" title="有用" aria-label="有用">${likeActive ? LIKE_FILLED_ICON : LIKE_ICON}</button>
+    <button type="button" class="msg-action-btn dislike-action${dislikeActive}" onclick="setMessageFeedback('${chatId}','${esc(key)}','dislike')" title="没用" aria-label="没用">${dislikeActive ? DISLIKE_FILLED_ICON : DISLIKE_ICON}</button>
+    <button type="button" class="msg-action-btn partial-action${partialActive}" onclick="setMessageFeedback('${chatId}','${esc(key)}','partial')" title="部分有用" aria-label="部分有用">${partialActive ? PARTIAL_FILLED_ICON : PARTIAL_ICON}</button>
     <span class="msg-action-time" title="${esc(msgTime)}">${esc(msgTime)}</span>
   </div>`;
 }
 
-async function copyMessageContent(msgKey){
+async function copyMessageContent(actionKey){
   const chat=currentChat();
-  const msg=(chat?.messages||[]).find(item=>getMessageKey(item)===String(msgKey));
-  if(!msg) return;
-  copyText(getMessageCopyText(msg), '已复制消息');
+  const msg=(chat?.messages||[]).find(item=>stableMessageActionKey(item)===String(actionKey));
+  if(!msg){
+    toast('没有找到可复制的消息','warning');
+    return;
+  }
+  const payload=getMessageCopyPayload(msg);
+  if(!String(payload.text||'').trim()){
+    toast('这条消息没有可复制的内容','warning');
+    return;
+  }
+  copyText(payload.text, payload.label || '已复制消息');
 }
 
 async function setMessageFeedback(chatId, msgKey, feedback){
@@ -2165,7 +2490,7 @@ async function setMessageFeedback(chatId, msgKey, feedback){
   if (!chat || String(chat.id || chat._id || '') !== String(chatId || '')) return;
   const msg=(chat.messages||[]).find(item=>getMessageKey(item)===String(msgKey));
   if (!msg || msg.role !== 'assistant') return;
-  msg.feedback = { value: feedback === 'like' ? 'like' : 'dislike', updatedAt: Date.now() };
+  msg.feedback = { value: feedback === 'like' ? 'like' : feedback === 'dislike' ? 'dislike' : feedback === 'partial' ? 'partial' : '', updatedAt: Date.now() };
   save();
   renderPage();
   sendMessageFeedback(chatId, msgKey, feedback).catch(()=>{});
@@ -2174,8 +2499,10 @@ async function setMessageFeedback(chatId, msgKey, feedback){
 const COPY_ICON=namedSvg('复制',15,'<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>');
 const LIKE_ICON=namedSvg('赞',18,'<svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M7.25 10.25V20" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M7.25 10.25L10.2 4.9C10.7 4 12 4.35 12 5.38V8.25H17.7C19.02 8.25 20.02 9.44 19.79 10.74L18.66 17.24C18.48 18.25 17.6 19 16.57 19H9.3C8.17 19 7.25 18.08 7.25 16.95V10.25Z" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M4.2 10.25H7.25V19H4.2C3.54 19 3 18.46 3 17.8V11.45C3 10.79 3.54 10.25 4.2 10.25Z" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>');
 const DISLIKE_ICON='<svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><g transform="rotate(180 12 12)"><path d="M7.25 10.25V20" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M7.25 10.25L10.2 4.9C10.7 4 12 4.35 12 5.38V8.25H17.7C19.02 8.25 20.02 9.44 19.79 10.74L18.66 17.24C18.48 18.25 17.6 19 16.57 19H9.3C8.17 19 7.25 18.08 7.25 16.95V10.25Z" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M4.2 10.25H7.25V19H4.2C3.54 19 3 18.46 3 17.8V11.45C3 10.79 3.54 10.25 4.2 10.25Z" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></g></svg>';
+const PARTIAL_ICON=namedSvg('部分有用',15,'<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><circle cx="12" cy="8" r="0.5" fill="currentColor"/></svg>');
 const LIKE_FILLED_ICON=LIKE_ICON;
 const DISLIKE_FILLED_ICON=DISLIKE_ICON;
+const PARTIAL_FILLED_ICON=PARTIAL_ICON;
 const FILE_LOCATION_ICON='<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M8 15h8"/><path d="M8 18h5"/></svg>';
 
 function normalizeMediaRef(value){
@@ -2431,9 +2758,15 @@ function toggleImageZoom(el,event){
 
 function openImagePreview(src,alt='图片'){
   const safeSrc=esc(mediaUrl(src));
-  openModal(`<div class="image-lightbox" onclick="closeModal()">
+  const record=imageRecordForSrc(src);
+  const prompt=record ? (record.prompt || record.sourcePrompt || '') : '';
+  const promptHtml=prompt ? `<div class="chat-image-lightbox-prompt"><div>${esc(prompt)}</div><button type="button" onclick="event.stopPropagation();copyText(this.previousElementSibling.textContent,'提示词已复制')">复制提示词</button></div>` : '';
+  openModal(`<div class="chat-image-lightbox" onclick="closeModal()">
     <button class="image-lightbox-close" onclick="event.stopPropagation();closeModal()" aria-label="关闭">${SVG.x}</button>
-    <img src="${safeSrc}" alt="${esc(alt||'图片')}" onclick="toggleImageZoom(this,event)">
+    <div class="chat-image-lightbox-stage" onclick="event.stopPropagation()">
+      <img src="${safeSrc}" alt="${esc(alt||'图片')}" onclick="toggleImageZoom(this,event)">
+      ${promptHtml}
+    </div>
   </div>`,{className:'image-lightbox-shell'});
 }
 
@@ -2450,6 +2783,192 @@ function isDefaultWebChat(c){
 }
 function visibleSessionChats(){
   return state.chats.filter(c => isCliChat(c) || isDefaultWebChat(c));
+}
+
+function compactMessageText(value){
+  return String(value || '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 600);
+}
+
+function imageIdSet(imageGeneration){
+  const ids = [
+    ...((imageGeneration?.outputs || []).map(item => item?.id || item?.url || item?.publicUrl)),
+    ...((imageGeneration?.inputs || []).map(item => item?.id || item?.url || item?.publicUrl)),
+  ].filter(Boolean).map(String);
+  return new Set(ids);
+}
+
+function messageRichScore(msg){
+  if(!msg) return 0;
+  let score = 0;
+  if(msg.localEditContextId) score += 8;
+  if(msg.localEditApplied) score += 6;
+  if(msg.localEditContext) score += 5;
+  if(Array.isArray(msg.imageGeneration?.outputs) && msg.imageGeneration.outputs.length) score += 8 + msg.imageGeneration.outputs.length;
+  if(Array.isArray(msg.imageGeneration?.inputs) && msg.imageGeneration.inputs.length) score += 3 + msg.imageGeneration.inputs.length;
+  if(Array.isArray(msg.toolCalls) && msg.toolCalls.length) score += 3 + msg.toolCalls.length;
+  if(Array.isArray(msg.processEvents) && msg.processEvents.length) score += 2;
+  if(Array.isArray(msg.attachments) && msg.attachments.length) score += 2 + msg.attachments.length;
+  if(msg.promptDebug) score += 2;
+  if(msg.thinking || msg.reasoning) score += 1;
+  return score;
+}
+
+function sameImageGeneration(a,b){
+  const left = imageIdSet(a?.imageGeneration);
+  const right = imageIdSet(b?.imageGeneration);
+  if(!left.size || !right.size) return false;
+  for(const id of left) if(right.has(id)) return true;
+  return false;
+}
+
+function findLocalMessageMatch(serverMsg, localMessages, used, index){
+  const serverId = String(serverMsg?._msgId || serverMsg?.id || '');
+  if(serverId){
+    const exact = localMessages.findIndex((msg,i) => !used.has(i) && String(msg?._msgId || msg?.id || '') === serverId);
+    if(exact >= 0) return exact;
+  }
+  if(serverMsg?.localEditContextId){
+    const localEdit = localMessages.findIndex((msg,i) => !used.has(i) && msg?.role === serverMsg.role && String(msg?.localEditContextId || '') === String(serverMsg.localEditContextId));
+    if(localEdit >= 0) return localEdit;
+  }
+  if(serverMsg?.imageGeneration){
+    const image = localMessages.findIndex((msg,i) => !used.has(i) && msg?.role === serverMsg.role && sameImageGeneration(serverMsg,msg));
+    if(image >= 0) return image;
+  }
+  const text = compactMessageText(serverMsg?.content || '');
+  if(text){
+    const byContent = localMessages.findIndex((msg,i) => !used.has(i) && msg?.role === serverMsg.role && compactMessageText(msg?.content || '') === text);
+    if(byContent >= 0) return byContent;
+  }
+  const localAtIndex = localMessages[index];
+  if(localAtIndex && !used.has(index) && localAtIndex.role === serverMsg?.role) return index;
+  const serverTs = Number(serverMsg?.ts || 0);
+  if(serverTs){
+    const byTime = localMessages.findIndex((msg,i) => !used.has(i) && msg?.role === serverMsg.role && Math.abs(Number(msg?.ts || 0) - serverTs) < 10000);
+    if(byTime >= 0) return byTime;
+  }
+  return -1;
+}
+
+function mergeMessageRecord(serverMsg={}, localMsg=null){
+  if(!localMsg) return { ...serverMsg };
+  const merged = { ...serverMsg };
+  if(!merged._msgId && localMsg._msgId) merged._msgId = localMsg._msgId;
+  if(localMsg._actionKey) merged._actionKey = localMsg._actionKey;
+  if(localMsg._streaming) merged._streaming = true;
+  const richFields = ['localEditContext','localEditContextId','localEditApplied','localEditAppliedAt','localEditApplyError','imageGeneration','attachments','toolCalls','processEvents','promptDebug','thinking','reasoning','feedback'];
+  for(const field of richFields){
+    const localValue = localMsg[field];
+    if(localValue === undefined || localValue === null) continue;
+    const serverValue = merged[field];
+    const serverEmptyArray = Array.isArray(serverValue) && !serverValue.length;
+    const localArray = Array.isArray(localValue);
+    if(serverValue === undefined || serverValue === null || serverEmptyArray || field === 'feedback'){
+      merged[field] = localArray ? [...localValue] : (typeof localValue === 'object' ? { ...localValue } : localValue);
+    }
+  }
+  if(localMsg.imageGeneration && merged.imageGeneration){
+    merged.imageGeneration = { ...merged.imageGeneration, ...localMsg.imageGeneration };
+    if(Array.isArray(localMsg.imageGeneration.outputs) && localMsg.imageGeneration.outputs.length) merged.imageGeneration.outputs = localMsg.imageGeneration.outputs;
+    if(Array.isArray(localMsg.imageGeneration.inputs) && localMsg.imageGeneration.inputs.length) merged.imageGeneration.inputs = localMsg.imageGeneration.inputs;
+  }
+  const localContent = String(localMsg.content || '');
+  const serverContent = String(merged.content || '');
+  const preferLocalContent = localContent && (
+    !serverContent
+    || localMsg._streaming
+    || localMsg.localEditContextId
+    || localMsg.localEditApplied
+    || (localMsg.imageGeneration?.outputs || []).length
+    || messageRichScore(localMsg) > messageRichScore(serverMsg)
+  );
+  if(preferLocalContent) merged.content = localContent;
+  return merged;
+}
+
+function mergeChatMessages(serverMessages=[], localMessages=[]){
+  const serverList = Array.isArray(serverMessages) ? serverMessages : [];
+  const localList = Array.isArray(localMessages) ? localMessages : [];
+  const used = new Set();
+  const merged = serverList.map((msg,index) => {
+    const match = findLocalMessageMatch(msg, localList, used, index);
+    if(match >= 0){
+      used.add(match);
+      return mergeMessageRecord(msg, localList[match]);
+    }
+    return { ...msg };
+  });
+  localList.forEach((msg,index) => {
+    if(used.has(index)) return;
+    if(msg?._streaming || msg?.localEditContextId || msg?.localEditContext || msg?.imageGeneration || messageRichScore(msg) > 0){
+      merged.push({ ...msg });
+    }
+  });
+  return merged;
+}
+
+function applySyncedChatData(chatId,data){
+  if(!data || !data.id) return null;
+  const idx=state.chats.findIndex(c=>c.id===chatId);
+  const existing=idx>=0 ? state.chats[idx] : null;
+  const cached=state.chatFullData[chatId] || {};
+  const localMessages=existing?.messages || cached.messages || [];
+  const mergedMessages=mergeChatMessages(data.messages || [], localMessages);
+  const nextData={ ...data, messages: mergedMessages };
+  if(idx>=0){
+    state.chats[idx]={
+      ...state.chats[idx],
+      title:data.title || state.chats[idx].title,
+      updatedAt:data.updatedAt || state.chats[idx].updatedAt,
+      createdAt:data.createdAt || state.chats[idx].createdAt,
+      preview:data.preview || state.chats[idx].preview,
+      readOnly:!!data.readOnly,
+      source:data.source || state.chats[idx].source,
+      agentId:data.agentId || state.chats[idx].agentId || '',
+      agentName:data.agentName || state.chats[idx].agentName || '',
+      chatType:data.chatType || state.chats[idx].chatType || (data.isMainAgentChat ? 'main' : 'task'),
+      isMainAgentChat:!!(data.isMainAgentChat || state.chats[idx].isMainAgentChat),
+      messages:mergedMessages,
+      messageCount:Math.max(data.messageCount || 0, mergedMessages.length),
+      _model:data.model || state.chats[idx]._model || state.model.model,
+    };
+    state.chats[idx].messages.forEach(m => { if(m.role === 'assistant') m._model = state.chats[idx]._model; });
+  }
+  state.chatFullData[chatId]=nextData;
+  return nextData;
+}
+
+async function persistAssistantMessageState(chatId,msg){
+  if(!chatId || !msg || msg.role !== 'assistant') return false;
+  const msgId=getMessageKey(msg);
+  if(!msgId) return false;
+  const payload={
+    content:msg.content || '',
+    thinking:msg.thinking || '',
+    reasoning:msg.reasoning || '',
+    localEditContextId:msg.localEditContextId || undefined,
+    localEditApplied:msg.localEditApplied,
+    localEditAppliedAt:msg.localEditAppliedAt,
+    localEditApplyError:msg.localEditApplyError || undefined,
+    imageGeneration:msg.imageGeneration || undefined,
+    toolCalls:msg.toolCalls || undefined,
+    processEvents:msg.processEvents || undefined,
+    promptDebug:msg.promptDebug || undefined,
+    feedback:msg.feedback || undefined,
+  };
+  Object.keys(payload).forEach(key=>payload[key]===undefined && delete payload[key]);
+  const updated=await apiPatch(`/api/chats/${encodeURIComponent(chatId)}/messages/${encodeURIComponent(msgId)}`, payload);
+  if(!updated) return false;
+  const chat=state.chats.find(c=>String(c.id||c._id||'')===String(chatId));
+  const messages=chat?.messages || state.chatFullData[chatId]?.messages || [];
+  const index=messages.findIndex(item=>getMessageKey(item)===msgId);
+  if(index>=0) messages[index]=mergeMessageRecord(updated,messages[index]);
+  if(chat) chat.messages=messages;
+  state.chatFullData[chatId]={...(state.chatFullData[chatId]||{}),id:chatId,messages};
+  return true;
 }
 
 async function removeChat(id,{silent=false}={}){
@@ -2474,18 +2993,7 @@ async function syncCurrentChat(chatId){
     const endpoint=isCliChat(c)?'/api/cli/sessions/':'/api/chats/';
     const data=await apiGet(endpoint+encodeURIComponent(chatId));
     if(data&&data.id){
-      const idx=state.chats.findIndex(c=>c.id===chatId);
-      if(idx>=0){
-        state.chats[idx].title=data.title;
-        state.chats[idx].updatedAt=data.updatedAt;
-        state.chats[idx].createdAt=data.createdAt||state.chats[idx].createdAt;
-        state.chats[idx].preview=data.preview||state.chats[idx].preview;
-        state.chats[idx].readOnly=!!data.readOnly;
-        state.chats[idx].source=data.source||state.chats[idx].source;
-        state.chats[idx].messages=data.messages||[];
-        state.chats[idx].messageCount=(data.messages||[]).length;
-      }
-      state.chatFullData[chatId]=data;
+      applySyncedChatData(chatId,data);
       state.chats.sort(compareChatCreatedDesc);
       const sessionItems=$('#sessionItems');
       if(sessionItems) sessionItems.innerHTML=renderSessionList();
@@ -2514,12 +3022,18 @@ async function selectChat(id){
   const sessionScrollTop=$('#sessionItems')?.scrollTop || 0;
   const artifactShell=document.querySelector('#artifactShell.open');
   const artifactHistory=document.querySelector('#artifactHistory');
-  const keepKnowledgeOpen=!!(artifactShell && artifactHistory && getComputedStyle(artifactHistory).display!=='none');
+  const artifactCtx=typeof HermesArtifact !== 'undefined' && typeof HermesArtifact.getCurrentMarkdownContext === 'function'
+    ? HermesArtifact.getCurrentMarkdownContext()
+    : null;
+  const keepArtifactOpen=!!(artifactShell && (
+    (artifactHistory && getComputedStyle(artifactHistory).display!=='none')
+    || artifactCtx?.path
+  ));
   state.currentChat = id;
-  state._artifactNeedsHydrate = !keepKnowledgeOpen;
+  state._artifactNeedsHydrate = !keepArtifactOpen;
   if (typeof HermesArtifact !== 'undefined') {
     try {
-      if (!keepKnowledgeOpen) { HermesArtifact.resetSession(); HermesArtifact.setLayout('chat'); }
+      if (!keepArtifactOpen) { HermesArtifact.resetSession(); HermesArtifact.setLayout('chat'); }
     } catch (_) {}
   }
   // Load full chat data from backend if not cached
@@ -2529,27 +3043,7 @@ async function selectChat(id){
     const endpoint = isCliChat(c) ? '/api/cli/sessions/' : '/api/chats/';
     const data = await apiGet(endpoint + encodeURIComponent(id));
     if (data) {
-      state.chatFullData[id] = data;
-      // Sync messages into local chat object
-      if (c) {
-        c.title = data.title || c.title;
-        c.source = data.source || c.source;
-        c.preview = data.preview || c.preview;
-        c.createdAt = data.createdAt || c.createdAt;
-        c.updatedAt = data.updatedAt || c.updatedAt;
-        c.readOnly = !!data.readOnly;
-        c.agentId = data.agentId || c.agentId || '';
-        c.agentName = data.agentName || c.agentName || '';
-        c.chatType = data.chatType || c.chatType || (data.isMainAgentChat ? 'main' : 'task');
-        c.isMainAgentChat = !!(data.isMainAgentChat || c.isMainAgentChat || c.chatType === 'main');
-        c.messageCount = data.messageCount || (data.messages||[]).length;
-        c.messages = data.messages || [];
-        c._model = data.model || state.model.model;
-        // Propagate model to each assistant message
-        c.messages.forEach(m => {
-          if (m.role === 'assistant') m._model = c._model;
-        });
-      }
+      applySyncedChatData(id,data);
     }
   }
   const selected=state.chats.find(x=>x.id===id);
@@ -2557,8 +3051,10 @@ async function selectChat(id){
   if(agentId && isFixedAgentMainChat(selected)){
     const p=getProfiles().find(x=>x.id===agentId&&x.enabled!==false);
     if(p) state.activeProfile=p.id;
+  } else if(isDefaultWebChat(selected)){
+    state.activeProfile='default';
   }
-  if(keepKnowledgeOpen){
+  if(keepArtifactOpen){
     refreshChatWithoutArtifact();
   }else{
     renderPage();
@@ -2651,6 +3147,11 @@ function imageAttachmentMarkdown(images=[]){
   return images.map(img=>`![${img.name||'参考图片'}](${imageSrc(img)})`).join('\n\n');
 }
 
+
+function isWebuiImageToolName(name=''){
+  const value=String(name||'').toLowerCase();
+  return value==='webui_image_generate' || value.endsWith('_webui_image_generate') || value.includes('webui_image_generate');
+}
 function renderMessageAttachments(images=[]){
   const list=(images||[]).map(img=>({ img, src:imageSrc(img) })).filter(row=>row.img&&row.src);
   if(!list.length) return '';
@@ -2660,6 +3161,22 @@ function renderMessageAttachments(images=[]){
       <span>${esc(img.name||'上传图片')}</span>
     </button>`).join('')}
   </div>`;
+}
+
+function imageGenerationElapsedMs(imageGeneration={}){
+  const startedAt=Number(imageGeneration.startedAt||imageGeneration.startedAtMs||0);
+  if(!startedAt) return Number(imageGeneration.elapsedMs||imageGeneration.duration||0)||0;
+  const now=Date.now();
+  return Math.max(0, Number(imageGeneration.elapsedMs||0)||now-startedAt);
+}
+
+function formatImageGenerationElapsed(imageGeneration={}){
+  const ms=imageGenerationElapsedMs(imageGeneration);
+  if(!ms) return '';
+  const seconds=Math.max(0, Math.floor(ms/1000));
+  const mins=Math.floor(seconds/60);
+  const secs=seconds%60;
+  return mins ? `${mins}:${String(secs).padStart(2,'0')}` : `${secs}s`;
 }
 
 function imageGenerationLoadingText(imageGeneration={}){
@@ -2682,9 +3199,48 @@ function generatedImageMarkdown(images=[]){
 function generatedImageMessageContent(imageGeneration={}){
   const imageMd=generatedImageMarkdown(imageGeneration.outputs||[]);
   const prompt=cleanImagePromptForDisplay(imageGeneration.optimizedPrompt||imageGeneration.prompt||'');
-  const label=imageGeneration.mode==='image-to-image'?'图生图提示词':'图像提示词';
+  const label=String(imageGeneration.mode||'').startsWith('image-to-image')?'图生图提示词':'图像提示词';
   const promptText=prompt?`${label}：\n${prompt}\n\n`:'';
   return `图片已生成\n\n${promptText}${imageMd}`.trim();
+}
+
+function parseWebuiImageToolResult(value){
+  const raw=String(value||'').trim();
+  if(!raw || !raw.includes('webui_image_generate_result')) return null;
+  const candidates=[raw];
+  const fenced=raw.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  if(fenced) candidates.push(fenced[1].trim());
+  const jsonMatch=raw.match(/\{[\s\S]*"webui_image_generate_result"[\s\S]*\}/);
+  if(jsonMatch) candidates.push(jsonMatch[0]);
+  for(const item of candidates){
+    try{
+      const data=JSON.parse(item);
+      if(data?.type==='webui_image_generate_result' || (data?.success===true && Array.isArray(data?.outputs))){
+        return data;
+      }
+    }catch(_){}
+  }
+  return null;
+}
+
+function applyWebuiImageToolResult(msg,result){
+  if(!msg||!result||!Array.isArray(result.outputs)||!result.outputs.length) return false;
+  msg.imageGeneration={
+    ...(msg.imageGeneration||{}),
+    status:'done',
+    model:result.model||msg.imageGeneration?.model||'',
+    provider:result.provider||msg.imageGeneration?.provider||'',
+    outputs:result.outputs||[],
+    inputs:result.inputs||[],
+    prompt:result.prompt||msg.imageGeneration?.prompt||'',
+    sourcePrompt:result.sourcePrompt||msg.imageGeneration?.sourcePrompt||'',
+    optimizedPrompt:result.prompt||msg.imageGeneration?.optimizedPrompt||'',
+    mode:result.mode||msg.imageGeneration?.mode||'',
+    optimizedByAgent:!!result.optimizedByAgent,
+    directMode:false
+  };
+  msg.content=generatedImageMessageContent(msg.imageGeneration)||result.content||result.markdown||'\u5df2\u751f\u6210\u56fe\u7247\u3002';
+  return true;
 }
 
 function cleanImagePromptForDisplay(value=''){
@@ -2704,7 +3260,7 @@ function renderImagePromptPanel(imageGeneration={}){
   const hasOutputs=Array.isArray(imageGeneration.outputs)&&imageGeneration.outputs.length>0;
   const hasOptimized=!!imageGeneration.optimizedByAgent || !!imageGeneration.optimizeSkill || (!!source && prompt!==source);
   if(!prompt || (!hasOutputs && !hasOptimized)) return '';
-  const title=imageGeneration.mode==='image-to-image'
+  const title=String(imageGeneration.mode||'').startsWith('image-to-image')
     ? '图生图提示词'
     : (hasOptimized && prompt!==source ? '图像提示词' : '最终提示词');
   const skill=imageGeneration.optimizeSkill ? ` · ${imageGeneration.optimizeSkill}` : '';
@@ -2716,9 +3272,10 @@ function renderImagePromptPanel(imageGeneration={}){
 
 function imageAttachmentAgentText(images=[]){
   if(!images.length) return '';
-  return '\n\n[用户上传了本地图片，已保存到本地。重要执行规则：如果用户要求生成、改图、优化效果或基于参考图出图，请直接调用可用的图片生成工具处理；不要输出 curl、Python、HTTP 请求示例或“等待 API 返回”的文案；如果当前工具不能读取参考图，请直接说明工具限制。]\n'+images.map((img,i)=>{
+  return '\n\n[The user uploaded local images and WebUI saved them locally. Important rule: if the user asks to generate, edit, optimize, or create based on reference images, call the webui_image_generate tool directly. This is the only default image generation endpoint inside WebUI. It uses WebUI Model Configuration for the image model and API key. Do not switch to Hermes native image_gen, and do not ask the user to configure ~/.hermes/.env. Do not output curl, Python, HTTP examples, or text like waiting for API. For image-to-image/reference tasks, pass the attachment IDs below as attachmentIds.]\n'+images.map((img,i)=>{
     const parts=[
       `${i+1}. ${img.name||'参考图片'}`,
+      `附件ID：${img.id||'未返回'}`,
       `本地路径：${img.path||'未返回'}`,
       `预览地址：${mediaUrl(img.url||img.publicUrl)}`,
     ];
@@ -2779,8 +3336,7 @@ function isImageGenerationIntent(pendingImages=[]){
   if(state.imageEditReference) return true;
   const ta=$('#chatInput');
   const text=String(ta?.value||'').trim();
-  if(IMAGE_PROMPT_PREFIXES.some(prefix=>text.startsWith(prefix))) return true;
-  if(pendingImages.length && /^(生成|画|绘制|做|出|改|修改|优化|换|加|去掉|保持|参考|基于).*(图|图片|图像|海报|头像|壁纸|插画|照片|视觉|效果)/i.test(text)) return true;
+  if(pendingImages.length && /^(generate|draw|create|edit|modify|optimize|change|replace|remove|keep|reference|based on).*(image|picture|photo|poster|avatar|wallpaper|illustration|visual|effect)/i.test(text)) return true;
   return false;
 }
 
@@ -2804,6 +3360,7 @@ async function sendImageGenerationMessage(txt,pendingImages=[]){
     ? `基于已选择的参考图进行二次编辑。上一轮提示：${previousPrompt}\n本轮修改：${userPrompt}`
     : userPrompt;
   let prompt=basePrompt;
+  let optimizedByImageAgent=false;
   const imageInputIds=mergedImages.map(img=>img.id).filter(Boolean);
   const userContent=`图像生成：${userPrompt}${mergedImages.length?'\n\n参考图片：\n'+imageAttachmentMarkdown(mergedImages):''}`;
   const userMsgId='img_user_'+Date.now();
@@ -2817,7 +3374,7 @@ async function sendImageGenerationMessage(txt,pendingImages=[]){
   save();
 
   const msgId='img_'+Date.now();
-  const assistantMsg={role:'assistant',content:'',imageGeneration:{status:'loading',stage:state.forceImageGeneration?(mergedImages.length?'editing':'generating'):'optimizing',sourcePrompt:userPrompt,prompt:basePrompt},_msgId:msgId,_streaming:true,ts:Date.now()};
+  const assistantMsg={role:'assistant',content:'',imageGeneration:{status:'loading',stage:'optimizing',sourcePrompt:userPrompt,prompt:basePrompt,directMode:false,startedAt:Date.now()},_msgId:msgId,_streaming:true,ts:Date.now()};
   c.messages.push(assistantMsg);
   const streamController=new AbortController();
   setStreamingState(true,streamController,msgId);
@@ -2826,10 +3383,13 @@ async function sendImageGenerationMessage(txt,pendingImages=[]){
   flushMsgUpdates();
   const area=$('#messagesArea');
   if(area) area.scrollTop=area.scrollHeight;
+  let imageRequestTimedOut=false;
+  let imageProgressTimer=null;
+  let imageTimeoutTimer=null;
 
   try{
     const profile=profileForChat(c);
-    if(!state.forceImageGeneration){
+    try{
       const optimized=await optimizeImagePromptWithAgent({
         prompt:basePrompt,
         userPrompt,
@@ -2840,6 +3400,7 @@ async function sendImageGenerationMessage(txt,pendingImages=[]){
         profilePrompt:profile?.systemPrompt||'',
       },streamController.signal);
       if(optimized?.prompt) prompt=optimized.prompt;
+      optimizedByImageAgent=!!optimized;
       assistantMsg.content='';
       assistantMsg.imageGeneration={
         status:'loading',
@@ -2848,12 +3409,44 @@ async function sendImageGenerationMessage(txt,pendingImages=[]){
         prompt,
         optimizedPrompt:prompt,
         optimizeSkill:optimized?.skill||'',
-        mode:optimized?.mode||''
+        mode:optimized?.mode||'',
+        optimizedByAgent:optimizedByImageAgent,
+        directMode:!!state.forceImageGeneration,
+        startedAt:assistantMsg.imageGeneration?.startedAt||Date.now()
       };
       assistantMsg.thinking='';
       renderMsgUpdate(msgId,assistantMsg);
+    }catch(optimizeError){
+      if(streamController.signal.aborted) throw optimizeError;
+      assistantMsg.imageGeneration={
+        status:'loading',
+        stage:mergedImages.length?'editing':'generating',
+        sourcePrompt:userPrompt,
+        prompt,
+        optimizedPrompt:prompt,
+        optimizeSkill:'',
+        mode:imageInputIds.length?'image-to-image':'text-to-image',
+        optimizedByAgent:false,
+        directMode:!!state.forceImageGeneration,
+        loadingText:'提示词优化失败，已使用原始描述继续生成。'
+      };
+      renderMsgUpdate(msgId,assistantMsg);
     }
     const requestModel = isImageModelId(state.chatModelOverride) ? state.chatModelOverride : 'auto';
+    const imageRequestController=new AbortController();
+    const imageRequestStartedAt=Date.now();
+    const updateImageWaitText=()=>{
+      const waited=Math.max(0,Math.floor((Date.now()-imageRequestStartedAt)/1000));
+      assistantMsg.imageGeneration={...(assistantMsg.imageGeneration||{}),loadingText:'\u6b63\u5728\u751f\u6210\u56fe\u7247\uff08\u5df2\u7b49\u5f85 '+waited+' \u79d2\uff09'};
+      renderMsgUpdate(msgId,assistantMsg);
+    };
+    imageTimeoutTimer=setTimeout(()=>{imageRequestTimedOut=true;imageRequestController.abort();},180000);
+    if(streamController.signal){
+      if(streamController.signal.aborted) imageRequestController.abort();
+      else streamController.signal.addEventListener('abort',()=>imageRequestController.abort(),{once:true});
+    }
+    updateImageWaitText();
+    imageProgressTimer=setInterval(updateImageWaitText,1000);
     const resp=await fetch(apiBase()+'/api/images/generate',{
       method:'POST',
       cache:'no-store',
@@ -2861,41 +3454,53 @@ async function sendImageGenerationMessage(txt,pendingImages=[]){
       body:JSON.stringify({
         prompt,
         sourcePrompt:userPrompt,
-        optimizedByAgent:!state.forceImageGeneration,
+        optimizedByAgent:optimizedByImageAgent,
         attachmentIds:imageInputIds,
         model:requestModel,
         chatId:c._id||c.id,
         publicBase:publicApiBase(),
+        userMsgId,
+        assistantMsgId:msgId,
       }),
-      signal:streamController.signal,
+      signal:imageRequestController.signal,
     });
+    clearTimeout(imageTimeoutTimer);
+    if(imageProgressTimer){clearInterval(imageProgressTimer);imageProgressTimer=null;}
     const json=await resp.json().catch(()=>({}));
     const data=json.code===0?json.data:null;
     if(!data){
       assistantMsg.content='图像生成失败：'+(json.msg||'请检查图像模型场景是否已配置为 OpenAI 图片接口。');
       toast('图像生成失败','error');
     }else{
-      assistantMsg.imageGeneration={model:data.model,outputs:data.outputs||[],inputs:data.inputs||[],prompt:data.prompt||prompt,sourcePrompt:userPrompt,optimizedPrompt:prompt,optimizeSkill:assistantMsg.imageGeneration?.optimizeSkill||'',mode:assistantMsg.imageGeneration?.mode||(imageInputIds.length?'image-to-image':'text-to-image'),optimizedByAgent:!state.forceImageGeneration};
+      assistantMsg.imageGeneration={model:data.model,outputs:data.outputs||[],inputs:data.inputs||[],prompt:data.prompt||prompt,sourcePrompt:userPrompt,optimizedPrompt:prompt,optimizeSkill:assistantMsg.imageGeneration?.optimizeSkill||'',mode:assistantMsg.imageGeneration?.mode||(imageInputIds.length?'image-to-image':'text-to-image'),optimizedByAgent:optimizedByImageAgent,directMode:assistantMsg.imageGeneration?.directMode};
       assistantMsg.content=generatedImageMessageContent(assistantMsg.imageGeneration)||data.content||'已生成图片。';
       const idx=state.chats.findIndex(x=>x.id===c.id);
       if(data.chat&&idx>=0){
         state.chats[idx].title=data.chat.title||state.chats[idx].title;
         state.chats[idx].updatedAt=data.chat.updatedAt||Date.now();
         state.chats[idx].messages=[...c.messages];
+        state.chats[idx].messageCount=Math.max(data.chat.messageCount||0,c.messages.length);
+        state.chatFullData[c.id]={...(state.chatFullData[c.id]||{}),...(data.chat||{}),id:c.id,messages:[...c.messages]};
       }
       toast('图片已生成并保存到本地','success');
     }
   }catch(e){
     if(e.name==='AbortError'){
-      assistantMsg.content='已终止任务。';
-      toast('已终止当前任务','info');
+      if(imageRequestTimedOut){
+        assistantMsg.content='\u56fe\u50cf\u751f\u6210\u5931\u8d25\uff1a\u8bf7\u6c42\u8d85\u8fc7 180 \u79d2\uff0c\u8bf7\u7a0d\u540e\u91cd\u8bd5\u6216\u68c0\u67e5\u56fe\u50cf\u6a21\u578b\u670d\u52a1\u3002';
+        toast('\u56fe\u50cf\u751f\u6210\u8d85\u65f6','error');
+      }else{
+        assistantMsg.content='\u5df2\u7ec8\u6b62\u4efb\u52a1\u3002';
+        toast('\u5df2\u7ec8\u6b62\u5f53\u524d\u4efb\u52a1','info');
+      }
     }else{
       assistantMsg.content='图像生成失败：'+(e.message||'未知错误');
       toast('图像生成失败','error');
     }
   }finally{
+    if(imageTimeoutTimer){clearTimeout(imageTimeoutTimer);imageTimeoutTimer=null;}
+    if(imageProgressTimer){clearInterval(imageProgressTimer);imageProgressTimer=null;}
     assistantMsg._streaming=false;
-    state.forceImageGeneration=false;
     renderMsgUpdate(msgId,assistantMsg);
     flushMsgUpdates();
     setStreamingState(false,null,null);
@@ -2952,10 +3557,29 @@ async function sendMessage(){
     '任务类型：知识库文档局部编辑',
     `文档标题：${localEditContext.title||'当前知识库文档'}`,
     `文档路径：${localEditContext.path||'当前 Artifact 尚未保存'}`,
+    `行号范围：L${localEditContext.lineStart||''}-${localEditContext.lineEnd||''}`,
     `选区来源：${localEditContext.mode==='source'?'代码模式':'预览模式'}`,
-    '要求：只返回可替换原选区的最终片段，不要重写全文；如果需要操作文件，请只替换该选区并保存到同一路径。',
-    '选区内容：',
-    localEditContext.selectedText||'',
+    '',
+    '编辑前内容：',
+    '```',
+    localEditContext.originalContent||localEditContext.selectedText||'',
+    '```',
+    '',
+    '要求：',
+    '1. 只修改上述选中部分，保持原文风格和格式',
+    '2. 修改后写回原文档的对应位置',
+    '3. 完成修改后，请在回复中以代码块形式输出编辑前后的对比，格式如下：',
+    '',
+    '**编辑前：**',
+    '```',
+    '[原始内容]',
+    '```',
+    '',
+    '**编辑后：**',
+    '```',
+    '[修改后内容]',
+    '```',
+    '',
     '</webui_local_edit_context>'
   ].join('\n') : '';
   const artifactAgentContext=artifactContext && !localEditContext ? [
@@ -2963,7 +3587,11 @@ async function sendMessage(){
     '任务类型：当前 Markdown 文档上下文',
     `文档标题：${artifactContext.title||shortFileName(artifactContext.path)}`,
     `文档路径：${artifactContext.path}`,
-    '说明：用户正在预览这个本地 Markdown 文件。若用户要求修改/优化/续写，请优先针对该文件；需要写回时请读取并保存同一路径。',
+    `文档总行数：${artifactContext.totalLines ? artifactContext.totalLines + ' 行' : ''}`,
+    '说明：用户正在预览这个本地 Markdown 文件。若用户要求修改/优化/续写，请优先针对该文件。',
+    '修改规则：如果用户指定了行号范围（如"改第 80-100 行"），请只修改该范围内的内容，不要重写全文。',
+    '需要写回时请读取并保存同一路径。工具操作优先使用行号定位选区。',
+    '重要：如果你修改了该文件内容并保存成功，请在回复末尾用一句话总结你做了什么修改（如："已完成修改：改写了第 80-100 行，优化了段落结构"），方便用户知道变更内容。',
     '</webui_current_markdown_context>'
   ].join('\n') : '';
   const contentWithAttachments=txt+agentAttachmentContext+localEditAgentContext+artifactAgentContext;
@@ -3014,13 +3642,15 @@ async function sendMessage(){
     content: contentWithAttachments,
     displayContent: txt,
     attachments: pendingImages,
-    scene:pendingImages.length?'vision':'chat',
+    scene:pendingImages.length?'vision':(profile?.modelScene||'chat'),
     model:requestModel,
     profileId:profile?.id,
     profileName:profile?.name||'默认助手',
     profilePrompt:profile?.systemPrompt||'',
     profileSkillIds:profile?.skillIds||[],
     localEditContext,
+    userMsgId,
+    assistantMsgId:msgId,
   }, {
     signal: streamController.signal,
     onPerf(data) {
@@ -3052,15 +3682,28 @@ async function sendMessage(){
       fullContent += text;
       assistantMsg.content = fullContent;
       if (typeof HermesArtifact !== 'undefined') {
-        const now = performance.now ? performance.now() : Date.now();
-        const shouldFeedArtifact = /<\/?(?:artifact|think)\b/i.test(text) || now - lastArtifactFeedAt >= STREAM_MARKDOWN_INTERVAL_MS;
-        if (shouldFeedArtifact) {
-          const p = HermesArtifact.parseHermesStream(fullContent);
-          assistantMsg.thinking = [fullReasoning, p.think].filter(Boolean).join('\n\n');
-          HermesArtifact.feedStream(p, true);
-          lastArtifactFeedAt = now;
-        } else if (fullReasoning) {
+        if (localEditContext) {
           assistantMsg.thinking = fullReasoning;
+        } else if (fullReasoning) {
+          const now = performance.now ? performance.now() : Date.now();
+          const shouldFeedArtifact = /<\/?(?:artifact|think)\b/i.test(text) || now - lastArtifactFeedAt >= STREAM_MARKDOWN_INTERVAL_MS;
+          if (shouldFeedArtifact) {
+            const p = HermesArtifact.parseHermesStream(fullContent);
+            assistantMsg.thinking = [fullReasoning, p.think].filter(Boolean).join('\n\n');
+            HermesArtifact.feedStream(p, true);
+            lastArtifactFeedAt = now;
+          } else {
+            assistantMsg.thinking = fullReasoning;
+          }
+        } else {
+          const now = performance.now ? performance.now() : Date.now();
+          const shouldFeedArtifact = /<\/?(?:artifact|think)\b/i.test(text) || now - lastArtifactFeedAt >= STREAM_MARKDOWN_INTERVAL_MS;
+          if (shouldFeedArtifact) {
+            const p = HermesArtifact.parseHermesStream(fullContent);
+            assistantMsg.thinking = p.think;
+            HermesArtifact.feedStream(p, true);
+            lastArtifactFeedAt = now;
+          }
         }
       } else {
         assistantMsg.thinking = fullReasoning;
@@ -3145,9 +3788,25 @@ async function sendMessage(){
         });
         return;
       }
-      const tc = { name: data.name, status: 'running', input: data.args || data.preview || '', output: '' };
+      const tc = { name: data.name, status: 'running', input: data.args || data.preview || '', output: '', startedAt: Date.now() };
       tools.push(tc);
       assistantMsg.toolCalls = [...tools];
+      if(isWebuiImageToolName(data.name)){
+        let imageToolArgs=data.args || {};
+        if(typeof imageToolArgs==='string'){
+          try{ imageToolArgs=JSON.parse(imageToolArgs); }catch(_){ imageToolArgs={prompt:imageToolArgs}; }
+        }
+        assistantMsg.imageGeneration={
+          ...(assistantMsg.imageGeneration||{}),
+          status:'loading',
+          stage:Array.isArray(imageToolArgs.attachmentIds)&&imageToolArgs.attachmentIds.length?'editing':'generating',
+          prompt:imageToolArgs.prompt||'',
+          sourcePrompt:imageToolArgs.sourcePrompt||imageToolArgs.prompt||'',
+          loadingText:'???? WebUI ????',
+          startedAt:assistantMsg.imageGeneration?.startedAt||Date.now()
+        };
+        assistantMsg.content='';
+      }
       pushProcessEvent({ type:'tool-start', name:data.name });
       renderMsgUpdate(msgId, assistantMsg);
     },
@@ -3156,10 +3815,25 @@ async function sendMessage(){
         if (t.name === data.name && t.status === 'running') {
           t.status = data.is_error ? 'error' : 'success';
           t.output = data.preview || '';
+          t.duration = data.duration || (t.startedAt ? Date.now() - t.startedAt : 0);
           break;
         }
       }
       assistantMsg.toolCalls = [...tools];
+      if(isWebuiImageToolName(data.name)){
+        if(data.is_error){
+          assistantMsg.imageGeneration=null;
+        }else{
+          const toolResult=parseWebuiImageToolResult(data.preview);
+          if(toolResult){
+            const elapsedMs=data.duration || imageGenerationElapsedMs(assistantMsg.imageGeneration);
+            applyWebuiImageToolResult(assistantMsg, toolResult);
+            assistantMsg.imageGeneration={...(assistantMsg.imageGeneration||{}),elapsedMs,duration:elapsedMs};
+          }else if(assistantMsg.imageGeneration?.status==='loading'){
+            assistantMsg.imageGeneration={...(assistantMsg.imageGeneration||{}),status:'done',elapsedMs:data.duration||imageGenerationElapsedMs(assistantMsg.imageGeneration),duration:data.duration||imageGenerationElapsedMs(assistantMsg.imageGeneration)};
+          }
+        }
+      }
       pushProcessEvent({ type:'tool-done', name:data.name, error:!!data.is_error, elapsed:data.duration||0 });
       if(data.is_error) toast('工具 '+data.name+' 执行失败','error');
       renderMsgUpdate(msgId, assistantMsg);
@@ -3173,7 +3847,7 @@ async function sendMessage(){
         if (sessionItems) sessionItems.innerHTML = renderSessionList();
       }
     },
-    onDone() {
+    async onDone() {
       assistantMsg._streaming = false;
       setStreamingState(false,null,null);
       const doneEvent={ type:'done', ms: Math.round((performance.now ? performance.now() : Date.now()) - perfStart), tokens: tokenCount, chars: fullContent.length };
@@ -3198,6 +3872,13 @@ async function sendMessage(){
             if (parsed.question && parsed.options) qData = parsed;
             else if (parsed.questions && Array.isArray(parsed.questions)) qData = parsed;
           } catch(e) {}
+        }
+      }
+
+      if(String(assistantMsg.content||'').includes('webui_image_generate_result')){
+        const toolResult=parseWebuiImageToolResult(assistantMsg.content||'');
+        if(toolResult){
+          applyWebuiImageToolResult(assistantMsg, toolResult);
         }
       }
 
@@ -3257,10 +3938,32 @@ async function sendMessage(){
       }
 
       if (typeof HermesArtifact !== 'undefined') {
-        const p = HermesArtifact.parseHermesStream(assistantMsg.content || '');
-        HermesArtifact.finalizeStream(p);
+        if(localEditContext){
+          await autoApplyAssistantReplyToLocalEdit(assistantMsg, localEditContext);
+          await appendLocalEditComparisonIfMissing(assistantMsg, localEditContext);
+          if (typeof HermesArtifact.refreshArtifactDocument === 'function' && localEditContext.path) {
+            await HermesArtifact.refreshArtifactDocument({
+              path: localEditContext.path,
+              title: localEditContext.title,
+              oldContent: localEditContext.sourceSnapshot,
+              tab: 'source',
+              scrollToHighlight: true,
+            }).catch(() => {});
+          }
+          if(!cleanMessageContent(assistantMsg.content||'').trim()){
+            assistantMsg.content = assistantMsg.localEditApplied ? '已完成修改，右侧文档已更新。' : '已完成修改。';
+          }
+        }else{
+          const p = HermesArtifact.parseHermesStream(assistantMsg.content || '');
+          HermesArtifact.finalizeStream(p);
+          // 主动刷新右侧文档：Agent 完成对话后，只要有 Markdown 文档打开就刷新
+          if (typeof HermesArtifact.refreshArtifactDocument === 'function') {
+            HermesArtifact.refreshArtifactDocument().catch(() => {});
+          }
+        }
       }
       renderMsgUpdate(msgId, assistantMsg);
+      await persistAssistantMessageState(c._id || c.id, assistantMsg);
       syncCurrentChat(c._id || c.id);
     },
     onError(msg) {
@@ -3271,6 +3974,7 @@ async function sendMessage(){
       assistantMsg.error = true;
       pushProcessEvent({ type:'error', message:msg||'请求失败' });
       renderMsgUpdate(msgId, assistantMsg);
+      persistAssistantMessageState(c._id || c.id, assistantMsg).catch(()=>{});
       syncCurrentChat(c._id || c.id);
     },
     onAbort() {
@@ -3303,19 +4007,55 @@ function renderMsgUpdate(msgId, msg) {
   }
 }
 
-function cleanLocalEditReplacement(text){
+function cleanLocalEditReplacement(text, options={}){
   let value=String(text||'').trim();
+  let structured=false;
   value=value.replace(/<think>[\s\S]*?<\/think>/gi,'').trim();
+  value=value.replace(/<redacted_thinking>[\s\S]*?<\/redacted_thinking>/gi,'').trim();
+  const afterBlock=extractLocalEditAfterBlock(value);
+  if(afterBlock) return afterBlock;
+  value=stripLocalEditDiffNoise(value);
   const artifactMatch=value.match(/<artifact\s+[^>]*>[\s\S]*?<\/artifact>/i);
   if(artifactMatch && typeof HermesArtifact!=='undefined'){
+    structured=true;
     const parsed=HermesArtifact.parseHermesStream(value);
     const last=(parsed.completedArtifacts||[]).slice(-1)[0];
     if(last?.content) value=last.content.trim();
     else value=(parsed.visibleText||value).trim();
   }
-  const fenced=value.match(/^```(?:markdown|md|text)?\s*\n([\s\S]*?)\n```$/i);
-  if(fenced) value=fenced[1].trim();
+  if(hasLocalEditComparisonBlock(value)){
+    const after=extractLocalEditAfterBlock(value);
+    if(after) return after;
+  }
+  const fences=[...value.matchAll(/```(?:markdown|md|text)?\s*\n([\s\S]*?)\n```/gi)];
+  if(fences.length){
+    structured=true;
+    value=fences[fences.length-1][1].trim();
+  }
+  value=value.replace(/⚠️?\s*session_id:\s*\S+/gi,'').trim();
+  value=value.replace(/^\s*r?eview diff\s*\n(?:\s*(?:[ab]\/{1,2}|[ab]\\|@@|diff --git|index\s|---\s|\+\+\+\s|[-+]\s).*(?:\n|$))+/gim,'').trim();
+  value=value.replace(/^\s*review diff[\s\S]*?(?=\n\s*\n|$)/im,'').trim();
+  value=value.replace(/^\s*[ab]\/[^\n]+\s*→\s*[ab]\/[^\n]+\s*$/gm,'').trim();
+  if(options.requireStructured && !structured) return '';
+  if(!value || value.length < 10) return '';
   return value;
+}
+
+async function autoApplyAssistantReplyToLocalEdit(assistantMsg, localEditContext){
+  if(!assistantMsg || !localEditContext || assistantMsg.localEditApplied) return false;
+  const replacement=cleanLocalEditReplacement(assistantMsg.content||'', { requireStructured:true });
+  if(!replacement) return false;
+  if(typeof HermesArtifact==='undefined'||typeof HermesArtifact.applyLocalEditReplacement!=='function') return false;
+  try{
+    const ok=await HermesArtifact.applyLocalEditReplacement(replacement, localEditContext);
+    assistantMsg.localEditApplied=!!ok;
+    if(ok) assistantMsg.localEditAppliedAt=Date.now();
+    return !!ok;
+  }catch(e){
+    assistantMsg.localEditApplyError=e?.message||'应用到选区失败';
+    toast(assistantMsg.localEditApplyError,'error');
+    return false;
+  }
 }
 
 async function applyAssistantReplyToLocalEdit(msgId, contextId){
@@ -3348,13 +4088,22 @@ function flushMsgUpdates() {
         if(msg.role==='assistant' && msg.imageGeneration?.outputs?.length){
           content=generatedImageMarkdown(msg.imageGeneration.outputs);
         }
+        const isLocalEditAssistant=msg.role==='assistant' && !!msg.localEditContextId;
+        const isLocalEditCompletion=isLocalEditAssistant && !msg._streaming;
+        const localEditContextForAssistant=isLocalEditCompletion ? getLocalEditContextForAssistant(msg) : null;
+        let localEditCompletionHtml='';
+        if(isLocalEditCompletion){
+          localEditCompletionHtml=buildLocalEditCompletionHtml(msg, localEditContextForAssistant);
+          content='';
+        }
         let refs = '';
         let previewAction = '';
         let localEditAction = '';
         let fileCards = '';
+        let localEditCard = msg.role==='user' && msg.localEditContext ? renderLocalEditMessageCard(msg.localEditContext,'chat-local-edit-card') : '';
         const stepHtml = msg.step ? `<div class="msg-step-indicator">Step ${msg.step}</div>` : '';
         const isStreaming = !!msg._streaming;
-        if (msg.role === 'assistant' && typeof HermesArtifact !== 'undefined') {
+        if (msg.role === 'assistant' && typeof HermesArtifact !== 'undefined' && !isLocalEditAssistant) {
           const p = HermesArtifact.parseHermesStream(content);
           let vis = (p.visibleText || '').trim();
           if (!vis && (p.activeArtifact || (p.completedArtifacts || []).length)) {
@@ -3376,7 +4125,7 @@ function flushMsgUpdates() {
             fileCards = refs ? '' : renderMarkdownFileCards(msg);
           }
           if (msg.localEditContextId && !isStreaming) {
-            localEditAction = `<div class="local-edit-apply-row"><button type="button" class="local-edit-apply-btn" onclick="applyAssistantReplyToLocalEdit('${esc(msg._msgId||'')}','${esc(msg.localEditContextId)}')">应用到选区</button></div>`;
+            // 已通过右侧面板自动刷新，无需对话内"应用到选区"按钮
           }
         }
         const modelBadge = '';
@@ -3387,7 +4136,7 @@ function flushMsgUpdates() {
         const bodyHtml = isStreaming && content && !fileCards && !refs
           ? `<div>${esc(content).replace(/\n/g,'<br>')}</div>`
           : (content ? formatMsg(content) : '');
-        bubble.innerHTML = stepHtml + imageLoadingHtml + imagePromptHtml + bodyHtml + renderMessageAttachments(msg.attachments) + fileCards + refs + previewAction + localEditAction + promptDebugHtml + modelBadge + streamDots;
+        bubble.innerHTML = localEditCard + stepHtml + imageLoadingHtml + imagePromptHtml + localEditCompletionHtml + bodyHtml + renderMessageAttachments(msg.attachments) + fileCards + refs + previewAction + localEditAction + promptDebugHtml + modelBadge + streamDots;
         if (!isStreaming || fileCards || refs) enhanceMessageMarkdown(bubble);
       }
       // Update thinking / process block
@@ -3407,15 +4156,7 @@ function flushMsgUpdates() {
       if (main) {
         let tcEl = main.querySelector('.msg-tool-calls');
         if (msg.toolCalls && msg.toolCalls.length) {
-          const tcHtml = '<div class="msg-tool-calls">' + msg.toolCalls.map((tc,i) => {
-            const id = 'tc_' + (msg.ts||Date.now()) + '_' + i;
-            const sc = tc.status === 'success' ? 'success' : tc.status === 'error' ? 'error' : 'running';
-            const st = tc.status === 'success' ? '完成' : tc.status === 'error' ? '失败' : '运行中';
-            let bh = '';
-            if (tc.input) bh += `<div class="tool-input">输入\n${esc(typeof tc.input === 'string' ? tc.input : JSON.stringify(tc.input,null,2))}</div>`;
-            if (tc.output) bh += `<div class="tool-output">输出\n${esc(typeof tc.output === 'string' ? tc.output : JSON.stringify(tc.output,null,2))}</div>`;
-            return `<div class="msg-tool-call"><div class="msg-tool-call-header" data-tool="${esc(tc.name)}" onclick="toggleCollapse('${id}')"><svg class="tool-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M4 7.5h16"/><path d="M7.5 4v7"/><path d="m4 16 4-4 4 4"/><path d="m12 16 4-4 4 4"/></svg><span class="tool-name">${esc(tc.name)}</span><span class="tool-status ${sc}">${st}</span><span class="tool-toggle collapsed" id="toggle_${id}">▼</span></div><div class="msg-tool-call-body collapsed" id="body_${id}">${bh}</div></div>`;
-          }).join('') + '</div>';
+          const tcHtml = renderToolCallsHtml(msg.toolCalls, msg);
           if (tcEl) tcEl.outerHTML = tcHtml;
           else if (bubbleWrap) bubbleWrap.insertAdjacentHTML('beforebegin', tcHtml);
         } else if (tcEl) {
@@ -4019,7 +4760,8 @@ function mergeFixedProfiles(stored){
   const byId=new Map((Array.isArray(stored)?stored:[]).map(p=>[String(p.id||''),p]));
   return defaultFixedProfiles().map(def=>{
     const old=byId.get(def.id)||{};
-    return normalizeProfile({...def,...old,id:def.id,name:def.name,role:def.role,fixed:true,color:old.color||def.color,systemPrompt:old.systemPrompt||def.systemPrompt,knowledgeFocus:def.knowledgeFocus});
+    const keepUserPrompt = def.id === 'default' && old.systemPrompt;
+    return normalizeProfile({...def,...old,id:def.id,name:def.name,role:def.role,fixed:true,color:old.color||def.color,systemPrompt:keepUserPrompt?old.systemPrompt:def.systemPrompt,knowledgeFocus:def.knowledgeFocus});
   });
 }
 function getProfiles(){
@@ -5144,15 +5886,15 @@ function renderMemoryLibrary(){
           <div class="memory-side-heading"><div><strong>核心文件</strong><small>引导角色、身份和工具指南。</small></div></div>
           ${coreHtml||'<div class="memory-empty-small">核心记忆初始化中...</div>'}
         </div>
-        <div class="memory-side-section agent-memory-filter">
-          <div class="memory-side-heading"><div><strong>Agent 记忆</strong><small>按 Agent 查看 soul / memory / workspace。</small></div></div>
-          <div class="memory-agent-list">
-            ${getProfiles().map(p=>`<button class="memory-agent-chip" onclick="openAgentMemory('${esc(p.id)}')">${profileAvatarHtml(p,'chat-agent-avatar')}<span>${esc(p.name)}</span></button>`).join('')}
+          <div class="memory-side-section agent-memory-filter">
+            <div class="memory-side-heading"><div><strong>Agent 记忆</strong><small>按 Agent 查看关联记忆。</small></div></div>
+            <div class="memory-agent-list">
+              ${getProfiles().map(p=>`<button class="memory-agent-chip" onclick="openAgentMemory('${esc(p.id)}')">${profileAvatarHtml(p,'chat-agent-avatar')}<span>${esc(p.name)}</span></button>`).join('')}
+            </div>
           </div>
-        </div>
-        <div class="memory-side-section fill">
-          <div class="memory-side-heading"><div><strong>历史对话文件</strong><small>默认按时间排序，也可按 Agent 推断的类型查看。</small></div></div>
-          <div class="memory-list-tabs">
+          <div class="memory-side-section fill">
+            <div class="memory-side-heading"><div><strong>历史对话文件</strong><small>按全部或类型查看。</small></div></div>
+            <div class="memory-list-tabs">
             <button class="${conversationView==='all'?'active':''}" onclick="setMemoryConversationView('all')">全部</button>
             <button class="${conversationView==='type'?'active':''}" onclick="setMemoryConversationView('type')">按类型</button>
           </div>
@@ -5590,7 +6332,7 @@ function renderModels(){
     return '<div class="model-lib-item model-lib-item-rich '+(enabled?'':'disabled')+'"><label class="toggle model-card-toggle" title="'+(enabled?'停用模型':'启用模型')+'" onclick="event.stopPropagation()"><input type="checkbox" '+(enabled?'checked':'')+' onchange="toggleLibraryModel(\''+esc(m.id)+'\',this.checked)"><span class="toggle-slider"></span></label><div class="model-lib-main"><div class="model-lib-name-row"><strong>'+esc(m.name)+'</strong><span class="model-status-pill '+(enabled?'on':'off')+'">'+(enabled?'启用':'停用')+'</span></div><small>'+esc(m.provider||'custom')+' · '+esc(apiFormatLabel(m.apiFormat||'openai-chat'))+' · '+esc(m.base||'未填写地址')+'</small><div class="model-lib-meta">'+tags+'</div></div><div class="model-lib-actions"><button class="btn btn-xs btn-secondary" id="modelTestBtn_'+domId(m.id)+'" onclick="testLibraryModel(\''+esc(m.id)+'\')">测试</button><button class="btn btn-xs btn-secondary" onclick="editLibraryModel(\''+esc(m.id)+'\')">编辑</button><button class="btn btn-xs btn-ghost danger" onclick="deleteLibraryModel(\''+esc(m.id)+'\')">删除</button></div></div>';
   };
   const groupHtml=Object.entries(groups).map(([provider,items])=>'<div class="model-provider-group"><div class="model-provider-title"><strong>'+esc(provider)+'</strong><span>'+items.length+'</span></div>'+items.map(modelRow).join('')+'</div>').join('');
-  return '<div class="models-view"><div class="page-header"><h2>模型配置</h2><div style="display:flex;gap:8px;align-items:center"><span class="model-scope-pill">当前作用域：'+(activeModelScope()==='webui'?'WebUI 快速模式':'Agent 模式')+'</span><button class="btn btn-sm btn-primary" onclick="addModelModal()">添加模型</button></div></div><div class="models-content model-v15-content"><section class="model-panel model-scenario-panel"><h3>应用场景</h3><p>为普通对话、深度推理、图像生成和失败退回分别绑定模型，选择后只影响当前场景。</p><div class="scenario-card-grid">'+cards+'</div></section><div class="model-main-layout"><section class="model-panel model-fetch-panel"><h3>获取模型</h3><p>按 CCswitch 常见方式填写 Provider、API Key 和接口地址，默认按 OpenAI 兼容接口获取模型列表。</p><div class="model-connector-grid"><label><span class="model-field-label">Provider</span><input id="mProvider" placeholder="例如 xiaomi / deepseek / openai" value="'+esc(state.model.provider||'')+'" oninput="applyProviderPreset()"></label><label class="model-field-wide"><span class="model-field-label">API Key</span><input id="mKey" type="password" placeholder="sk-..." value="'+esc(state.model.key||'')+'"></label><label class="model-field-wide"><span class="model-field-label">API 请求地址</span><input id="mBase" placeholder="例如 https://api.openai.com/v1" value="'+esc(state.model.base||'')+'"></label><label><span class="model-field-label">接口格式</span><select id="mApiFormat" onchange="applyApiFormatPreset()"><option value="openai-chat">OpenAI 兼容</option><option value="openai-image">OpenAI 图像</option><option value="ollama">Ollama / 本地</option><option value="anthropic_messages">Anthropic Messages</option><option value="gemini">Gemini</option></select></label><div id="mFormatHint" class="model-format-hint">小米、DeepSeek、OpenAI 兼容服务通常只需要 API Key 与 /v1 地址。</div><button class="btn btn-secondary" id="fetchModelsBtn" onclick="fetchModelsForLibrary()">获取模型</button></div><div id="modelMsg" class="model-msg"></div><div id="fetchModelsList" class="model-fetch-list" style="display:none"><div class="model-fetch-actions"><button class="btn btn-xs btn-secondary" onclick="selectAllFetchModels()">全选</button><button class="btn btn-xs btn-secondary" onclick="deselectAllFetchModels()">清空</button><button class="btn btn-xs btn-primary" onclick="addSelectedFetchedModels()">添加选中</button></div><div id="fetchModelsItems"></div></div></section><section class="model-panel model-library-panel"><h3>模型库</h3><p>模型按 Provider 分组，可测试、编辑和绑定到应用场景。</p><div class="model-lib-list">'+(lib.length?groupHtml:'<div class="model-empty-state"><strong>暂无模型</strong><span>先获取或手动添加一个模型。</span><button class="btn btn-sm btn-primary" onclick="addModelModal()">添加模型</button></div>')+'</div></section></div></div></div>';
+  return '<div class="models-view"><div class="page-header"><h2>模型配置</h2><div style="display:flex;gap:8px;align-items:center"><span class="model-scope-pill">当前配置：'+(activeModelScope()==='webui'?'WebUI 专用':'Agent 共享')+'</span><button class="btn btn-sm btn-primary" onclick="addModelModal()">添加模型</button></div></div><div class="models-content model-v15-content"><section class="model-panel model-scenario-panel"><h3>应用场景</h3><p>配置普通对话、深度推理、图片识别、图像生成和失败退回使用的默认模型。</p><div class="scenario-card-grid">'+cards+'</div></section><div class="model-main-layout"><section class="model-panel model-fetch-panel"><h3>获取模型</h3><p>从 Provider 拉取模型列表，勾选后加入模型库；图像模型请使用 OpenAI 图像接口格式。</p><div class="model-connector-grid"><label><span class="model-field-label">Provider</span><input id="mProvider" placeholder="如 xiaomi / deepseek / openai" value="'+esc(state.model.provider||'')+'" oninput="applyProviderPreset()"></label><label class="model-field-wide"><span class="model-field-label">API Key</span><input id="mKey" type="password" placeholder="sk-..." value="'+esc(state.model.key||'')+'"></label><label class="model-field-wide"><span class="model-field-label">API 地址</span><input id="mBase" placeholder="如 https://api.openai.com/v1" value="'+esc(state.model.base||'')+'"></label><label><span class="model-field-label">接口格式</span><select id="mApiFormat" onchange="applyApiFormatPreset()"><option value="openai-chat">OpenAI 对话</option><option value="openai-image">OpenAI 图像</option><option value="ollama">Ollama / 本地</option><option value="anthropic_messages">Anthropic Messages</option><option value="gemini">Gemini</option></select></label><div id="mFormatHint" class="model-format-hint">提示：DeepSeek、OpenAI 兼容服务通常填写 API Key 和 /v1 地址。</div><button class="btn btn-secondary" id="fetchModelsBtn" onclick="fetchModelsForLibrary()">获取模型</button></div><div id="modelMsg" class="model-msg"></div><div id="fetchModelsList" class="model-fetch-list" style="display:none"><div class="model-fetch-actions"><button class="btn btn-xs btn-secondary" onclick="selectAllFetchModels()">全选</button><button class="btn btn-xs btn-secondary" onclick="deselectAllFetchModels()">取消全选</button><button class="btn btn-xs btn-primary" onclick="addSelectedFetchedModels()">加入模型库</button></div><div id="fetchModelsItems"></div></div></section><section class="model-panel model-library-panel"><h3>模型库</h3><p>按 Provider 分组管理模型，可启用、测试、编辑或删除。</p><div class="model-lib-list">'+(lib.length?groupHtml:'<div class="model-empty-state"><strong>暂无模型</strong><span>请先添加或获取模型。</span><button class="btn btn-sm btn-primary" onclick="addModelModal()">添加模型</button></div>')+'</div></section></div></div></div>';
 }
 
 function domId(value){return String(value||'').replace(/[^a-zA-Z0-9_-]/g,'_')}
@@ -6189,8 +6931,8 @@ function renderSettings(){
         <div class="settings-item"><div><div class="settings-label">历史归档目录</div><div class="settings-desc">对话自动导出的 Markdown 历史；留空使用 数据根目录\\history-md。</div></div>
           <input id="sHistoryDir" value="${esc(state.settings.historyDir||'')}" placeholder="留空自动匹配数据根目录\\history-md" style="width:420px">
         </div>
-        <div class="settings-item"><div><div class="settings-label">?????</div><div class="settings-desc">??? Markdown ?????????????????????????????????????</div></div>
-          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><input id="sMdLibraryDir" value="${esc(state.settings.mdLibraryDir||'')}" placeholder="??????????????\output-md" style="width:420px"><button class="btn btn-secondary" type="button" onclick="openPathFromSetting('md')">????</button></div>
+        <div class="settings-item"><div><div class="settings-label">输出文档目录</div><div class="settings-desc">生成和预览的 Markdown 输出文档统一保存到这里；留空使用 数据根目录\output-md。</div></div>
+          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><input id="sMdLibraryDir" value="${esc(state.settings.mdLibraryDir||'')}" placeholder="留空自动匹配数据根目录\output-md" style="width:420px"><button class="btn btn-secondary" type="button" onclick="openPathFromSetting('md')">打开</button></div>
         </div>
         <div class="settings-item"><div><div class="settings-label">迁移检查</div><div class="settings-desc">如果旧 backend/data 和外部目录同时存在，建议确认后再手动合并数据，避免覆盖。</div></div>
           <button class="btn btn-secondary" onclick="openPathFromSetting('data')">打开当前数据目录</button>
@@ -6683,7 +7425,7 @@ async function testGateway(id,{silent=false}={}){
     }
   }
   const ok=resp?.code===0 && resp?.data?.ok;
-  if(!silent) toast(resp?.data?.msg || resp?.msg || (ok?'????':'????'), ok?'success':'error');
+  if(!silent) toast(resp?.data?.msg || resp?.msg || (ok?'测试成功':'测试失败'), ok?'success':'error');
   return {ok,msg:resp?.data?.msg||resp?.msg||''};
 }
 async function saveGateway(id){
@@ -6692,7 +7434,7 @@ async function saveGateway(id){
   if(id==='feishu' && p.enabled){
     const result=await testGateway(id,{silent:true});
     if(!result?.ok){
-      toast(result?.msg || '?????????? appId / appSecret', 'error');
+      toast(result?.msg || '飞书网关测试失败，请检查 appId / appSecret', 'error');
       return;
     }
   }else{
@@ -6700,7 +7442,7 @@ async function saveGateway(id){
   }
   _gatewaysCache=await apiGet('/api/gateway')||_gatewaysCache;
   _channelsCache=_gatewaysCache;
-  closeModal();renderPage();toast(id==='feishu'?'????????':'???????','success');
+  closeModal();renderPage();toast(id==='feishu'?'飞书网关已保存':'网关配置已保存','success');
 }
 let _logsCache=null;
 function renderLogs(){
@@ -6801,7 +7543,6 @@ function profileModal(profile){
       <section class="agent-editor-section agent-avatar-field">
         <span id="pfAvatarPreview" class="profile-avatar" style="${p.avatar?`background-image:url('${esc(p.avatar)}');background-size:cover;background-position:center`:`background:${p.color||'var(--c-block-lime)'}`}">${p.avatar?'':esc((p.name||'A').charAt(0))}</span>
         <div class="agent-editor-section-main">
-          <strong>Agent 信息</strong>
           <small>头像、记忆入口与启用状态会同步影响对话页和 Agent 切换。</small>
           <div class="agent-avatar-actions">
             <button class="btn btn-xs btn-secondary" onclick="document.getElementById('pfAvatarInput').click()">更换头像</button>
@@ -6817,7 +7558,7 @@ function profileModal(profile){
       </div>
       <label class="agent-editor-prompt">Agent 提示词<textarea id="pfPrompt" placeholder="描述这个 Agent 的身份、能力边界、工作方式…">${esc(p.systemPrompt||'')}</textarea></label>
       <section class="agent-skill-picker">
-        <div class="agent-skill-picker-head"><strong>可用技能</strong><small>只注入当前 Agent 勾选的技能。</small></div>
+        <div class="agent-skill-picker-head"><strong>技能</strong><small>选择这个 Agent 默认可使用的技能。</small></div>
         <div class="agent-skill-list">${skillHtml}</div>
       </section>
     </div>
@@ -7530,7 +8271,7 @@ async function initApp() {
   const themeIcon = $('#themeIcon');
   if (themeIcon) themeIcon.innerHTML = state.theme === 'dark' ? SVG.moon : SVG.sun;
   const hljsTheme = document.getElementById('hljsTheme');
-  if(hljsTheme) hljsTheme.href = state.theme === 'dark' ? 'https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/styles/github-dark.min.css' : 'https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/styles/github.min.css';
+  if(hljsTheme) hljsTheme.href = state.theme === 'dark' ? 'frontend/css/github-dark.min.css' : 'frontend/css/github.min.css';
 
   // Load settings
   const settings = await apiGet('/api/settings');
@@ -7570,7 +8311,7 @@ async function initApp() {
 
   // Load WebUI chats and real Hermes CLI sessions together.
   await refreshChatSources({limit:state.cliSessionLimit||500,keepCurrent:false});
-  if (state.chats.length) await selectChat(state.chats[state.chats.length-1].id);
+  if (state.chats.length) await selectChat(state.chats[0].id);
 
   // Load skills
   await loadSkills();
@@ -7607,8 +8348,3 @@ function toggleSecretInput(id, btn){
   input.type=show?'text':'password';
   if(btn) btn.classList.toggle('active', show);
 }
-
-
-
-
-

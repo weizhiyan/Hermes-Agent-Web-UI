@@ -1,7 +1,11 @@
 const fs = require('fs');
 const path = require('path');
 
-const DEFAULT_EXTERNAL_SKILL_DIR = path.resolve(process.env.HERMES_WEBUI_SKILL_DIR || '/mnt/e/AI/记忆/skills');
+const DEFAULT_EXTERNAL_SKILL_DIRS = [
+  process.env.HERMES_WEBUI_SKILL_DIR,
+  '/mnt/e/AI/记忆/skills',
+  'E:\\AI\\记忆\\skills',
+].filter(Boolean);
 const EXTERNAL_SKILL_DIRS = (process.env.HERMES_WEBUI_SKILL_DIRS || '')
   .split(path.delimiter)
   .map(v => v.trim())
@@ -19,7 +23,7 @@ function normalizeFsPath(target = '') {
 }
 
 function externalSkillRoots() {
-  const roots = [...EXTERNAL_SKILL_DIRS, DEFAULT_EXTERNAL_SKILL_DIR]
+  const roots = [...EXTERNAL_SKILL_DIRS, ...DEFAULT_EXTERNAL_SKILL_DIRS]
     .map(normalizeFsPath)
     .map(p => path.resolve(p));
   return [...new Set(roots)].filter(p => fs.existsSync(p));
@@ -83,11 +87,24 @@ function skillFiles(root) {
 
 function externalSkillDirs(root) {
   if (!fs.existsSync(root)) return [];
-  let entries = [];
-  try { entries = fs.readdirSync(root, { withFileTypes: true }); } catch { return []; }
-  return entries
-    .filter(entry => entry.isDirectory() && !entry.name.startsWith('.') && entry.name !== 'node_modules')
-    .map(entry => path.join(root, entry.name));
+  const out = [];
+  const walk = (dir, depth = 0) => {
+    if (depth > 3 || out.length >= 120) return;
+    let entries = [];
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    const hasSkillFile = entries.some(entry => entry.isFile() && /^(SKILL|README)\.md$/i.test(entry.name));
+    if (hasSkillFile && dir !== root) {
+      out.push(dir);
+      return;
+    }
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      if (entry.name.startsWith('.') || entry.name === 'node_modules' || entry.name === 'tests') continue;
+      walk(path.join(dir, entry.name), depth + 1);
+    }
+  };
+  walk(root, 0);
+  return out;
 }
 
 function skillFromDir(skillDir, root) {
@@ -108,9 +125,10 @@ function skillFromDir(skillDir, root) {
     name,
     desc: description,
     description,
-    tags: ['自定义', '外置Skill'],
-    source: parsed.meta.source || 'external',
-    category: parsed.meta.category || path.basename(root) || '外置Skill',
+    tags: ['自定义', '外置 Skill'],
+    source: 'external',
+    originalSource: parsed.meta.source || '',
+    category: parsed.meta.category || path.basename(root) || '外置 Skill',
     on: true,
     enabled: true,
     prompt: parsed.raw,

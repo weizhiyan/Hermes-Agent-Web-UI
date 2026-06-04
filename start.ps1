@@ -2,8 +2,11 @@
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $backend = Join-Path $root 'backend'
 $logDir = Join-Path $root 'logs'
-$port = $env:PORT
+$port = $env:WEBUI_PORT
+if (-not $port) { $port = $env:HERMES_WEBUI_PORT }
 if (-not $port) { $port = '3381' }
+$env:WEBUI_PORT = $port
+Remove-Item Env:PORT -ErrorAction SilentlyContinue
 
 $rootEnv = Join-Path $root '.env'
 $backendEnv = Join-Path $backend '.env'
@@ -44,7 +47,7 @@ if (-not (Test-Path $logDir)) {
   New-Item -ItemType Directory -Path $logDir | Out-Null
 }
 
-Start-Process -FilePath node -ArgumentList 'backend/server.js' -WorkingDirectory $root -WindowStyle Hidden
+Start-Process -FilePath node -ArgumentList 'backend/supervisor.js' -WorkingDirectory $root -WindowStyle Hidden
 
 Write-Host "Hermes Agent is starting on http://127.0.0.1:$port/"
 

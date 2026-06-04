@@ -41,6 +41,12 @@ function migrate(database) {
       chat_id TEXT,
       prompt_text TEXT,
       context_reply TEXT,
+      cluster_key TEXT,
+      normalized_text TEXT,
+      keywords TEXT DEFAULT '[]',
+      example_questions TEXT DEFAULT '[]',
+      last_question_at INTEGER,
+      report_status TEXT DEFAULT 'none',
       created_at INTEGER,
       updated_at INTEGER
     );
@@ -71,6 +77,29 @@ function migrate(database) {
   if (!columns.includes('frequency')) {
     database.exec("ALTER TABLE knowledge_nodes ADD COLUMN frequency INTEGER DEFAULT 1");
   }
+  if (!columns.includes('cluster_key')) {
+    database.exec("ALTER TABLE knowledge_nodes ADD COLUMN cluster_key TEXT");
+  }
+  if (!columns.includes('normalized_text')) {
+    database.exec("ALTER TABLE knowledge_nodes ADD COLUMN normalized_text TEXT");
+  }
+  if (!columns.includes('keywords')) {
+    database.exec("ALTER TABLE knowledge_nodes ADD COLUMN keywords TEXT DEFAULT '[]'");
+  }
+  if (!columns.includes('example_questions')) {
+    database.exec("ALTER TABLE knowledge_nodes ADD COLUMN example_questions TEXT DEFAULT '[]'");
+  }
+  if (!columns.includes('last_question_at')) {
+    database.exec("ALTER TABLE knowledge_nodes ADD COLUMN last_question_at INTEGER");
+  }
+  if (!columns.includes('report_status')) {
+    database.exec("ALTER TABLE knowledge_nodes ADD COLUMN report_status TEXT DEFAULT 'none'");
+  }
+  database.exec(`
+    CREATE INDEX IF NOT EXISTS idx_nodes_cluster_key ON knowledge_nodes(cluster_key);
+    CREATE INDEX IF NOT EXISTS idx_nodes_frequency ON knowledge_nodes(frequency);
+    CREATE INDEX IF NOT EXISTS idx_nodes_report_status ON knowledge_nodes(report_status);
+  `);
 }
 
 function uuid() {
@@ -89,32 +118,52 @@ function parseTags(value) {
   return [];
 }
 
+function parseJsonArray(value) {
+  if (Array.isArray(value)) return value;
+  if (typeof value === 'string') {
+    try {
+      const parsed = JSON.parse(value);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  }
+  return [];
+}
+
+function hydrateNode(row) {
+  if (!row) return null;
+  row.tags = parseTags(row.tags);
+  row.keywords = parseJsonArray(row.keywords);
+  row.example_questions = parseJsonArray(row.example_questions);
+  return row;
+}
+
 // --- Node CRUD ---
 
-function createNode({ title, summary, category, quality, quality_reason, tags, md_path, source, chat_id, prompt_text, context_reply, frequency }) {
+function createNode({ title, summary, category, quality, quality_reason, tags, md_path, source, chat_id, prompt_text, context_reply, frequency, cluster_key, normalized_text, keywords, example_questions, last_question_at, report_status }) {
   const database = getDb();
   const id = uuid();
   const ts = now();
   database.prepare(`
-    INSERT INTO knowledge_nodes (id, title, summary, category, quality, quality_reason, tags, md_path, source, chat_id, prompt_text, context_reply, created_at, updated_at, frequency)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(id, title, summary || null, category || '临时', quality || 'gray', quality_reason || null, JSON.stringify(tags || []), md_path || null, source || 'manual', chat_id || null, prompt_text || null, context_reply || null, ts, ts, Number(frequency) || 1);
+    INSERT INTO knowledge_nodes (id, title, summary, category, quality, quality_reason, tags, md_path, source, chat_id, prompt_text, context_reply, created_at, updated_at, frequency, cluster_key, normalized_text, keywords, example_questions, last_question_at, report_status)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(id, title, summary || null, category || '??', quality || 'gray', quality_reason || null, JSON.stringify(tags || []), md_path || null, source || 'manual', chat_id || null, prompt_text || null, context_reply || null, ts, ts, Number(frequency) || 1, cluster_key || null, normalized_text || null, JSON.stringify(keywords || []), JSON.stringify(example_questions || []), last_question_at || ts, report_status || 'none');
   return getNode(id);
 }
 
 function getNode(id) {
   const database = getDb();
   const row = database.prepare('SELECT * FROM knowledge_nodes WHERE id = ?').get(id);
-  if (row) row.tags = parseTags(row.tags);
-  return row || null;
+  return hydrateNode(row);
 }
 
 function appendNodeFilters(sql, params, { category, quality, search, start, end } = {}) {
   if (category) { sql += ' AND category = ?'; params.push(category); }
   if (quality) { sql += ' AND quality = ?'; params.push(quality); }
   if (search) {
-    sql += ' AND (title LIKE ? OR summary LIKE ? OR prompt_text LIKE ?)';
-    params.push(`%${search}%`, `%${search}%`, `%${search}%`);
+    sql += ' AND (title LIKE ? OR summary LIKE ? OR prompt_text LIKE ? OR keywords LIKE ? OR example_questions LIKE ?)';
+    params.push(`%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`);
   }
   if (start) { sql += ' AND created_at >= ?'; params.push(Number(start)); }
   if (end) { sql += ' AND created_at <= ?'; params.push(Number(end)); }
@@ -129,7 +178,7 @@ function listNodes({ category, quality, search, limit, offset, start, end } = {}
   if (limit) { sql += ' LIMIT ?'; params.push(limit); }
   if (offset) { sql += ' OFFSET ?'; params.push(offset); }
   const rows = database.prepare(sql).all(...params);
-  rows.forEach(r => { r.tags = parseTags(r.tags); });
+  rows.forEach(hydrateNode);
   return rows;
 }
 
@@ -138,12 +187,15 @@ function updateNode(id, updates) {
   const fields = [];
   const params = [];
   for (const [key, value] of Object.entries(updates)) {
-    if (['title', 'summary', 'category', 'quality', 'quality_reason', 'md_path', 'source', 'chat_id', 'prompt_text', 'context_reply', 'frequency'].includes(key)) {
+    if (['title', 'summary', 'category', 'quality', 'quality_reason', 'md_path', 'source', 'chat_id', 'prompt_text', 'context_reply', 'frequency', 'cluster_key', 'normalized_text', 'last_question_at', 'report_status'].includes(key)) {
       fields.push(`${key} = ?`);
       params.push(value);
     } else if (key === 'tags') {
       fields.push('tags = ?');
       params.push(JSON.stringify(value));
+    } else if (key === 'keywords' || key === 'example_questions') {
+      fields.push(`${key} = ?`);
+      params.push(JSON.stringify(value || []));
     }
   }
   if (!fields.length) return getNode(id);
@@ -227,7 +279,14 @@ function getGraphData({ category, quality, search, start, end } = {}) {
       source: n.source,
       prompt_text: n.prompt_text,
       chat_id: n.chat_id,
+      cluster_key: n.cluster_key,
+      normalized_text: n.normalized_text,
+      keywords: n.keywords || [],
+      example_questions: n.example_questions || [],
+      question_count: n.frequency || 1,
       frequency: n.frequency || 1,
+      last_question_at: n.last_question_at,
+      report_status: n.report_status || ((n.frequency || 1) >= 5 ? 'pending' : 'none'),
       created_at: n.created_at,
       updated_at: n.updated_at,
       relations: relCount[n.id] || 0,
@@ -265,7 +324,7 @@ function getQuestionStats({ start, end } = {}) {
   const params = [];
   const where = appendNodeFilters('WHERE 1=1', params, { start, end });
   const rows = database.prepare(`
-    SELECT category, quality, source, created_at, frequency
+    SELECT category, quality, source, created_at, frequency, report_status
     FROM knowledge_nodes ${where}
   `).all(...params);
   const categories = {};
@@ -274,15 +333,16 @@ function getQuestionStats({ start, end } = {}) {
   const days = {};
   let reusable = 0;
   for (const row of rows) {
-    categories[row.category || '???'] = (categories[row.category || '???'] || 0) + 1;
+    categories[row.category || '???'] = (categories[row.category || '???'] || 0) + (row.frequency || 1);
     qualities[row.quality || 'gray'] = (qualities[row.quality || 'gray'] || 0) + 1;
     sources[row.source || 'manual'] = (sources[row.source || 'manual'] || 0) + 1;
     const day = new Date((row.created_at || 0) * 1000).toISOString().slice(0, 10);
     days[day] = (days[day] || 0) + 1;
-    if ((row.frequency || 1) > 1) reusable++;
+    if ((row.frequency || 1) >= 5) reusable++;
   }
   return {
-    total: rows.length,
+    total: rows.reduce((sum, row) => sum + (row.frequency || 1), 0),
+    clusters: rows.length,
     reusable,
     categories: Object.entries(categories).map(([name, count]) => ({ name, count })).sort((a, b) => b.count - a.count),
     qualities,
@@ -323,6 +383,84 @@ function getLastChatNode(chat_id) {
   return database.prepare('SELECT id, category FROM knowledge_nodes WHERE chat_id = ? ORDER BY created_at DESC LIMIT 1').get(chat_id) || null;
 }
 
+function keywordOverlapScore(a = [], b = []) {
+  const left = new Set((a || []).filter(Boolean));
+  const right = new Set((b || []).filter(Boolean));
+  if (!left.size || !right.size) return 0;
+  let hit = 0;
+  for (const item of left) if (right.has(item)) hit++;
+  return hit / Math.max(left.size, right.size);
+}
+
+function charSimilarity(a = '', b = '') {
+  const left = new Set(String(a || '').split('').filter(Boolean));
+  const right = new Set(String(b || '').split('').filter(Boolean));
+  if (!left.size || !right.size) return 0;
+  let hit = 0;
+  for (const item of left) if (right.has(item)) hit++;
+  return hit / Math.max(left.size, right.size);
+}
+
+function findSimilarQuestionNode(clusterMeta = {}, { category, threshold = 0.72 } = {}) {
+  const database = getDb();
+  if (clusterMeta.clusterKey) {
+    const exact = database.prepare('SELECT * FROM knowledge_nodes WHERE cluster_key = ? ORDER BY frequency DESC, updated_at DESC LIMIT 1').get(clusterMeta.clusterKey);
+    if (exact) return hydrateNode(exact);
+  }
+  const params = [];
+  let sql = 'SELECT * FROM knowledge_nodes WHERE prompt_text IS NOT NULL';
+  if (category) {
+    sql += ' AND category = ?';
+    params.push(category);
+  }
+  sql += ' ORDER BY updated_at DESC LIMIT 300';
+  const rows = database.prepare(sql).all(...params).map(hydrateNode);
+  let best = null;
+  for (const row of rows) {
+    const keyScore = keywordOverlapScore(clusterMeta.keywords, row.keywords);
+    const textScore = charSimilarity(clusterMeta.normalizedText, row.normalized_text || row.prompt_text || row.title);
+    const score = Math.max(keyScore, (keyScore * 0.65) + (textScore * 0.35));
+    if (score >= threshold && (!best || score > best._score)) best = { ...row, _score: score };
+  }
+  return best;
+}
+
+function mergeQuestionIntoNode(id, { prompt_text, context_reply, chat_id, source, clusterMeta = {} } = {}) {
+  const node = getNode(id);
+  if (!node) return null;
+  const ts = now();
+  const examples = [...(node.example_questions || [])];
+  const text = String(prompt_text || '').trim();
+  if (text && !examples.includes(text)) examples.unshift(text);
+  const nextExamples = examples.slice(0, 8);
+  const keywords = [...new Set([...(node.keywords || []), ...((clusterMeta && clusterMeta.keywords) || [])])].slice(0, 12);
+  const frequency = Number(node.frequency || 1) + 1;
+  const updates = {
+    frequency,
+    prompt_text: node.prompt_text || text,
+    context_reply: node.context_reply || context_reply || null,
+    chat_id: node.chat_id || chat_id || null,
+    source: node.source || source || 'auto-capture',
+    cluster_key: node.cluster_key || clusterMeta.clusterKey || null,
+    normalized_text: node.normalized_text || clusterMeta.normalizedText || null,
+    keywords,
+    example_questions: nextExamples,
+    last_question_at: ts,
+    report_status: frequency >= 5 && node.report_status === 'none' ? 'pending' : (node.report_status || 'pending'),
+  };
+  return updateNode(id, updates);
+}
+
+function markReportGenerated({ start, end, minFrequency = 5 } = {}) {
+  const database = getDb();
+  const params = [now(), Math.max(1, Number(minFrequency) || 5)];
+  let sql = "UPDATE knowledge_nodes SET report_status = 'generated', updated_at = ? WHERE frequency >= ?";
+  if (start) { sql += ' AND created_at >= ?'; params.push(Number(start)); }
+  if (end) { sql += ' AND created_at <= ?'; params.push(Number(end)); }
+  const result = database.prepare(sql).run(...params);
+  return result.changes || 0;
+}
+
 function close() {
   if (db) { db.close(); db = null; }
 }
@@ -345,6 +483,9 @@ module.exports = {
   findNodeByPrompt,
   findNodeByMdPath,
   incrementFrequency,
+  findSimilarQuestionNode,
+  mergeQuestionIntoNode,
+  markReportGenerated,
   getLastChatNode,
   close,
 };

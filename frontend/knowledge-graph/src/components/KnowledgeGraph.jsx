@@ -4,6 +4,16 @@ import { forceSimulation, forceLink, forceManyBody, forceCenter, forceCollide, f
 const QUALITY_LABELS = { green: '优秀', yellow: '可用', orange: '待优化', red: '需重写', gray: '未分析' };
 function qualityLabel(value) { return QUALITY_LABELS[value] || value || '未分析'; }
 function nodePreview(node) { return node.prompt_text || node.summary || '暂无原对话内容'; }
+function nodeRadius(node) {
+  if (node.node_type === 'domain') return 18 + Math.min(18, Math.sqrt(node.frequency || 1) * 2);
+  if (node.node_type === 'question') return 4.5;
+  return 7 + Math.min(12, Math.sqrt(node.frequency || 1) * 4);
+}
+function nodeTypeLabel(node) {
+  if (node.node_type === 'domain') return '????';
+  if (node.node_type === 'question') return '????';
+  return '????';
+}
 
 export default function KnowledgeGraph({ nodes, edges, categoryColors, highlightCategory, onNodeClick, onBgClick, loading, isDark }) {
   const svgRef = useRef(null);
@@ -48,7 +58,7 @@ export default function KnowledgeGraph({ nodes, edges, categoryColors, highlight
     const simNodes = nodes.map(n => ({
       id: n.id,
       category: n.category,
-      radius: 5 + Math.min(10, (n.frequency || 1) * 2),
+      radius: nodeRadius(n),
       x: positions.get(n.id)?.x ?? (centers[n.category]?.x ?? 0) + (Math.random() - 0.5) * 60,
       y: positions.get(n.id)?.y ?? (centers[n.category]?.y ?? 0) + (Math.random() - 0.5) * 60,
     }));
@@ -59,10 +69,10 @@ export default function KnowledgeGraph({ nodes, edges, categoryColors, highlight
     edgesRef.current = simEdges;
 
     const sim = forceSimulation(simNodes)
-      .force('link', forceLink(simEdges).id(d => d.id).distance(50).strength(0.2))
-      .force('charge', forceManyBody().strength(-60))
+      .force('link', forceLink(simEdges).id(d => d.id).distance(d => d.type === 'contains' ? 95 : 58).strength(0.35))
+      .force('charge', forceManyBody().strength(d => d.node_type === 'domain' ? -180 : -70))
       .force('center', forceCenter(0, 0))
-      .force('collision', forceCollide().radius(d => d.radius + 4))
+      .force('collision', forceCollide().radius(d => d.radius + 8))
       .force('x', forceX(d => centers[d.category]?.x ?? 0).strength(0.15))
       .force('y', forceY(d => centers[d.category]?.y ?? 0).strength(0.15))
       .alphaDecay(0.02)
@@ -223,7 +233,7 @@ export default function KnowledgeGraph({ nodes, edges, categoryColors, highlight
       const srcNode = nodes.find(n => n.id === e.source);
       const tgtNode = nodes.find(n => n.id === e.target);
       if (!srcNode || !tgtNode || srcNode.category !== tgtNode.category) return null;
-      return { id: e.id, x1: s.x, y1: s.y, x2: t.x, y2: t.y, sourceCategory: srcNode.category };
+      return { id: e.id, x1: s.x, y1: s.y, x2: t.x, y2: t.y, sourceCategory: srcNode.category, type: e.type };
     }).filter(Boolean);
   }, [edges, positions, nodes]);
 
@@ -293,7 +303,7 @@ export default function KnowledgeGraph({ nodes, edges, categoryColors, highlight
             const pos = positions.get(node.id);
             if (!pos) return null;
             const color = categoryColors[node.category] || categoryColors['未分类'];
-            const r = 5 + Math.min(10, (node.frequency || 1) * 2);
+            const r = nodeRadius(node);
             const selected = selectedNodeId === node.id;
             const dimmed = highlightCategory && node.category !== highlightCategory;
             return (
@@ -313,7 +323,7 @@ export default function KnowledgeGraph({ nodes, edges, categoryColors, highlight
                   r={r}
                   fill={color}
                   stroke="var(--kg-surface)"
-                  strokeWidth={highlightCategory && node.category === highlightCategory ? 2.5 : 1.2}
+                  strokeWidth={node.node_type === 'domain' ? 2.6 : (highlightCategory && node.category === highlightCategory ? 2.2 : 1.2)}
                   style={{ color }}
                 />
               </g>

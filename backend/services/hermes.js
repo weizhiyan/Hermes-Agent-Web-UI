@@ -15,7 +15,7 @@ const ERROR_RE = /^\[ERROR\]\s*(.*)/;
 const TITLE_RE = /^\[TITLE\]\s*(.*)/;
 const AGENT_TAG_RE = /^\[AGENT:\w+\]\s*/;
 const SESSION_RE = /^Session:\s*([A-Za-z0-9_-]+)/;
-const SESSION_ID_RE = /^session_id:\s*([A-Za-z0-9_-]+)/i;
+const SESSION_ID_RE = /^(?:[??\s]*)?session_id:\s*([A-Za-z0-9_-]+)/i;
 const RESUMED_SESSION_RE = /^↻\s*Resumed session\s+([A-Za-z0-9_-]+)\s*\((\d+)\s+user message[s]?,\s*(\d+)\s+total message[s]?\)/i;
 let cachedHermesCommand = null;
 let cachedHermesCommandAt = 0;
@@ -333,6 +333,79 @@ function removeCustomProvider(text = '', providerName = '') {
   for (const block of kept) rebuilt.push(...block);
   return [...lines.slice(0, section.start), ...rebuilt, ...lines.slice(section.end)].join('\n');
 }
+
+function upsertMcpServer(text = '', serverName = '', serverBlock = []) {
+  if (!serverName || !Array.isArray(serverBlock) || !serverBlock.length) return text;
+  const lines = String(text || '').replace(/\r\n/g, '\n').split('\n');
+  const section = sectionBounds(lines, 'mcp_servers');
+  if (!section) return [...lines, '', 'mcp_servers:', ...serverBlock].join('\n');
+
+  const body = lines.slice(section.start + 1, section.end);
+  const blocks = [];
+  let current = [];
+  for (const line of body) {
+    if (/^\s{2}[A-Za-z0-9_-]+:\s*$/.test(line) && current.length) {
+      blocks.push(current);
+      current = [line];
+    } else if (current.length || /^\s{2}[A-Za-z0-9_-]+:\s*$/.test(line)) {
+      current.push(line);
+    }
+  }
+  if (current.length) blocks.push(current);
+
+  const targetIdx = blocks.findIndex(block => String(block[0] || '').trim() === serverName + ':');
+  if (targetIdx >= 0) blocks[targetIdx] = serverBlock;
+  else blocks.push(serverBlock);
+
+  const rebuilt = ['mcp_servers:'];
+  for (const block of blocks) rebuilt.push(...block);
+  return [...lines.slice(0, section.start), ...rebuilt, ...lines.slice(section.end)].join('\n');
+}
+
+function webuiImageMcpServerBlock(options = {}) {
+  const scriptPath = path.join(process.cwd(), 'backend', 'mcp', 'webui-image-server.js');
+  const command = options.wsl ? '/mnt/c/Progra~1/nodejs/node.exe' : (process.execPath || 'node');
+  return [
+    '  webui_image:',
+    '    command: ' + yamlScalar(command),
+    '    args:',
+    '    - ' + yamlScalar(scriptPath),
+    '    env:',
+    '      WEBUI_API: ' + yamlScalar(options.webuiApi || process.env.WEBUI_API || 'http://127.0.0.1:3381'),
+    '    enabled: true',
+    '    tools:',
+    '      include:',
+    '      - webui_image_generate',
+  ];
+}
+
+function removeMcpServer(text = '', serverName = '') {
+  if (!serverName) return text || '';
+  const lines = String(text || '').replace(/\r\n/g, '\n').split('\n');
+  const section = sectionBounds(lines, 'mcp_servers');
+  if (!section) return lines.join('\n');
+  const escapedName = serverName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const targetRe = new RegExp(`^\\s{2}${escapedName}\\s*:\\s*$`);
+  for (let i = section.start + 1; i < section.end; i++) {
+    if (!targetRe.test(lines[i] || '')) continue;
+    let end = i + 1;
+    while (end < section.end && !/^\s{2}[^\s].*:\s*$/.test(lines[end] || '')) end += 1;
+    return [...lines.slice(0, i), ...lines.slice(end)].join('\n');
+  }
+  return lines.join('\n');
+}
+
+function normalizeWebuiImageMcpServers(text = '') {
+  let updated = text || '';
+  updated = removeMcpServer(updated, 'webui-image');
+  updated = removeMcpServer(updated, 'webui_image');
+  return updated;
+}
+
+function upsertWebuiImageMcpServer(text = '', options = {}) {
+  return upsertMcpServer(normalizeWebuiImageMcpServers(text), 'webui_image', webuiImageMcpServerBlock(options));
+}
+
 function minimalHermesConfig() {
   return [
     'providers: {}',
@@ -343,6 +416,10 @@ function minimalHermesConfig() {
     'agent:',
     '  max_turns: 90',
   ].join('\n');
+}
+
+function ensureWebuiImageMcpConfig(existing = '', options = {}) {
+  return sanitizeHermesConfigText(upsertWebuiImageMcpServer(sanitizeHermesConfigText(existing || minimalHermesConfig()), options));
 }
 
 function mergedHermesConfigText(providerName, selectedModel, existing = '', options = {}) {
@@ -356,7 +433,8 @@ function mergedHermesConfigText(providerName, selectedModel, existing = '', opti
   const modelSection = ['model:', '  provider: ' + providerName];
   if (modelName) modelSection.push('  default: ' + JSON.stringify(modelName));
   if (modelName && !NATIVE_HERMES_PROVIDERS.has(providerName)) modelSection.push('  api_mode: chat_completions');
-  return sanitizeHermesConfigText(replaceSection(lines, 'model', modelSection).join('\n'));
+  const withModel = replaceSection(lines, 'model', modelSection).join('\n');
+  return sanitizeHermesConfigText(upsertWebuiImageMcpServer(withModel, options));
 }
 
 function syncHermesProviderConfig(providerName, selectedModel) {
@@ -398,11 +476,19 @@ function wslPathForWindowsFile(filePath) {
 }
 
 function syncWslHermesProviderConfig(providerName, selectedModel) {
-  if (!providerName || !selectedModel?.base || !selectedModel?.key) return '';
+  if (!providerName || !selectedModel?.base || !selectedModel?.key) {
+    const existingOnly = readWslHermesConfigFile() || readHermesConfigFile();
+    if (!existingOnly) return '';
+    const tmpDir = path.join(process.cwd(), '.claude');
+    if (!fs.existsSync(tmpDir)) fs.mkdirSync(tmpDir, { recursive: true });
+    const tmpFile = path.join(tmpDir, 'hermes_config_' + crypto.randomBytes(8).toString('hex') + '.yaml');
+    fs.writeFileSync(tmpFile, ensureWebuiImageMcpConfig(existingOnly, { wsl: true }), 'utf8');
+    return tmpFile;
+  }
   sanitizeWslHermesAuth();
   const tmpDir = path.join(process.cwd(), '.claude');
   if (!fs.existsSync(tmpDir)) fs.mkdirSync(tmpDir, { recursive: true });
-  const tmpName = 'hermes_config_' + crypto.randomBytes(4).toString('hex') + '.yaml';
+  const tmpName = 'hermes_config_' + crypto.randomBytes(8).toString('hex') + '.yaml';
   const tmpFile = path.join(tmpDir, tmpName);
   const existingConfig = readWslHermesConfigFile() || readHermesConfigFile();
   fs.writeFileSync(tmpFile, mergedHermesConfigText(providerName, selectedModel, existingConfig, { wsl: true }), 'utf8');
@@ -473,7 +559,8 @@ function parseAgentLine(line) {
   if ((m = trimmed.match(TOOL_END_RE))) {
     try {
       const d = JSON.parse(m[1]);
-      return { type: 'tool_complete', event_type: 'tool.completed', name: d.name || '', preview: d.preview || '', is_error: !!d.is_error, duration: d.duration };
+      const preview = d.preview || d.output || d.result || d.content || d.text || '';
+      return { type: 'tool_complete', event_type: 'tool.completed', name: d.name || '', preview, is_error: !!d.is_error, duration: d.duration };
     } catch {
       return { type: 'tool_complete', event_type: 'tool.completed', name: m[1].trim(), preview: '', is_error: false };
     }
@@ -575,11 +662,11 @@ async function* hermesStream(prompt, history, modelCfg, fullCfg = {}) {
     if (fullCfg.deepseek?.base) customEnv.DEEPSEEK_BASE_URL = fullCfg.deepseek.base;
   }
 
-  try {
+  const runHermesAttempt = async function* (resumeId = '') {
     if (hermesCmd.type === 'wsl' || fullPrompt.length > 8000) {
       const tmpDir = path.join(process.cwd(), '.claude');
       if (!fs.existsSync(tmpDir)) fs.mkdirSync(tmpDir, { recursive: true });
-      const tmpName = 'prompt_' + crypto.randomBytes(4).toString('hex') + '.txt';
+      const tmpName = 'prompt_' + crypto.randomBytes(8).toString('hex') + '.txt';
       tmpFile = path.join(tmpDir, tmpName);
       fs.writeFileSync(tmpFile, fullPrompt, 'utf8');
     }
@@ -588,47 +675,38 @@ async function* hermesStream(prompt, history, modelCfg, fullCfg = {}) {
       wslConfigFile = syncWslHermesProviderConfig(providerName, selectedModel);
       let cmd;
       const envExportCmd = wslExportEnv(customEnv);
-      // 动态解析 WSL 网关 IP，避免重启后 IP 变化导致 502
-      const relayExport = 'export WEBUI_RELAY_BASE_URL="http://$(ip route 2>/dev/null | awk \'/default/ {print $3; exit}\'):${PORT:-3381}/v1"; ';
+      const relayExport = "export WEBUI_RELAY_BASE_URL=\"http://$(ip route 2>/dev/null | awk '/default/ {print $3; exit}'):${PORT:-3381}/v1\"; ";
+      const promptExport = '';
+      const wslPromptCmd = tmpFile ? 'cat ' + shQuote(wslPathForWindowsFile(tmpFile)) : '';
+      const lockCmd = 'mkdir -p ~/.hermes && while ! mkdir ~/.hermes/webui.lock.d 2>/dev/null; do sleep 0.1; done; trap "rmdir ~/.hermes/webui.lock.d" EXIT; ';
       const syncConfigCmd = wslConfigFile
-        ? `export PATH="$HOME/.local/bin:$HOME/bin:/usr/local/bin:/usr/bin:/bin:$PATH"; ${envExportCmd}${relayExport}mkdir -p ~/.hermes && cp ${shQuote(wslPathForWindowsFile(wslConfigFile))} ~/.hermes/config.yaml && `
-        : `export PATH="$HOME/.local/bin:$HOME/bin:/usr/local/bin:/usr/bin:/bin:$PATH"; ${envExportCmd}${relayExport}`;
+        ? `export PATH="$HOME/.local/bin:$HOME/bin:/usr/local/bin:/usr/bin:/bin:$PATH"; ${envExportCmd}${relayExport}${promptExport}${lockCmd}cp ${shQuote(wslPathForWindowsFile(wslConfigFile))} ~/.hermes/config.yaml && `
+        : `export PATH="$HOME/.local/bin:$HOME/bin:/usr/local/bin:/usr/bin:/bin:$PATH"; ${envExportCmd}${relayExport}${promptExport}`;
       if (tmpFile) {
-        const posixPath = '.claude/' + path.basename(tmpFile);
-        cmd = `${syncConfigCmd}hermes chat -q "$(< ${posixPath})" -Q`;
+        cmd = `${syncConfigCmd}hermes chat -q "$(${wslPromptCmd})" -Q`;
       } else {
         cmd = `${syncConfigCmd}hermes chat -q ${shQuote(fullPrompt)} -Q`;
       }
-      cmd += ' --toolsets hermes-cli --accept-hooks --yolo';
+      cmd += ' --toolsets hermes-cli,webui_image --accept-hooks --yolo';
       if (providerName) cmd += ` --provider ${shQuote(providerName)}`;
       if (modelName) cmd += ` -m ${shQuote(modelName)}`;
-      if (resumeSessionId) cmd += ` --resume ${shQuote(resumeSessionId)}`;
-      child = spawn('wsl', ['-e', 'bash', '-lc', cmd], {
-        stdio: ['ignore', 'pipe', 'pipe'],
-        timeout: 180000,
-        windowsHide: true,
-        env: customEnv,
-      });
-      yield { type: 'perf', stage: 'cli-spawned', ms: Date.now() - perfStart, command: 'wsl', promptFile: !!tmpFile };
+      if (resumeId) cmd += ` --resume ${shQuote(resumeId)}`;
+      child = spawn('wsl', ['-e', 'bash', '-lc', cmd], { stdio: ['ignore', 'pipe', 'pipe'], timeout: 600000, windowsHide: true, env: customEnv });
+      yield { type: 'perf', stage: 'cli-spawned', ms: Date.now() - perfStart, command: 'wsl', promptFile: !!tmpFile, resumed: !!resumeId };
     } else {
       const args = ['chat', '-q', fullPrompt, '-Q'];
-      args.push('--toolsets', 'hermes-cli', '--accept-hooks', '--yolo');
+      args.push('--toolsets', 'hermes-cli,webui_image', '--accept-hooks', '--yolo');
       if (providerName) args.push('--provider', providerName);
       if (modelName) args.push('-m', modelName);
-      if (resumeSessionId) args.push('--resume', resumeSessionId);
-      child = spawn('hermes', args, {
-        stdio: ['ignore', 'pipe', 'pipe'],
-        timeout: 180000,
-        windowsHide: true,
-        env: customEnv,
-        shell: true,
-      });
-      yield { type: 'perf', stage: 'cli-spawned', ms: Date.now() - perfStart, command: 'native', promptFile: !!tmpFile };
+      if (resumeId) args.push('--resume', resumeId);
+      child = spawn('hermes', args, { stdio: ['ignore', 'pipe', 'pipe'], timeout: 600000, windowsHide: true, env: customEnv, shell: true });
+      yield { type: 'perf', stage: 'cli-spawned', ms: Date.now() - perfStart, command: 'native', promptFile: !!tmpFile, resumed: !!resumeId };
     }
 
     let stdoutBuffer = '';
     let stderr = '';
     let firstStdout = false;
+    let meaningfulStdout = false;
     let stderrBuffer = '';
     const stderrEvents = [];
     child.stderr.on('data', chunk => {
@@ -648,7 +726,7 @@ async function* hermesStream(prompt, history, modelCfg, fullCfg = {}) {
       while (stderrEvents.length) yield stderrEvents.shift();
       if (!firstStdout) {
         firstStdout = true;
-        yield { type: 'perf', stage: 'first-cli-stdout', ms: Date.now() - perfStart, bytes: chunk.length || 0 };
+        yield { type: 'perf', stage: 'first-cli-stdout', ms: Date.now() - perfStart, bytes: chunk.length || 0, resumed: !!resumeId };
       }
       stdoutBuffer += chunk.toString('utf8');
       let idx;
@@ -656,20 +734,36 @@ async function* hermesStream(prompt, history, modelCfg, fullCfg = {}) {
         const line = stdoutBuffer.slice(0, idx);
         stdoutBuffer = stdoutBuffer.slice(idx + 1);
         const event = parseAgentLine(line);
+        if (event && event.type !== 'session') meaningfulStdout = true;
         if (event) yield event;
       }
     }
 
     if (stdoutBuffer.trim()) {
       const event = parseAgentLine(stdoutBuffer);
+      if (event && event.type !== 'session') meaningfulStdout = true;
       if (event) yield event;
     }
     while (stderrEvents.length) yield stderrEvents.shift();
 
     const exitCode = await new Promise(resolve => child.on('close', resolve));
+    if (resumeId && !meaningfulStdout) {
+      yield { type: 'perf', stage: 'resume-empty-retry', ms: Date.now() - perfStart, sessionId: resumeId, exitCode, reason: firstStdout ? 'session-only' : 'empty' };
+      yield* runHermesAttempt('');
+      return;
+    }
+    if (!meaningfulStdout) {
+      const detail = stderr.trim() ? (': ' + stderr.trim().slice(0, 500)) : '';
+      yield { type: 'error', text: 'Hermes Agent ended without output' + detail };
+      return;
+    }
     if (exitCode && stderr.trim()) {
       yield { type: 'error', text: stderr.trim().slice(0, 500) };
     }
+  };
+
+  try {
+    yield* runHermesAttempt(resumeSessionId);
   } catch (e) {
     if (e.killed || e.signal === 'SIGTERM') {
       yield { type: 'error', text: 'Hermes 请求超时或被中断' };

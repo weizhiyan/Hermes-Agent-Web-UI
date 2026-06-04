@@ -1,7 +1,11 @@
-node_modules/
+﻿node_modules/
 .env
 *.pid
 backend/data/
+!backend/data/
+backend/data/*
+!backend/data/skills-builtin/
+!backend/data/skills-builtin/**
 .claude/
 .hermes-server.pid
 awesome-design-md/
@@ -10,3 +14,5 @@ awesome-design-md/
 Thumbs.db
 docs/output-md/
 .codegraph/
+.codex-screenshots/
+

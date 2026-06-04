@@ -1,9 +1,10 @@
-﻿@echo off
+@echo off
 setlocal EnableExtensions EnableDelayedExpansion
 set "ROOT=%~dp0"
 set "BACKEND=%ROOT%backend"
-set "PORT=3381"
-set "URL=http://127.0.0.1:%PORT%/"
+set "WEBUI_PORT=3381"
+set "PORT="
+set "URL=http://127.0.0.1:%WEBUI_PORT%/"
 set "PID_FILE=%ROOT%.hermes-server.pid"
 set "LOG_DIR=%ROOT%logs"
 set "LOG_FILE=%LOG_DIR%\server.log"
@@ -11,7 +12,7 @@ title Hermes Agent Launcher
 
 if exist "%ROOT%.env" call :load_env "%ROOT%.env"
 if exist "%BACKEND%.env" call :load_env "%BACKEND%.env"
-set "URL=http://127.0.0.1:%PORT%/"
+set "URL=http://127.0.0.1:%WEBUI_PORT%/"
 
 echo.
 echo ========================================
@@ -51,7 +52,7 @@ call :stop_old_instance
 
 echo [Hermes] Starting server at %URL%
 pushd "%ROOT%"
-start "Hermes Server" /min cmd /d /c "node backend\server.js >> logs\server.log 2>&1"
+powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -Command "Start-Process -FilePath node -ArgumentList 'backend/supervisor.js' -WorkingDirectory '%ROOT%' -WindowStyle Hidden -RedirectStandardOutput 'logs/supervisor.out.log' -RedirectStandardError 'logs/supervisor.err.log'"
 popd
 
 call :wait_for_health
@@ -61,7 +62,6 @@ if errorlevel 1 (
   exit /b 1
 )
 
-call :write_pid
 echo [Hermes] Server is ready.
 start "" "%URL%"
 echo [Hermes] Browser opened. You can close this window.
@@ -78,9 +78,9 @@ if exist "%PID_FILE%" (
   )
   del /f /q "%PID_FILE%" >nul 2>nul
 )
-for /f "tokens=5" %%P in ('netstat -ano ^| findstr /R /C:":%PORT% .*LISTENING"') do (
+for /f "tokens=5" %%P in ('netstat -ano ^| findstr /R /C:":%WEBUI_PORT% .*LISTENING"') do (
   if not "%%P"=="0" (
-    echo [Hermes] Stopping process on port %PORT%: %%P
+    echo [Hermes] Stopping process on port %WEBUI_PORT%: %%P
     taskkill /PID %%P /T /F >nul 2>nul
   )
 )
@@ -89,29 +89,22 @@ exit /b 0
 
 :wait_for_health
 for /L %%I in (1,1,60) do (
-  powershell -NoProfile -ExecutionPolicy Bypass -Command "try{$r=Invoke-WebRequest -UseBasicParsing -Uri '%URL%api/health' -TimeoutSec 2;if($r.StatusCode -eq 200){exit 0}}catch{};exit 1" >nul 2>nul
+  node -e "const http=require('http');const req=http.get('%URL%api/health',r=>process.exit(r.statusCode===200?0:1));req.on('error',()=>process.exit(1));req.setTimeout(1500,()=>{req.destroy();process.exit(1);});" >nul 2>nul
   if not errorlevel 1 exit /b 0
   timeout /T 1 /NOBREAK >nul
 )
 exit /b 1
-
-:write_pid
-for /f "tokens=5" %%P in ('netstat -ano ^| findstr /R /C:":%PORT% .*LISTENING"') do (
-  > "%PID_FILE%" echo %%P
-  echo [Hermes] Server PID: %%P
-  exit /b 0
-)
-exit /b 0
 
 :load_env
 set "ENV_FILE=%~1"
 for /f "usebackq tokens=1,* delims==" %%A in ("%ENV_FILE%") do (
   if not "%%A"=="" (
     if not "%%A:~0,1%"=="#" (
-      if /i "%%A"=="PORT" set "PORT=%%B"
+      if /i "%%A"=="WEBUI_PORT" set "WEBUI_PORT=%%B"
       if /i "%%A"=="NODE_ENV" set "NODE_ENV=%%B"
     )
   )
 )
 exit /b 0
+
 

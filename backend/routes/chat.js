@@ -8,8 +8,10 @@ const { chatStream } = require('../services/llm');
 const { readCoreMemoryPrompt, readAgentRulesPrompt } = require('../services/memory');
 const { redactSecrets, sanitizeAny, sanitizeChat } = require('../services/security');
 const { discoverExternalSkills, samePath, normalizeFsPath } = require('../services/skillDiscovery');
+const { builtinSkills, isBuiltinLike } = require('../services/builtinSkills');
 const modalBus = require('./modal');
 const { captureKnowledge } = require('../services/knowledgeCapture');
+const { generateImageFromPrompt } = require('./images');
 
 const router = express.Router();
 const KEY = 'chats';
@@ -53,7 +55,14 @@ const WEBUI_SELF_PROTECTION_PROMPT = `【WebUI 对话执行规则】
 - 当前没有对应工具时，直接说明限制，并给出可行替代方案。
 
 2. 图像任务：
-- 当用户要求生成图片、画图、出图、改图、优化图片，或基于参考图生成视觉效果时，必须优先调用可用的图像生成工具。
+- 当用户要求生成图片、画图、出图、改图、优化图片，或基于参考图生成视觉效果时，必须优先调用 WebUI 图像生成工具 webui_image_generate。
+- webui_image_generate is the only default image generation endpoint exposed by Hermes WebUI to HermesAgent; identify normal image-generation intent and call this tool.
+- Do not use Hermes native image_gen for image tasks inside WebUI; if native image_gen says it is not configured, that does not mean WebUI image generation is unavailable.
+- 前端“生成图像：”按钮/直连生图开关属于 WebUI 的跳过主 Agent 直连流程；你不要要求用户改用命令或手动调用接口。
+- webui_image_generate 工具内部会按 WebUI 生图规则补充最终提示词；你只需要传清楚用户意图、关键限制和附件ID。
+- webui_image_generate reads image model, API key, image directory, prompt optimization and save rules from WebUI Model Configuration; do not ask the user to configure ~/.hermes/.env, FAL_KEY, or OPENAI_API_KEY for WebUI image tasks.
+- 如果用户上传了参考图，使用上下文里的“附件ID”作为 webui_image_generate 的 attachmentIds 参数；没有参考图时只传 prompt/sourcePrompt。
+- 提示词可以优化，但必须保留用户指定的人物、角色、IP、品牌、产品、颜色、构图、尺寸和禁止项，不要泛化或替换专有名词。
 - 不要输出 curl、Python、HTTP 请求示例、伪代码，或“等待 API 返回”这类说明。
 - 工具调用完成后，只需要用简短中文总结结果，并展示工具返回的图片 Markdown/预览链接。
 - 如果工具不可用或失败，明确说明失败原因和下一步，不要假装已经生成。
@@ -489,7 +498,7 @@ router.post('/:id/messages/feedback', (req, res) => {
   if (!chat) return res.fail('chat not found', 404, 404);
 
   const msgId = String(req.body.msgId || '');
-  const feedback = req.body.feedback === 'like' ? 'like' : req.body.feedback === 'dislike' ? 'dislike' : '';
+  const feedback = req.body.feedback === 'like' ? 'like' : req.body.feedback === 'dislike' ? 'dislike' : req.body.feedback === 'partial' ? 'partial' : '';
   if (!msgId || !feedback) return res.fail('invalid feedback', 400, 400);
 
   const message = (chat.messages || []).find(m => m && m.role === 'assistant' && String(m._msgId || m.ts || '') === msgId);
@@ -500,6 +509,240 @@ router.post('/:id/messages/feedback', (req, res) => {
   saveAll(list);
   res.ok({ feedback: message.feedback });
 });
+
+function findMessageByClientId(chat, msgId) {
+  const id = String(msgId || '');
+  if (!id) return null;
+  const messages = Array.isArray(chat.messages) ? chat.messages : [];
+  return messages.find(m => m && String(m._msgId || m.id || m.ts || '') === id) || null;
+}
+
+function clientMessagePatch(body = {}) {
+  const allowed = [
+    'content',
+    'thinking',
+    'reasoning',
+    'localEditContextId',
+    'localEditContext',
+    'localEditApplied',
+    'localEditAppliedAt',
+    'localEditApplyError',
+    'imageGeneration',
+    'attachments',
+    'toolCalls',
+    'processEvents',
+    'promptDebug',
+    'feedback',
+  ];
+  const out = {};
+  for (const key of allowed) {
+    if (body[key] !== undefined) out[key] = sanitizeAny(body[key]);
+  }
+  if (out.content !== undefined) out.content = redactSecrets(String(out.content || ''));
+  if (out.thinking !== undefined) out.thinking = redactSecrets(String(out.thinking || ''));
+  if (out.reasoning !== undefined) out.reasoning = redactSecrets(String(out.reasoning || ''));
+  if (out.localEditContextId !== undefined) out.localEditContextId = String(out.localEditContextId || '');
+  if (out.localEditApplied !== undefined) out.localEditApplied = !!out.localEditApplied;
+  if (out.localEditAppliedAt !== undefined) out.localEditAppliedAt = Number(out.localEditAppliedAt || 0) || Date.now();
+  return out;
+}
+
+router.patch('/:id/messages/:msgId', (req, res) => {
+  const list = loadAll();
+  const chat = list.find(c => c.id === req.params.id);
+  if (!chat) return res.fail('chat not found', 404, 404);
+  const message = findMessageByClientId(chat, req.params.msgId);
+  if (!message) return res.fail('message not found', 404, 404);
+  const patch = clientMessagePatch(req.body || {});
+  Object.assign(message, patch);
+  chat.updatedAt = Date.now();
+  saveAll(list);
+  res.ok(sanitizeAny(message));
+});
+
+function parseWebuiImageTextToolCall(text = '') {
+  const raw = String(text || '').trim();
+  const parseArgs = (args, sourceText) => {
+    const prompt = String(args?.prompt || '').trim();
+    if (!prompt) return null;
+    return {
+      prompt,
+      sourcePrompt: String(args.sourcePrompt || args.source_prompt || args.originalPrompt || prompt).trim(),
+      attachmentIds: Array.isArray(args.attachmentIds) ? args.attachmentIds.map(id => String(id || '').trim()).filter(Boolean) : [],
+      model: String(args.model || 'auto'),
+      size: String(args.size || '1024x1024'),
+      raw: sourceText,
+    };
+  };
+
+  const fnMatch = raw.match(/webui_image_generate\s*\(\s*({[\s\S]*?})\s*\)/m);
+  if (fnMatch) {
+    try {
+      const parsed = parseArgs(JSON.parse(fnMatch[1]), fnMatch[0]);
+      if (parsed) return parsed;
+    } catch (_) {}
+  }
+
+  const jsonCandidates = [];
+  const fenced = raw.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  if (fenced) jsonCandidates.push(fenced[1].trim());
+  if (raw.startsWith('{') && raw.endsWith('}')) jsonCandidates.push(raw);
+  const jsonMatch = raw.match(/({[\s\S]*"prompt"[\s\S]*})/m);
+  if (jsonMatch) jsonCandidates.push(jsonMatch[1]);
+
+  for (const candidate of jsonCandidates) {
+    try {
+      const parsed = parseArgs(JSON.parse(candidate), candidate);
+      if (parsed) return parsed;
+    } catch (_) {}
+  }
+  return null;
+}
+
+function parseWebuiImageTextToolCall(text = '') {
+  const raw = String(text || '').trim();
+  const parseArgs = (args, sourceText) => {
+    const prompt = String(args?.prompt || '').trim();
+    if (!prompt) return null;
+    return {
+      prompt,
+      sourcePrompt: String(args.sourcePrompt || args.source_prompt || args.originalPrompt || prompt).trim(),
+      attachmentIds: Array.isArray(args.attachmentIds) ? args.attachmentIds.map(id => String(id || '').trim()).filter(Boolean) : [],
+      model: String(args.model || 'auto'),
+      size: String(args.size || '1024x1024'),
+      raw: sourceText,
+    };
+  };
+
+  const fnMatch = raw.match(/webui_image_generate\s*\(\s*({[\s\S]*?})\s*\)/m);
+  if (fnMatch) {
+    try {
+      const parsed = parseArgs(JSON.parse(fnMatch[1]), fnMatch[0]);
+      if (parsed) return parsed;
+    } catch (_) {}
+  }
+
+  const jsonCandidates = [];
+  const fenced = raw.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  if (fenced) jsonCandidates.push(fenced[1].trim());
+  if (raw.startsWith('{') && raw.endsWith('}')) jsonCandidates.push(raw);
+  const jsonMatch = raw.match(/({[\s\S]*"prompt"[\s\S]*})/m);
+  if (jsonMatch) jsonCandidates.push(jsonMatch[1]);
+
+  for (const candidate of jsonCandidates) {
+    try {
+      const parsed = parseArgs(JSON.parse(candidate), candidate);
+      if (parsed) return parsed;
+    } catch (_) {}
+  }
+  return null;
+}
+
+function webuiImageToolResultPayload(data = {}) {
+  const outputs = Array.isArray(data.outputs) ? data.outputs : [];
+  const markdown = outputs.map((img, index) => {
+    const url = img.publicUrl || img.url || '';
+    return url ? `![Generated image ${index + 1}](${url})` : '';
+  }).filter(Boolean).join('\n\n');
+  return {
+    success: true,
+    type: 'webui_image_generate_result',
+    markdown,
+    imageUrl: outputs[0]?.publicUrl || outputs[0]?.url || '',
+    outputs,
+    inputs: Array.isArray(data.inputs) ? data.inputs : [],
+    prompt: data.prompt || '',
+    sourcePrompt: data.sourcePrompt || '',
+    optimizedByAgent: !!data.optimizedByAgent,
+    mode: data.mode || '',
+    model: data.model || 'auto',
+    provider: data.provider || '',
+    content: data.content || markdown,
+  };
+}
+
+async function runWebuiImageTextToolFallback({ call, chatId, userMsgId, assistantMsgId, req, res, toolCalls }) {
+  const startedAt = Date.now();
+  const toolEvent = { type: 'tool', event_type: 'tool.started', name: 'webui_image_generate', args: call, preview: call.raw || '' };
+  toolCalls.push({ ...sanitizeAny(toolEvent), done: false });
+  sseWrite(res, 'tool', {
+    event_type: toolEvent.event_type,
+    name: toolEvent.name,
+    preview: redactSecrets(toolEvent.preview),
+    args: sanitizeAny(toolEvent.args),
+  });
+  sseWrite(res, 'perf', { stage: 'webui-image-text-tool-fallback-start' });
+  const progressTimer = setInterval(() => {
+    try {
+      sseWrite(res, 'perf', {
+        stage: 'webui-image-text-tool-fallback-running',
+        elapsedMs: Date.now() - startedAt,
+      });
+    } catch (_) {}
+  }, 15000);
+  try {
+    const requestAttachmentIds = Array.isArray(req?.body?.attachments)
+      ? req.body.attachments.map(item => item && item.id).filter(Boolean)
+      : [];
+    const attachmentIds = Array.isArray(call.attachmentIds) && call.attachmentIds.length
+      ? call.attachmentIds
+      : requestAttachmentIds;
+    const data = await generateImageFromPrompt({
+      prompt: call.prompt,
+      sourcePrompt: call.sourcePrompt || call.prompt,
+      optimizedByAgent: false,
+      attachmentIds,
+      model: call.model || 'auto',
+      size: call.size || '1024x1024',
+      chatId: '',
+      publicBase: '',
+      userMsgId,
+      assistantMsgId,
+    });
+    clearInterval(progressTimer);
+    const payload = webuiImageToolResultPayload(data);
+    const preview = JSON.stringify(payload);
+    for (let i = toolCalls.length - 1; i >= 0; i--) {
+      if (!toolCalls[i].done && toolCalls[i].name === 'webui_image_generate') {
+        toolCalls[i].done = true;
+        toolCalls[i].is_error = false;
+        toolCalls[i].duration = Date.now() - startedAt;
+        toolCalls[i].preview = preview;
+        break;
+      }
+    }
+    sseWrite(res, 'tool_complete', {
+      event_type: 'tool.completed',
+      name: 'webui_image_generate',
+      preview: redactSecrets(preview),
+      is_error: false,
+      duration: Date.now() - startedAt,
+    });
+    sseWrite(res, 'perf', { stage: 'webui-image-text-tool-fallback-done', outputs: payload.outputs.length });
+    return { ok: true, content: data.content || payload.markdown || '??????', payload };
+  } catch (error) {
+    clearInterval(progressTimer);
+    const preview = error.message || 'image generation failed';
+    for (let i = toolCalls.length - 1; i >= 0; i--) {
+      if (!toolCalls[i].done && toolCalls[i].name === 'webui_image_generate') {
+        toolCalls[i].done = true;
+        toolCalls[i].is_error = true;
+        toolCalls[i].duration = Date.now() - startedAt;
+        toolCalls[i].preview = preview;
+        break;
+      }
+    }
+    sseWrite(res, 'tool_complete', {
+      event_type: 'tool.completed',
+      name: 'webui_image_generate',
+      preview: redactSecrets(preview),
+      is_error: true,
+      duration: Date.now() - startedAt,
+    });
+    sseWrite(res, 'perf', { stage: 'webui-image-text-tool-fallback-error', error: preview });
+    return { ok: false, error: preview };
+  }
+}
 
 function sseWrite(res, event, data) {
   res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
@@ -530,6 +773,8 @@ router.post('/:id/messages', async (req, res) => {
     content: redactSecrets(String(req.body.displayContent ?? req.body.content ?? '')),
     ts: Date.now(),
   };
+  if (req.body.userMsgId) userMsg._msgId = String(req.body.userMsgId);
+  if (req.body.localEditContext) userMsg.localEditContext = sanitizeAny(req.body.localEditContext);
   if (Array.isArray(req.body.attachments) && req.body.attachments.length) {
     userMsg.attachments = req.body.attachments.map(item => ({
       id: String(item?.id || ''),
@@ -554,15 +799,22 @@ router.post('/:id/messages', async (req, res) => {
     ? chat.agentSnapshot.skillIds.map(String)
     : (Array.isArray(req.body.profileSkillIds) ? req.body.profileSkillIds.map(String) : []);
   const storedSkills = store.read('skills', []);
-  const externalSkills = discoverExternalSkills().map(skill => {
+  const builtin = builtinSkills().map(skill => {
+    const old = storedSkills.find(item => item && (item.id === skill.id || item.name === skill.name));
+    return old ? { ...skill, on: old.on !== undefined ? old.on : skill.on, enabled: old.enabled !== undefined ? old.enabled : old.on } : skill;
+  });
+  const externalSkills = discoverExternalSkills().filter(skill => !isBuiltinLike(skill)).map(skill => {
     const old = storedSkills.find(item => item && (item.id === skill.id || samePath(item.path, skill.path) || item.name === skill.name));
     return old ? { ...skill, on: old.on !== undefined ? old.on : skill.on, enabled: old.enabled !== undefined ? old.enabled : old.on } : skill;
   });
   const allSkills = [
+    ...builtin,
     ...externalSkills,
     ...storedSkills
       .filter(item => item && item.source !== 'builtin' && item.source !== 'external')
+      .filter(item => !isBuiltinLike(item))
       .filter(item => !externalSkills.some(skill => skill.id === item.id || samePath(skill.path, item.path) || skill.name === item.name))
+      .filter(item => !builtin.some(skill => skill.id === item.id || skill.name === item.name))
       .map(item => ({ ...item, path: item.path ? normalizeFsPath(item.path) : item.path })),
   ];
   const enabledSkills = allSkills.filter(s => {
@@ -618,13 +870,7 @@ router.post('/:id/messages', async (req, res) => {
     const agentPrompt = [
       '[Current Agent: ' + agentLabel + ']',
       String(activeAgentSnapshot.systemPrompt || '').slice(0, 6000),
-      '',
-      '[Agent workspace]',
-      'soul: ' + (activeAgentSnapshot.soulDir || ''),
-      'memory: ' + (activeAgentSnapshot.memoryDir || ''),
-      'workspace: ' + (activeAgentSnapshot.workspaceDir || ''),
-      'knowledge: ' + (activeAgentSnapshot.knowledgeDir || ''),
-    ].join('\n');
+    ].filter(Boolean).join('\n');
     addSystemPart('Agent Profile: ' + agentLabel, agentPrompt, { source: 'profile', agentId: activeAgentSnapshot.id });
   }
   if (rollingSummary) addSystemPart('滚动上下文摘要', '[Conversation Summary]\n' + rollingSummary, { source: 'context-summary', compressedUntilIndex: chat.compressedUntilIndex || 0 });
@@ -648,6 +894,15 @@ router.post('/:id/messages', async (req, res) => {
       '以下是 MD 知识库中可能相关的历史内容，请仅作为背景参考，不要把 history-md 当作生成文档的保存目录。',
       ...knowledgeSnippets.map((item, index) => `\n[${index + 1}] ${item.title}\n路径：${item.relativePath}\n摘要：${item.snippet}`),
     ].join('\n'), { source: 'knowledge-search', items: knowledgeSnippets.map(({ title, relativePath, score }) => ({ title, relativePath, score })) });
+  }
+  const requestedScene = req.body.scene || 'chat';
+  if (requestedScene === 'image') {
+    addSystemPart('Image Generation', [
+      'You are in IMAGE GENERATION mode. When the user asks for an image:',
+      '1. Analyze and refine the user prompt for better image quality',
+      '2. Immediately call the webui_image_generate tool with the refined prompt',
+      '3. Do NOT just output text prompts without calling the tool',
+    ].join('\n'), { source: 'image-scene' });
   }
   const systemPrompt = systemParts.join('\n\n');
   const historyLimit = Math.max(4, Math.min(Number(settings.history) || 16, CONTEXT_KEEP_MESSAGES));
@@ -698,9 +953,10 @@ router.post('/:id/messages', async (req, res) => {
       cfg.scenarios = { ...(cfg.scenarios || {}), vision: altVisionModel.id };
     }
   }
-  cfg._scene = req.body.scene || 'chat';
+  cfg._scene = requestedScene;
+  cfg._webuiRequestedScene = requestedScene;
   cfg._abortSignal = abortController.signal;
-  if (req.body.model && req.body.model !== 'auto') cfg._requestedModel = req.body.model;
+
   const lastAssistant = [...chat.messages].reverse().find(m => m && m.role === 'assistant' && String(m.hermesSessionId || '').trim());
   if (lastAssistant?.hermesSessionId) cfg._resumeSessionId = String(lastAssistant.hermesSessionId).trim();
   let full = '';
@@ -843,9 +1099,58 @@ router.post('/:id/messages', async (req, res) => {
       }
     }
 
+    const fallbackCall = parseWebuiImageTextToolCall(full);
+    if (fallbackCall && !toolCalls.some(item => item.name === 'webui_image_generate')) {
+      const fallback = await runWebuiImageTextToolFallback({
+        call: fallbackCall,
+        chatId: chat.id,
+        userMsgId: req.body.userMsgId ? String(req.body.userMsgId) : '',
+        assistantMsgId: req.body.assistantMsgId ? String(req.body.assistantMsgId) : '',
+        req,
+        res,
+        toolCalls,
+      });
+      if (fallback.ok) {
+        full = fallback.content || full.replace(fallbackCall.raw, '').trim();
+        errorFull = '';
+      } else {
+        errorFull = fallback.error || 'image generation failed';
+      }
+    }
+
+    if (!String(full || '').trim() && !String(errorFull || '').trim() && toolCalls.length === 0) {
+      errorFull = 'Hermes Agent \u65e0\u8f93\u51fa\uff0c\u4efb\u52a1\u53ef\u80fd\u5df2\u4e2d\u65ad\u3002\u8bf7\u91cd\u8bd5\u3002';
+      sseWrite(res, 'error', { msg: errorFull });
+      sseWrite(res, 'perf', { stage: 'empty-agent-output' });
+    }
+
     const assistantContent = full || (errorFull ? ('错误：' + errorFull) : '');
-    chat.messages.push({ role: 'assistant', content: redactSecrets(assistantContent), ts: Date.now(), error: Boolean(errorFull && !full) });
-    if (reasoningFull) chat.messages[chat.messages.length - 1].reasoning = reasoningFull;
+    const assistantMsg = { role: 'assistant', content: redactSecrets(assistantContent), ts: Date.now(), error: Boolean(errorFull && !full) };
+    const imageToolCall = toolCalls.find(item => item.name === 'webui_image_generate' && item.preview);
+    if (imageToolCall) {
+      try {
+        const imagePayload = JSON.parse(String(imageToolCall.preview || ''));
+        if (imagePayload?.type === 'webui_image_generate_result' && Array.isArray(imagePayload.outputs) && imagePayload.outputs.length) {
+          assistantMsg.imageGeneration = {
+            status: 'done',
+            model: imagePayload.model || '',
+            provider: imagePayload.provider || '',
+            outputs: imagePayload.outputs,
+            inputs: imagePayload.inputs || [],
+            prompt: imagePayload.prompt || '',
+            sourcePrompt: imagePayload.sourcePrompt || '',
+            optimizedPrompt: imagePayload.prompt || '',
+            mode: imagePayload.mode || '',
+            optimizedByAgent: !!imagePayload.optimizedByAgent,
+            directMode: false,
+          };
+        }
+      } catch (_) {}
+    }
+    if (req.body.assistantMsgId) assistantMsg._msgId = String(req.body.assistantMsgId);
+    if (req.body.localEditContext?.id) assistantMsg.localEditContextId = String(req.body.localEditContext.id);
+    chat.messages.push(assistantMsg);
+    if (reasoningFull) chat.messages[chat.messages.length - 1].reasoning = redactSecrets(reasoningFull);
     if (toolCalls.length) {
       chat.messages[chat.messages.length - 1].tool_calls = toolCalls;
       chat.messages[chat.messages.length - 1].toolCalls = toolCalls.map(item => ({
@@ -884,7 +1189,10 @@ router.post('/:id/messages', async (req, res) => {
     const safeText = redactSecrets(e.message || '未知错误');
     sseWrite(res, 'error', { msg: safeText });
     try {
-      chat.messages.push({ role: 'assistant', content: '错误：' + safeText, ts: Date.now(), error: true });
+      const errorMsg = { role: 'assistant', content: '错误：' + safeText, ts: Date.now(), error: true };
+      if (req.body.assistantMsgId) errorMsg._msgId = String(req.body.assistantMsgId);
+      if (req.body.localEditContext?.id) errorMsg.localEditContextId = String(req.body.localEditContext.id);
+      chat.messages.push(errorMsg);
       chat.updatedAt = Date.now();
       appendSystemLog({ type: 'task', level: 'error', msg: (chat.title || 'chat') + ' · error · ' + (Date.now() - perfStart) + 'ms', chatId: chat.id, title: chat.title || '', route: selectedRoute || '', reason: selectedRouteReason || '', durationMs: Date.now() - perfStart, outputChars: full.length, error: safeText });
       saveAll(list);
@@ -919,9 +1227,11 @@ router.post('/gc-stream', async (req, res) => {
   const modelRoot = store.read('models', {});
   const modelScope = settingsForMode.quickMode ? 'webui' : 'agent';
   const cfg = (modelRoot && (modelRoot.webui || modelRoot.agent)) ? (modelRoot[modelScope] || modelRoot.webui || modelRoot.agent || {}) : modelRoot;
-  cfg._scene = scene || 'chat';
+  const requestedScene = scene || 'chat';
+  cfg._scene = requestedScene;
+  cfg._webuiRequestedScene = requestedScene;
   cfg._abortSignal = abortController.signal;
-  if (model && model !== 'auto') cfg._requestedModel = model;
+
 
   try {
     for await (const event of chatStream(cfg, messages)) {

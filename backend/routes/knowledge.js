@@ -1,17 +1,18 @@
 /**
- * Knowledge Graph API routes — /api/knowledge/*
+ * Knowledge Graph API routes 鈥?/api/knowledge/*
  */
 const express = require('express');
 const router = express.Router();
 const knowledgeDb = require('../services/knowledgeDb');
 const knowledgeAnalyzer = require('../services/knowledgeAnalyzer');
-const { parseFrontmatter, summarizeMarkdown, DOC_FOLDERS, LEGACY_DOC_FOLDERS, normalizeDocFolder } = require('../services/knowledgeCapture');
+const { parseFrontmatter, summarizeMarkdown, DOC_FOLDERS, LEGACY_DOC_FOLDERS, normalizeDocFolder, captureKnowledge } = require('../services/knowledgeCapture');
 const paths = require('../services/paths');
 const store = require('../services/store');
 const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
 const { detectHermesCommand } = require('../services/hermes');
+const questionCluster = require('../services/questionCluster');
 
 // --- Junk message filtering ---
 
@@ -20,12 +21,104 @@ const JUNK_PATTERNS = [
   /^(你是谁|你是什么|what\s*(are|is)\s*(you|your)|who\s*are\s*you)$/i,
   /^(what\s*model|你是什么模型|你用的什么模型)/i,
   /^(thanks?|谢谢|感谢|thank\s*you)$/i,
-  /^(好的?|ok|okay|嗯|啊|哦|噢|呵)$/i,
+  /^(好的?|ok|okay|嗯|好|收到)$/i,
   /^(再见|bye|goodbye|拜拜|88)$/i,
-  /^[\s\.\,\!\?\-\=\+\*\/\\]+$/,  // pure punctuation
-  /^\d+$/,  // pure numbers
-];
+  /^[\s\.,!?\-=+*\/\\]+$/,
+  /^\d+$/,
+]
 
+
+function rangeLabelFromQuery(query = {}) {
+  const range = String(query.range || '30d').toLowerCase();
+  if (query.start || query.end) return '自定义时间';
+  if (range === '7d') return '近 7 天';
+  if (range === 'all') return '全部';
+  return '近 30 天';
+}
+
+function formatReportDate(seconds) {
+  if (!seconds) return '-';
+  return new Date(seconds * 1000).toLocaleDateString('zh-CN');
+}
+
+function qualityLabel(value) {
+  return ({ green: '优秀', yellow: '可复用', orange: '待优化', red: '需重写', gray: '未分析' })[value] || value || '未分析';
+}
+
+function topItems(items = [], limit = 6) {
+  return [...items].sort((a, b) => (b.count || 0) - (a.count || 0)).slice(0, limit);
+}
+
+function nodePreview(node = {}) {
+  return String(node.prompt_text || node.summary || node.title || '').replace(/\s+/g, ' ').trim().slice(0, 120);
+}
+
+function buildKnowledgeReportMarkdown({ rangeLabel, stats, graph }) {
+  const nodes = graph.nodes || [];
+  const edges = graph.edges || [];
+  const categories = topItems(stats.categories || [], 8);
+  const reusableNodes = [...nodes]
+    .sort((a, b) => ((b.frequency || 1) - (a.frequency || 1)) || ((b.relations || 0) - (a.relations || 0)))
+    .filter(node => (node.frequency || 1) > 1 || (node.relations || 0) > 1)
+    .slice(0, 8);
+  const valuableNodes = [...nodes]
+    .sort((a, b) => ((b.relations || 0) - (a.relations || 0)) || ((b.frequency || 1) - (a.frequency || 1)))
+    .slice(0, 8);
+  const needOrganize = nodes
+    .filter(node => !node.md_path && ['yellow', 'green', 'gray', '', null, undefined].includes(node.quality))
+    .sort((a, b) => ((b.frequency || 1) + (b.relations || 0)) - ((a.frequency || 1) + (a.relations || 0)))
+    .slice(0, 8);
+  const timeline = stats.timeline || [];
+  const activeDays = timeline.filter(item => item.count > 0).length;
+  const topCategory = categories[0];
+  const title = `${rangeLabel}知识复盘报告`;
+  const lines = [
+    `# ${title}`,
+    '',
+    `> 生成时间：${new Date().toLocaleString('zh-CN')}`,
+    `> 数据范围：${rangeLabel}`,
+    '',
+    '## 总览',
+    `- 问题总数：${stats.total || nodes.length}`,
+    `- 可复用线索：${stats.reusable || reusableNodes.length}`,
+    `- 主题分类：${categories.length}`,
+    `- 关系数量：${edges.length}`,
+    `- 活跃天数：${activeDays}`,
+  ];
+  if (topCategory) lines.push(`- 最高频主题：${topCategory.name}（${topCategory.count} 条）`);
+  lines.push('', '## 高频主题');
+  if (categories.length) {
+    categories.forEach((item, index) => lines.push(`${index + 1}. ${item.name || '未分类'}：${item.count} 条`));
+  } else {
+    lines.push('- 暂无足够数据。');
+  }
+  lines.push('', '## 可复用经验');
+  if (reusableNodes.length) {
+    reusableNodes.forEach((node, index) => lines.push(`${index + 1}. **${node.title || '未命名问题'}**｜${node.category || '未分类'}｜频次 ${node.frequency || 1}｜关系 ${node.relations || 0}\n   - ${nodePreview(node) || '暂无摘要'}`));
+  } else {
+    lines.push('- 暂未发现重复出现或高关联的问题，可继续积累。');
+  }
+  lines.push('', '## 关键知识节点');
+  if (valuableNodes.length) {
+    valuableNodes.forEach((node, index) => lines.push(`${index + 1}. **${node.title || '未命名节点'}**｜${node.category || '未分类'}｜质量：${qualityLabel(node.quality)}｜${formatReportDate(node.created_at)}\n   - ${nodePreview(node) || '暂无摘要'}`));
+  } else {
+    lines.push('- 暂无关键节点。');
+  }
+  lines.push('', '## 待整理内容');
+  if (needOrganize.length) {
+    needOrganize.forEach((node, index) => lines.push(`${index + 1}. ${node.title || '未命名内容'}｜${node.category || '未分类'}｜建议整理为输出文档`));
+  } else {
+    lines.push('- 当前高价值内容基本已有文档承载。');
+  }
+  lines.push('', '## 建议动作');
+  lines.push('- 把“可复用经验”中的前 3 项整理成固定 Prompt、流程或输出文档。');
+  lines.push('- 对“待整理内容”逐条补充上下文和最终结论，减少后续重复提问成本。');
+  lines.push('- 下次复盘时重点观察高频主题是否持续增长，决定是否建立独立项目/知识分类。');
+  lines.push('', '## 数据说明');
+  lines.push('- 本报告基于知识图谱节点、关系、分类、质量与频次统计自动生成。');
+  lines.push('- 报告用于个人复盘，不代表最终结论，可继续手动编辑补充。');
+  return { title, content: lines.join('\n') };
+}
 function isJunkPrompt(text) {
   if (!text || typeof text !== 'string') return true;
   const trimmed = text.trim();
@@ -59,7 +152,7 @@ function parseDateRange(query = {}) {
   return { start: now - 30 * 24 * 60 * 60 };
 }
 
-// GET /api/knowledge/graph — 完整图谱数据
+// GET /api/knowledge/graph 鈥?瀹屾暣鍥捐氨鏁版嵁
 router.get('/graph', (req, res) => {
   try {
     const { category, quality, search } = req.query;
@@ -70,7 +163,7 @@ router.get('/graph', (req, res) => {
   }
 });
 
-// GET /api/knowledge/nodes — 列出节点
+// GET /api/knowledge/nodes 鈥?鍒楀嚭鑺傜偣
 router.get('/nodes', (req, res) => {
   try {
     const { category, quality, search, limit, offset } = req.query;
@@ -90,7 +183,7 @@ router.get('/nodes', (req, res) => {
   }
 });
 
-// POST /api/knowledge/nodes — 创建节点
+// POST /api/knowledge/nodes 鈥?鍒涘缓鑺傜偣
 router.post('/nodes', (req, res) => {
   try {
     const { title, summary, category, quality, quality_reason, tags, md_path, source, chat_id } = req.body;
@@ -102,7 +195,7 @@ router.post('/nodes', (req, res) => {
   }
 });
 
-// GET /api/knowledge/nodes/:id — 获取单个节点
+// GET /api/knowledge/nodes/:id 鈥?鑾峰彇鍗曚釜鑺傜偣
 router.get('/nodes/:id', (req, res) => {
   try {
     const node = knowledgeDb.getNode(req.params.id);
@@ -124,7 +217,7 @@ router.get('/nodes/:id', (req, res) => {
   }
 });
 
-// PATCH /api/knowledge/nodes/:id — 更新节点
+// PATCH /api/knowledge/nodes/:id 鈥?鏇存柊鑺傜偣
 router.patch('/nodes/:id', (req, res) => {
   try {
     const allowed = ['title', 'summary', 'category', 'quality', 'quality_reason', 'tags', 'md_path', 'source', 'chat_id'];
@@ -140,7 +233,7 @@ router.patch('/nodes/:id', (req, res) => {
   }
 });
 
-// DELETE /api/knowledge/nodes/:id — 删除节点
+// DELETE /api/knowledge/nodes/:id 鈥?鍒犻櫎鑺傜偣
 router.delete('/nodes/:id', (req, res) => {
   try {
     knowledgeDb.deleteNode(req.params.id);
@@ -150,7 +243,7 @@ router.delete('/nodes/:id', (req, res) => {
   }
 });
 
-// GET /api/knowledge/relations — 列出关系
+// GET /api/knowledge/relations 鈥?鍒楀嚭鍏崇郴
 router.get('/relations', (req, res) => {
   try {
     const { node_id } = req.query;
@@ -161,7 +254,7 @@ router.get('/relations', (req, res) => {
   }
 });
 
-// POST /api/knowledge/relations — 创建关系
+// POST /api/knowledge/relations 鈥?鍒涘缓鍏崇郴
 router.post('/relations', (req, res) => {
   try {
     const { source_id, target_id, relation_type, strength } = req.body;
@@ -174,7 +267,7 @@ router.post('/relations', (req, res) => {
   }
 });
 
-// DELETE /api/knowledge/relations/:id — 删除关系
+// DELETE /api/knowledge/relations/:id 鈥?鍒犻櫎鍏崇郴
 router.delete('/relations/:id', (req, res) => {
   try {
     knowledgeDb.deleteRelation(req.params.id);
@@ -184,7 +277,7 @@ router.delete('/relations/:id', (req, res) => {
   }
 });
 
-// POST /api/knowledge/analyze — AI 分析节点质量
+// POST /api/knowledge/analyze 鈥?AI 鍒嗘瀽鑺傜偣璐ㄩ噺
 router.post('/analyze', async (req, res) => {
   try {
     const { node_id, title, content } = req.body;
@@ -226,7 +319,7 @@ router.post('/analyze', async (req, res) => {
   }
 });
 
-// GET /api/knowledge/categories — 分类统计
+// GET /api/knowledge/categories 鈥?鍒嗙被缁熻
 router.get('/categories', (req, res) => {
   try {
     const stats = knowledgeDb.getCategoryStats(parseDateRange(req.query));
@@ -246,7 +339,123 @@ router.get('/stats', (req, res) => {
   }
 });
 
-// POST /api/knowledge/import-md — 从 Markdown 文件导入
+
+
+function buildQuestionClusterReportMarkdown(node = {}) {
+  const examples = Array.isArray(node.example_questions) ? node.example_questions : [];
+  const keywords = Array.isArray(node.keywords) ? node.keywords : [];
+  const title = `${node.title || '\u9ad8\u9891\u95ee\u9898'}\u5206\u6790\u62a5\u544a`;
+  const lines = [
+    `# ${title}`,
+    '',
+    `> \u751f\u6210\u65f6\u95f4\uff1a${new Date().toLocaleString('zh-CN')}`,
+    `> \u6240\u5c5e\u5206\u7c7b\uff1a${node.category || '\u672a\u5206\u7c7b'}`,
+    `> \u51fa\u73b0\u6b21\u6570\uff1a${node.frequency || 1}`,
+    '',
+    '## \u8fd9\u4e2a\u5206\u7c7b\u4e3b\u8981\u8ba8\u8bba\u4ec0\u4e48',
+    `- \u4e3b\u8981\u56f4\u7ed5\u201c${node.title || node.prompt_text || '\u672a\u547d\u540d\u95ee\u9898'}\u201d\u5c55\u5f00\u3002`,
+    `- \u5173\u952e\u8bcd\uff1a${keywords.length ? keywords.join('\u3001') : '\u6682\u65e0'}`,
+    '',
+    '## \u7528\u6237\u771f\u6b63\u5173\u6ce8\u4ec0\u4e48',
+    `- \u9ad8\u9891\u7a0b\u5ea6\uff1a${node.frequency || 1} \u6b21\uff0c\u8bf4\u660e\u8be5\u95ee\u9898\u503c\u5f97\u6c89\u6dc0\u4e3a\u56fa\u5b9a\u7ecf\u9a8c\u6216\u6a21\u677f\u3002`,
+    `- \u5173\u8054\u95ee\u9898\u6570\u91cf\uff1a${examples.length || 1} \u4e2a\uff0c\u53ef\u4f5c\u4e3a\u540e\u7eed\u77e5\u8bc6\u5e93\u6761\u76ee\u7684\u7d20\u6750\u3002`,
+    '',
+    '## \u5178\u578b\u95ee\u9898',
+  ];
+  if (examples.length) examples.slice(0, 10).forEach((item, index) => lines.push(`${index + 1}. ${item}`));
+  else lines.push(`1. ${node.prompt_text || node.summary || node.title || '\u6682\u65e0'}`);
+  lines.push('', '## \u4f18\u5316\u5efa\u8bae');
+  lines.push('- \u5c06\u8be5\u95ee\u9898\u6574\u7406\u4e3a\u53ef\u590d\u7528\u7684\u6807\u51c6\u7b54\u6848\u3001\u6d41\u7a0b\u6216\u63d0\u793a\u8bcd\u3002');
+  lines.push('- \u5982\u679c\u8be5\u95ee\u9898\u6301\u7eed\u589e\u957f\uff0c\u5efa\u8bae\u62c6\u5206\u4e3a\u66f4\u7ec6\u7684\u5b50\u95ee\u9898\u5e76\u5f62\u6210\u4e8c\u7ea7\u77e5\u8bc6\u8282\u70b9\u3002');
+  lines.push('- \u5c06\u5178\u578b\u95ee\u9898\u8865\u5145\u4e0a\u4e0b\u6587\u3001\u8fb9\u754c\u6761\u4ef6\u548c\u6700\u7ec8\u7ed3\u8bba\uff0c\u51cf\u5c11\u540e\u7eed\u91cd\u590d\u6c9f\u901a\u6210\u672c\u3002');
+  lines.push('', '## \u7ecf\u9a8c\u6c89\u6dc0\u65b9\u5411');
+  lines.push('- \u56fa\u5316\u5e38\u89c1\u95ee\u6cd5\u3002');
+  lines.push('- \u6c89\u6dc0\u63a8\u8350\u89e3\u51b3\u6d41\u7a0b\u3002');
+  lines.push('- \u603b\u7ed3\u5931\u8d25\u6848\u4f8b\u548c\u6ce8\u610f\u4e8b\u9879\u3002');
+  return { title, content: lines.join('\n') };
+}
+
+function buildTop20ReportMarkdown({ graph, stats, rangeLabel }) {
+  const nodes = [...(graph.nodes || [])].sort((a, b) => (b.frequency || 1) - (a.frequency || 1));
+  const categories = stats.categories || [];
+  const topNodes = nodes.slice(0, 20);
+  const title = `${rangeLabel}Top20\u9ad8\u9891\u95ee\u9898\u62a5\u544a`;
+  const lines = [
+    `# ${title}`,
+    '',
+    `> \u751f\u6210\u65f6\u95f4\uff1a${new Date().toLocaleString('zh-CN')}`,
+    `> \u9ad8\u9891\u9608\u503c\uff1a\u51fa\u73b0\u6b21\u6570 >= 5`,
+    '',
+    '## Top20 \u9ad8\u9891\u95ee\u9898',
+  ];
+  if (topNodes.length) {
+    topNodes.forEach((node, index) => {
+      const keywords = Array.isArray(node.keywords) ? node.keywords.join('\u3001') : '';
+      lines.push(`${index + 1}. **${node.title || '\u672a\u547d\u540d\u95ee\u9898'}**\uff5c${node.category || '\u672a\u5206\u7c7b'}\uff5c\u51fa\u73b0 ${node.frequency || 1} \u6b21\uff5c${keywords || '\u65e0\u5173\u952e\u8bcd'}`);
+      lines.push(`   - \u5178\u578b\u95ee\u9898\uff1a${nodePreview(node) || '\u6682\u65e0'}`);
+    });
+  } else {
+    lines.push('- \u6682\u65e0\u95ee\u9898\u6570\u636e\u3002');
+  }
+  lines.push('', '## Top20 \u9ad8\u9891\u5206\u7c7b');
+  if (categories.length) categories.slice(0, 20).forEach((item, index) => lines.push(`${index + 1}. ${item.name || '\u672a\u5206\u7c7b'}\uff1a${item.count} \u6b21`));
+  else lines.push('- \u6682\u65e0\u5206\u7c7b\u6570\u636e\u3002');
+  lines.push('', '## \u5efa\u8bae\u52a8\u4f5c');
+  lines.push('- \u4f18\u5148\u628a Top5 \u95ee\u9898\u6574\u7406\u4e3a\u6807\u51c6\u6587\u6863\u6216\u63d0\u793a\u8bcd\u6a21\u677f\u3002');
+  lines.push('- \u5bf9\u589e\u957f\u6700\u5feb\u7684\u5206\u7c7b\u5efa\u7acb\u72ec\u7acb\u77e5\u8bc6\u76ee\u5f55\u3002');
+  lines.push('- \u5bf9\u4f4e\u9891\u4f46\u91cd\u8981\u7684\u95ee\u9898\u7ee7\u7eed\u4fdd\u5b58\uff0c\u6682\u4e0d\u6d88\u8017 AI \u5206\u6790\u6210\u672c\u3002');
+  return { title, content: lines.join('\n') };
+}
+
+// POST /api/knowledge/nodes/:id/report - generate one cluster report
+router.post('/nodes/:id/report', (req, res) => {
+  try {
+    const node = knowledgeDb.getNode(req.params.id);
+    if (!node) return res.fail('node not found', 1, 404);
+    const report = buildQuestionClusterReportMarkdown(node);
+    const saved = captureKnowledge({
+      title: report.title,
+      folder: 'output',
+      type: 'cluster-report',
+      tags: ['knowledge-graph', 'cluster-report', node.category || 'uncategorized'],
+      source: 'knowledge-cluster-report',
+      status: 'draft',
+      summary: `${node.title || 'cluster'} report`,
+      content: report.content,
+    });
+    knowledgeDb.updateNode(node.id, { report_status: 'generated' });
+    res.ok({ ...saved, title: report.title, node_id: node.id });
+  } catch (e) {
+    res.fail(e.message, 1, 500);
+  }
+});
+
+// POST /api/knowledge/report/top20 - generate Top20 report
+router.post('/report/top20', (req, res) => {
+  try {
+    const query = { ...(req.query || {}), ...(req.body || {}) };
+    const dateRange = parseDateRange(query);
+    const rangeLabel = rangeLabelFromQuery(query);
+    const graph = knowledgeDb.getGraphData(dateRange);
+    const stats = knowledgeDb.getQuestionStats(dateRange);
+    const report = buildTop20ReportMarkdown({ graph, stats, rangeLabel });
+    const saved = captureKnowledge({
+      title: report.title,
+      folder: 'output',
+      type: 'top20-report',
+      tags: ['knowledge-graph', 'Top20', 'high-frequency', rangeLabel],
+      source: 'knowledge-top20-report',
+      status: 'draft',
+      summary: `${rangeLabel} Top20 report`,
+      content: report.content,
+    });
+    res.ok({ ...saved, title: report.title, range: rangeLabel });
+  } catch (e) {
+    res.fail(e.message, 1, 500);
+  }
+});
+
+// POST /api/knowledge/import-md 鈥?浠?Markdown 鏂囦欢瀵煎叆
 router.post('/import-md', (req, res) => {
   try {
     const { md_path, title, category, tags, quality } = req.body;
@@ -263,7 +472,7 @@ router.post('/import-md', (req, res) => {
     const node = knowledgeDb.importFromMdFile({
       title: title || fm.title || path.basename(md_path, '.md'),
       summary,
-      category: category || fm.folder || '临时',
+      category: category || fm.folder || '涓存椂',
       tags: tags || (Array.isArray(fm.tags) ? fm.tags : []),
       md_path,
       quality: quality || 'gray',
@@ -275,7 +484,7 @@ router.post('/import-md', (req, res) => {
   }
 });
 
-// POST /api/knowledge/import-batch — 批量导入所有 MD 文件
+// POST /api/knowledge/import-batch 鈥?鎵归噺瀵煎叆鎵€鏈?MD 鏂囦欢
 router.post('/import-batch', (req, res) => {
   try {
     const mdRoot = paths.mdLibraryRoot();
@@ -299,7 +508,7 @@ router.post('/import-batch', (req, res) => {
             const node = knowledgeDb.importFromMdFile({
               title: fm.title || entry.name.replace(/\.md$/, ''),
               summary,
-              category: fm.folder || '临时',
+              category: fm.folder || '涓存椂',
               tags: Array.isArray(fm.tags) ? fm.tags : [],
               md_path: relPath,
             });
@@ -316,7 +525,7 @@ router.post('/import-batch', (req, res) => {
     // Auto-create relations between nodes in the same category
     const byCategory = {};
     for (const item of imported) {
-      const cat = item.category || '临时';
+      const cat = item.category || '涓存椂';
       if (!byCategory[cat]) byCategory[cat] = [];
       byCategory[cat].push(item);
     }
@@ -345,22 +554,22 @@ router.post('/import-batch', (req, res) => {
   }
 });
 
-// Agent profile → 图谱分类映射
+// Agent profile -> 图谱分类映射
 const AGENT_CATEGORY_MAP = {
-  'default': '主对话',
-  'thinker': '问题沉淀',
-  'coder': '文档梳理',
-  'pm': '产品设计',
-  'designer': '表达增强',
-  'researcher': '生图研究',
+  default: '主对话',
+  thinker: '问题沉淀',
+  coder: '文档梳理',
+  pm: '产品设计',
+  designer: '表达增强',
+  researcher: '生图研究',
 };
 
-// 系统命令 / UI 操作 — 不是真正的用户提问
+// 系统命令 / UI 操作不是有效用户问题
 const SYSTEM_CMD_PATTERNS = [
   /^(新建对话|新对话|打开设置|切换模型|切换主题|清除上下文|导出对话|删除对话|重命名|固定对话|取消固定)$/i,
-  /^(主对话|问题沉淀|文档梳理|产品设计|表达增强|生图研究)\s*[·•]\s*主对话$/,
+  /^(主对话|问题沉淀|文档梳理|产品设计|表达增强|生图研究)\s*[·•]\s*主对话/i,
   /^(开始|停止|继续|重试|刷新|返回|关闭|取消|确认|好的|行|可以|嗯|ok|yes|no)$/i,
-  /^[\s\.\,\!\?\-\=\+\*\/\\]+$/,
+  /^[\s\.,!?\-=+*\/\\]+$/,
   /^\d+$/,
 ];
 
@@ -368,10 +577,7 @@ function isSystemCommand(text) {
   if (!text || typeof text !== 'string') return true;
   const trimmed = text.trim();
   if (trimmed.length < 2) return true;
-  for (const pattern of SYSTEM_CMD_PATTERNS) {
-    if (pattern.test(trimmed)) return true;
-  }
-  return false;
+  return SYSTEM_CMD_PATTERNS.some(pattern => pattern.test(trimmed));
 }
 
 function shQuote(value) {
@@ -459,10 +665,11 @@ function relationKey(a, b) {
   return a < b ? `${a}:${b}` : `${b}:${a}`;
 }
 
-// POST /api/knowledge/sync-prompts — 从 WebUI + Hermes CLI 聊天记录同步用户提示词到知识图谱
+// POST /api/knowledge/sync-prompts 鈥?浠?WebUI + Hermes CLI 鑱婂ぉ璁板綍鍚屾鐢ㄦ埛鎻愮ず璇嶅埌鐭ヨ瘑鍥捐氨
 router.post('/sync-prompts', (req, res) => {
   try {
-    const { chatIds, includeCli = true, limit = 500 } = req.body || {};
+    const { chatIds, includeCli = true, limit = 500, minFrequency = 5 } = req.body || {};
+    const minFreq = Math.max(1, Number(minFrequency) || 5);
     const chats = [
       ...loadWebChatsForSync(chatIds),
       ...(includeCli ? loadCliChatsForSync(chatIds, limit) : []),
@@ -488,25 +695,43 @@ router.post('/sync-prompts', (req, res) => {
         if (isSystemCommand(text)) { skipped++; continue; }
         if (isJunkPrompt(text)) { skipped++; continue; }
 
+        const clusterMeta = questionCluster.buildQuestionMeta(text, category);
         let node = knowledgeDb.findNodeByPrompt(text);
         if (node) {
-          knowledgeDb.incrementFrequency(node.id);
+          node = knowledgeDb.mergeQuestionIntoNode(node.id, { prompt_text: text, clusterMeta });
           duplicated++;
         } else {
-          const title = text.length > 30 ? text.slice(0, 30) + '...' : text;
-          node = knowledgeDb.createNode({
-            title,
-            summary: text.slice(0, 200),
-            category,
-            quality: 'yellow',
-            source: chat.source === 'cli' ? 'cli-sync' : 'auto-capture',
-            chat_id: chat.id,
-            prompt_text: text,
-            context_reply: nextAssistantReply(chat.messages, i),
-            frequency: 1,
-          });
-          synced++;
-          categories[category] = (categories[category] || 0) + 1;
+          const candidate = knowledgeDb.findSimilarQuestionNode(clusterMeta, { category, threshold: 0.72 });
+          if (candidate) {
+            node = knowledgeDb.mergeQuestionIntoNode(candidate.id, {
+              prompt_text: text,
+              context_reply: nextAssistantReply(chat.messages, i),
+              chat_id: chat.id,
+              source: chat.source === 'cli' ? 'cli-sync' : 'auto-capture',
+              clusterMeta,
+            });
+            duplicated++;
+          } else {
+            node = knowledgeDb.createNode({
+              title: questionCluster.buildClusterTitle(text, clusterMeta),
+              summary: text.slice(0, 200),
+              category: clusterMeta.category || category,
+              quality: 'gray',
+              source: chat.source === 'cli' ? 'cli-sync' : 'auto-capture',
+              chat_id: chat.id,
+              prompt_text: text,
+              context_reply: nextAssistantReply(chat.messages, i),
+              frequency: 1,
+              cluster_key: clusterMeta.clusterKey,
+              normalized_text: clusterMeta.normalizedText,
+              keywords: clusterMeta.keywords,
+              example_questions: [text],
+              last_question_at: Math.floor(Date.now() / 1000),
+              report_status: minFreq <= 1 ? 'pending' : 'none',
+            });
+            synced++;
+            categories[node.category || category] = (categories[node.category || category] || 0) + 1;
+          }
         }
 
         if (prevNodeId && node && node.id && prevNodeId !== node.id) {
@@ -523,7 +748,7 @@ router.post('/sync-prompts', (req, res) => {
       }
     }
 
-    res.ok({ synced, skipped, duplicated, relations, chats: chats.length, categories });
+    res.ok({ synced, skipped, duplicated, relations, chats: chats.length, categories, minFrequency: minFreq });
   } catch (e) {
     res.fail(e.message, 1, 500);
   }
@@ -548,15 +773,15 @@ function markdownCategoryFolders(mdRoot) {
 
 function mapAnalyzerCategoryToFolder(category) {
   const categoryMap = {
-    'UI设计': '输出文档',
-    'Prompt': 'Prompt模板',
-    '生图': '生图记录',
-    'Agent': '工作流',
-    '项目需求': '项目经验',
-    '周报': '输出文档',
-    '教程': '输出文档',
-    '技术方案': '输出文档',
-    '临时': null,
+    UI设计: '输出文档',
+    Prompt: 'Prompt模板',
+    生图: '生图记录',
+    Agent: '工作流',
+    项目需求: '项目经验',
+    周报: '输出文档',
+    教程: '输出文档',
+    技术方案: '输出文档',
+    临时: null,
   };
   return Object.prototype.hasOwnProperty.call(categoryMap, category) ? categoryMap[category] : category;
 }
@@ -566,7 +791,6 @@ router.post('/auto-classify', async (req, res) => {
   try {
     const mdRoot = paths.mdLibraryRoot();
     const inboxDir = path.join(mdRoot, '临时收件箱');
-    if (!fs.existsSync(inboxDir)) return res.ok({ moved: 0, categories: {} });
 
     const files = fs.readdirSync(inboxDir).filter(f => f.endsWith('.md'));
     if (!files.length) return res.ok({ moved: 0, categories: {} });
@@ -593,7 +817,7 @@ router.post('/auto-classify', async (req, res) => {
           if (vaultFolders.includes(normalized)) targetFolder = normalized;
         }
 
-        // If still "临时" or unmapped, skip
+        // If still "涓存椂" or unmapped, skip
         if (!targetFolder || targetFolder === '临时' || targetFolder === '临时收件箱' || !vaultFolders.includes(targetFolder)) {
           skipped++;
           continue;
@@ -651,5 +875,202 @@ router.post('/auto-classify', async (req, res) => {
   }
 });
 
+// GET /api/knowledge/markdown 鈥?璇诲彇 Markdown 鏂囨。锛堝畨鍏ㄨ矾寰勯檺鍒讹級
+router.get('/markdown', (req, res) => {
+  try {
+    const { path: relPath } = req.query;
+    if (!relPath) return res.fail('path is required');
+
+    const mdRoot = paths.mdLibraryRoot();
+    const fullPath = path.resolve(mdRoot, relPath);
+
+    // 闃叉璺緞绌胯秺
+    if (!fullPath.startsWith(mdRoot)) {
+      return res.fail('invalid path: outside markdown library', 1, 403);
+    }
+
+    if (!fs.existsSync(fullPath)) {
+      return res.fail('file not found', 1, 404);
+    }
+
+    const stats = fs.statSync(fullPath);
+    if (!stats.isFile()) {
+      return res.fail('not a file', 1, 400);
+    }
+
+    const content = fs.readFileSync(fullPath, 'utf8');
+    const crypto = require('crypto');
+    const hash = crypto.createHash('sha256').update(content).digest('hex').slice(0, 16);
+
+    res.ok({
+      path: relPath,
+      content,
+      mtime: stats.mtimeMs,
+      size: stats.size,
+      hash,
+    });
+  } catch (e) {
+    res.fail(e.message, 1, 500);
+  }
+});
+
+// PUT /api/knowledge/markdown 鈥?鍐欏叆 Markdown 鏂囨。锛堝畨鍏ㄨ矾寰勯檺鍒讹級
+router.put('/markdown', (req, res) => {
+  try {
+    const { path: relPath, content } = req.body;
+    if (!relPath) return res.fail('path is required');
+    if (content === undefined) return res.fail('content is required');
+
+    const mdRoot = paths.mdLibraryRoot();
+    const fullPath = path.resolve(mdRoot, relPath);
+
+    // 闃叉璺緞绌胯秺
+    if (!fullPath.startsWith(mdRoot)) {
+      return res.fail('invalid path: outside markdown library', 1, 403);
+    }
+
+    // 纭繚鐩綍瀛樺湪
+    const dir = path.dirname(fullPath);
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
+
+    fs.writeFileSync(fullPath, content, 'utf8');
+    const stats = fs.statSync(fullPath);
+    const crypto = require('crypto');
+    const hash = crypto.createHash('sha256').update(content).digest('hex').slice(0, 16);
+
+    res.ok({
+      path: relPath,
+      mtime: stats.mtimeMs,
+      size: stats.size,
+      hash,
+      saved: true,
+    });
+  } catch (e) {
+    res.fail(e.message, 1, 500);
+  }
+});
+
+// POST /api/knowledge/markdown/replace 鈥?灞€閮ㄦ浛鎹?Markdown 閫夊尯锛堝揩閫熺紪杈戯級
+router.post('/markdown/replace', (req, res) => {
+  try {
+    const { path: relPath, oldText, newText, lineStart, lineEnd, returnContent } = req.body || {};
+    if (!relPath) return res.fail('path is required');
+    if (!oldText) return res.fail('oldText is required');
+    if (newText === undefined) return res.fail('newText is required');
+
+    const mdRoot = paths.mdLibraryRoot();
+    const fullPath = path.resolve(mdRoot, relPath);
+
+    // 闃叉璺緞绌胯秺
+    if (!fullPath.startsWith(mdRoot)) {
+      return res.fail('invalid path: outside markdown library', 1, 403);
+    }
+
+    if (!fs.existsSync(fullPath)) {
+      return res.fail('file not found', 1, 404);
+    }
+
+    const statsBefore = fs.statSync(fullPath);
+    if (!statsBefore.isFile()) {
+      return res.fail('not a file', 1, 400);
+    }
+
+    const content = fs.readFileSync(fullPath, 'utf8');
+    const normalize = (s) => String(s || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+    const normOldText = normalize(oldText).trim();
+    const normContent = normalize(content);
+    const normNewText = normalize(newText).trim();
+
+    let updated = '';
+    let matchedBy = 'text';
+    const start = Number(lineStart || 0);
+    const end = Number(lineEnd || 0);
+
+    if (start > 0 && end >= start) {
+      const lines = normContent.split('\n');
+      const selected = lines.slice(start - 1, end).join('\n').trim();
+      if (selected === normOldText) {
+        lines.splice(start - 1, end - start + 1, ...normNewText.split('\n'));
+        updated = lines.join('\n');
+        matchedBy = 'line-range';
+      }
+    }
+
+    if (!updated) {
+      const index = normContent.indexOf(normOldText);
+      if (index < 0) return res.fail('selected text not found', 1, 409);
+      if (normContent.indexOf(normOldText, index + normOldText.length) >= 0) {
+        return res.fail('selected text is not unique; please provide lineStart/lineEnd', 1, 409);
+      }
+      updated = normContent.slice(0, index) + normNewText + normContent.slice(index + normOldText.length);
+    }
+
+    fs.writeFileSync(fullPath, updated, 'utf8');
+    const stats = fs.statSync(fullPath);
+    const crypto = require('crypto');
+    const hash = crypto.createHash('sha256').update(updated).digest('hex').slice(0, 16);
+
+    const payload = {
+      path: relPath,
+      mtime: stats.mtimeMs,
+      size: stats.size,
+      hash,
+      saved: true,
+      matchedBy,
+    };
+    if (returnContent !== false) payload.content = updated;
+    res.ok(payload);
+  } catch (e) {
+    res.fail(e.message, 1, 500);
+  }
+});
+
+// GET /api/knowledge/markdown/status — 获取文档状态（mtime/hash）
+router.get('/markdown/status', (req, res) => {
+  try {
+    const { path: relPath } = req.query;
+    if (!relPath) return res.fail('path is required');
+
+    const mdRoot = paths.mdLibraryRoot();
+    const fullPath = path.resolve(mdRoot, relPath);
+
+    // 闃叉璺緞绌胯秺
+    if (!fullPath.startsWith(mdRoot)) {
+      return res.fail('invalid path: outside markdown library', 1, 403);
+    }
+
+    if (!fs.existsSync(fullPath)) {
+      return res.fail('file not found', 1, 404);
+    }
+
+    const stats = fs.statSync(fullPath);
+    if (!stats.isFile()) {
+      return res.fail('not a file', 1, 400);
+    }
+
+    const content = fs.readFileSync(fullPath, 'utf8');
+    const crypto = require('crypto');
+    const hash = crypto.createHash('sha256').update(content).digest('hex').slice(0, 16);
+
+    res.ok({
+      path: relPath,
+      mtime: stats.mtimeMs,
+      size: stats.size,
+      hash,
+      exists: true,
+    });
+  } catch (e) {
+    res.fail(e.message, 1, 500);
+  }
+});
+
 module.exports = router;
+
+
+
+
+
+
 

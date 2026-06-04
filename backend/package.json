@@ -1,10 +1,10 @@
 {
     "name": "hermes-agent-backend",
-    "version": "1.5.4",
+    "version": "1.5.5",
     "description": "Hermes Agent backend API",
     "main": "server.js",
     "scripts": {
-        "start": "node server.js",
+        "start": "node supervisor.js",
         "dev": "node --watch server.js"
     },
     "dependencies": {

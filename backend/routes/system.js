@@ -517,7 +517,14 @@ function scanMarkdownFiles(root) {
       const fm = parseFrontmatter(content);
       const title = String(fm.title || firstHeading(content) || path.basename(entry.name, '.md')).trim();
       const mdType = String(fm.type || fm.category || inferMdType(entry.name, content, rel)).trim();
-      const tags = [...new Set([...normalizeTags(fm.tags), ...normalizeTags(fm.tag)])];
+      const tags = [...new Set([
+        ...normalizeTags(fm.tags),
+        ...normalizeTags(fm.tag),
+        ...normalizeTags(fm.labels),
+        ...normalizeTags(fm.label),
+        ...normalizeTags(fm.categories),
+        ...normalizeTags(fm.category),
+      ])];
       files.push({
         id: Buffer.from(full).toString('base64url'),
         title,

@@ -738,3 +738,56 @@ html[data-theme="dark"] .kg-bar-value {
   .kg-question-side{align-items:flex-start!important;flex-direction:row!important;flex-wrap:wrap!important;max-width:none!important;}
   .kg-stat-grid{grid-template-columns:repeat(3,minmax(0,1fr))!important;}
 }
+.kg-toolbar-actions{
+  margin-left:auto;
+  display:flex;
+  align-items:center;
+  gap:6px;
+}
+.kg-toolbar-actions .kg-action-btn{
+  margin-left:0!important;
+}
+.kg-keywords{
+  display:flex!important;
+  flex-wrap:wrap!important;
+  gap:6px!important;
+  margin-top:8px!important;
+}
+.kg-keywords .kg-pill{
+  display:inline-flex!important;
+  align-items:center!important;
+  min-height:20px!important;
+  padding:0 7px!important;
+  border-radius:var(--r-control-sm,8px)!important;
+  background:color-mix(in srgb,var(--c-ink,#000) 7%,transparent)!important;
+  color:var(--c-ink-muted,#666)!important;
+  font-size:var(--fs-xs,11px)!important;
+}
+.kg-search-input,
+.kg-select{
+  min-height:30px!important;
+  padding:0 10px!important;
+  border:1px solid var(--c-hairline,rgba(0,0,0,.12))!important;
+  border-radius:var(--r-control-sm,8px)!important;
+  background:var(--c-input-bg,#fff)!important;
+  color:var(--c-ink,#000)!important;
+  font-size:var(--fs-xs,12px)!important;
+  outline:none!important;
+}
+.kg-search-input{width:180px!important;}
+.kg-select{max-width:128px!important;}
+.kg-mini-btn{
+  min-height:22px!important;
+  padding:0 8px!important;
+  border:1px solid color-mix(in srgb,var(--c-personality,#8b7cf6) 28%,transparent)!important;
+  border-radius:var(--r-control-sm,8px)!important;
+  background:color-mix(in srgb,var(--c-personality,#8b7cf6) 10%,transparent)!important;
+  color:color-mix(in srgb,var(--c-personality,#8b7cf6) 82%,var(--c-ink,#000))!important;
+  font-size:var(--fs-xs,11px)!important;
+  cursor:pointer!important;
+}
+.kg-mini-btn:disabled{opacity:.55!important;cursor:not-allowed!important;}
+@media (max-width:960px){
+  .kg-toolbar-actions{flex-wrap:wrap!important;justify-content:flex-end!important;}
+  .kg-search-input{width:150px!important;}
+}

@@ -155,6 +155,7 @@
         version: list.length + 1,
         type: (a.attrs.type || 'markdown').toLowerCase(),
         language: (a.attrs.language || '').toLowerCase(),
+        path: a.attrs.path || '',
         content: a.content,
         ts: Date.now(),
       });
@@ -192,8 +193,15 @@
   let historyData = null;
   let historyPreview = null;
   let localEditContext = null;
+  let lastEditHighlight = null;
+  let _sourceOverlayRaf = 0;
+  let _sourceOverlayScrollPending = false;
+  let _sourceOverlayRetryCount = 0;
+  let _sourceMetricsCache = null;
+  let _sourceResizeObs = null;
   const DOC_FOLDERS = ['工作文档', 'AI分享', '教程', '笔记', '临时收件箱'];
   const autoSavedKeys = new Set();
+  let _currentDocSnapshot = null;
 
   function namedIcon(name, size = 16, fallback = '') {
     return global.HermesIcons && typeof global.HermesIcons.svg === 'function'
@@ -240,6 +248,9 @@
     }
     if (kind === 'doc') {
       return '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M14 3H7a2 2 0 00-2 2v14a2 2 0 002 2h10a2 2 0 002-2V8z"/><path d="M14 3v5h5"/></svg>';
+    }
+    if (kind === 'list') {
+      return '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>';
     }
     return '';
   }
@@ -592,6 +603,7 @@
       main.style.width = '0';
       main.style.minWidth = '0';
       main.style.overflow = 'hidden';
+      scheduleSourceOverlaySync({ scrollToHighlight: false });
       return;
     }
     shell.classList.add('open');
@@ -602,6 +614,7 @@
     main.style.flex = `0 0 var(--artifact-chat-basis, ${splitPct}%)`;
     main.style.width = '';
     main.style.minWidth = '280px';
+    scheduleSourceOverlaySync({ scrollToHighlight: false });
   }
 
   function setLayout(mode) {
@@ -626,7 +639,38 @@
     const title = currentTitle || artifactDisplayTitle() || fileNameFromPath(path || '');
     const body = getSourceText ? getSourceText() : '';
     if (!path || !/\.md$/i.test(path)) return null;
-    return { title, path, type: 'markdown', previewing: true, size: body ? body.length : 0 };
+
+    // 获取选区信息
+    const sourceEditor = $('#artifactSource');
+    let selection = '';
+    let lineStart = 0;
+    let lineEnd = 0;
+
+    if (sourceEditor && currentTab === 'source') {
+      const start = sourceEditor.selectionStart || 0;
+      const end = sourceEditor.selectionEnd || 0;
+      if (start !== end) {
+        selection = body.slice(start, end);
+        const beforeSelection = body.slice(0, start);
+        lineStart = (beforeSelection.match(/\n/g) || []).length + 1;
+        const selectionLines = (selection.match(/\n/g) || []).length;
+        lineEnd = lineStart + selectionLines;
+      }
+    }
+
+    return {
+      title,
+      path,
+      type: 'markdown',
+      previewing: true,
+      size: body ? body.length : 0,
+      totalLines: body ? body.split('\n').length : 0,
+      selection,
+      lineStart,
+      lineEnd,
+      snapshot: _currentDocSnapshot || { content: body, mtime: 0, hash: '' },
+      status: _currentDocSnapshot ? 'tracked' : 'untracked'
+    };
   }
 
   function syncDocumentHeader() {
@@ -637,9 +681,323 @@
     if (titleEl) titleEl.textContent = artifactDisplayTitle();
   }
 
+  function getLineRangeFromOffsets(text, start, end) {
+    const source = String(text || '');
+    const safeStart = Math.max(0, Math.min(source.length, Number(start) || 0));
+    const safeEnd = Math.max(safeStart, Math.min(source.length, Number(end) || safeStart));
+    const before = source.slice(0, safeStart);
+    const selected = source.slice(safeStart, safeEnd);
+    const lineStart = (before.match(/\n/g) || []).length + 1;
+    const lineEnd = lineStart + (selected.match(/\n/g) || []).length;
+    return { lineStart, lineEnd };
+  }
+
+  function lineLabelFromRange(startLine, endLine) {
+    const start = Number(startLine) || 0;
+    const end = Number(endLine) || 0;
+    if (!start) return '';
+    return start === end || !end ? `L${start}` : `L${start}-${end}`;
+  }
+
+  function buildLocalEditCardHtml(ctx, extraClass) {
+    if (!ctx) return '';
+    const lineLabel = lineLabelFromRange(ctx.lineStart, ctx.lineEnd);
+    const title = ctx.path ? fileNameFromPath(ctx.path) : (ctx.title || '当前文档');
+    const classes = ['local-edit-card'];
+    if (extraClass) classes.push(extraClass);
+    return `<div class="${classes.join(' ')}">`
+      + `<span class="local-edit-card-title" title="${esc(title)}">${esc(title)}</span>`
+      + (lineLabel ? `<span class="local-edit-card-lines">${esc(lineLabel)}</span>` : '')
+      + `</div>`;
+  }
+
+  function buildComposerEditReferenceCard(ctx) {
+    if (!ctx) return '';
+    const lineLabel = lineLabelFromRange(ctx.lineStart, ctx.lineEnd);
+    const title = ctx.path ? fileNameFromPath(ctx.path) : (ctx.title || '当前文档');
+    const snippet = String(ctx.selectedText || ctx.originalContent || '')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, 120);
+    return `
+      <div class="card-content">
+        <span class="card-main">
+          <span class="card-title" title="${esc(title)}">${esc(title)}</span>
+          ${snippet ? `<span class="card-snippet" title="${esc(snippet)}">${esc(snippet)}</span>` : ''}
+        </span>
+        ${lineLabel ? `<span class="card-lines">${esc(lineLabel)}</span>` : ''}
+      </div>
+      <button class="card-remove" type="button" aria-label="移除引用">×</button>
+    `;
+  }
+
+  function lineStartOffsetFromNumber(text, lineNumber) {
+    const source = String(text || '');
+    const target = Math.max(1, Number(lineNumber) || 1);
+    if (target <= 1) return 0;
+    let index = 0;
+    let current = 1;
+    while (current < target) {
+      const nextBreak = source.indexOf('\n', index);
+      if (nextBreak === -1) return source.length;
+      index = nextBreak + 1;
+      current += 1;
+    }
+    return index;
+  }
+
+  function lineEndOffsetFromNumber(text, lineNumber) {
+    const source = String(text || '');
+    const start = lineStartOffsetFromNumber(source, lineNumber);
+    const nextBreak = source.indexOf('\n', start);
+    return nextBreak === -1 ? source.length : nextBreak;
+  }
+
+  function sourceLineHeight(src) {
+    if (!src) return 22;
+    const lineHeight = parseFloat(global.getComputedStyle(src).lineHeight);
+    return Number.isFinite(lineHeight) && lineHeight > 0 ? lineHeight : 22;
+  }
+
+  function resetSourceMetricsCache() {
+    _sourceMetricsCache = null;
+  }
+
+  function syncSourceLayerGeometry() {
+    const src = $('#artifactSource');
+    if (!src) return;
+    const width = Math.max(0, Math.round(src.clientWidth || 0));
+    const measure = $('#artifactSourceMeasure');
+    const highlight = $('#artifactSourceHighlight');
+    const active = $('#artifactSourceActiveHighlight');
+    [measure, highlight, active].forEach(layer => {
+      if (!layer || !width) return;
+      layer.style.width = width + 'px';
+      layer.style.right = 'auto';
+    });
+  }
+
+  function getSourceLineMetrics() {
+    const src = $('#artifactSource');
+    const measure = $('#artifactSourceMeasure');
+    const text = String(src?.value || '');
+    const lines = text.split('\n');
+    const lineHeight = sourceLineHeight(src);
+    syncSourceLayerGeometry();
+    const width = src ? Math.round(src.clientWidth || 0) : 0;
+    if (_sourceMetricsCache
+      && _sourceMetricsCache.text === text
+      && _sourceMetricsCache.width === width
+      && _sourceMetricsCache.lineHeight === lineHeight) {
+      return _sourceMetricsCache.metrics;
+    }
+    const fallbackHeights = lines.map(() => lineHeight);
+    if (!src || !measure || !src.offsetParent || src.clientWidth <= 0) {
+      const metrics = { lines, heights: fallbackHeights, lineHeight };
+      _sourceMetricsCache = { text, width, lineHeight, metrics };
+      return metrics;
+    }
+    measure.innerHTML = lines.map(line => `<div class="artifact-source-measure-line">${line ? esc(line) : '&#8203;'}</div>`).join('');
+    const heights = Array.from(measure.children).map(el => Math.max(lineHeight, Math.ceil(el.getBoundingClientRect().height || lineHeight)));
+    const metrics = { lines, heights: heights.length ? heights : fallbackHeights, lineHeight };
+    _sourceMetricsCache = { text, width, lineHeight, metrics };
+    return metrics;
+  }
+
+  function sourceLineTop(metrics, lineNumber) {
+    const target = Math.max(1, Number(lineNumber) || 1);
+    let top = 0;
+    for (let i = 0; i < target - 1 && i < metrics.heights.length; i += 1) {
+      top += metrics.heights[i] || metrics.lineHeight;
+    }
+    return top;
+  }
+
+  function normalizePathForCompare(path) {
+    let text = String(path || '').trim();
+    if (!text) return '';
+    text = text.replace(/\\/g, '/');
+    text = text.replace(/^([ab])\/{2,}/i, '$1/');
+    text = text.replace(/^[ab]\//i, '');
+    text = text.replace(/^\/mnt\/([a-z])\//i, (_, drive) => drive.toUpperCase() + ':/');
+    return text.toLowerCase();
+  }
+
+  function editHighlightMatchesCurrentPath() {
+    if (!lastEditHighlight) return false;
+    const highlightPath = normalizePathForCompare(lastEditHighlight.path);
+    const activePath = normalizePathForCompare(currentFilePath);
+    return !highlightPath || !activePath || highlightPath === activePath;
+  }
+
+  function resolveEditHighlightRange(sourceText, totalLines) {
+    const source = String(sourceText || '');
+    const fallbackText = String(lastEditHighlight?.text || '').trim();
+    const storedStartLine = Math.max(1, Number(lastEditHighlight?.startLine) || 1);
+    const storedEndLine = Math.max(storedStartLine, Number(lastEditHighlight?.endLine) || storedStartLine);
+    if (fallbackText && fallbackText.length >= 4) {
+      let bestRange = null;
+      let bestDistance = Infinity;
+      let index = source.indexOf(fallbackText);
+      let checked = 0;
+      while (index >= 0 && checked < 50) {
+        const range = getLineRangeFromOffsets(source, index, index + fallbackText.length);
+        const distance = Math.abs((range.lineStart || storedStartLine) - storedStartLine);
+        if (distance < bestDistance) {
+          bestDistance = distance;
+          bestRange = range;
+        }
+        if (distance === 0) break;
+        checked += 1;
+        index = source.indexOf(fallbackText, index + fallbackText.length);
+      }
+      if (bestRange) {
+        return {
+          startLine: Math.max(1, Math.min(totalLines, bestRange.lineStart || storedStartLine)),
+          endLine: Math.max(1, Math.min(totalLines, bestRange.lineEnd || bestRange.lineStart || storedEndLine)),
+        };
+      }
+    }
+    return {
+      startLine: Math.max(1, Math.min(totalLines, storedStartLine)),
+      endLine: Math.max(1, Math.min(totalLines, storedEndLine)),
+    };
+  }
+
+  function buildGutterLineNumbers(metrics) {
+    const marks = [];
+    const total = Math.max(1, metrics.heights.length || metrics.lines.length || 1);
+    const active = editHighlightMatchesCurrentPath();
+    const start = active ? Math.max(1, Number(lastEditHighlight.startLine) || 1) : 0;
+    const end = active ? Math.max(start, Number(lastEditHighlight.endLine) || start) : 0;
+    for (let i = 1; i <= total; i += 1) {
+      const height = Math.max(metrics.lineHeight, metrics.heights[i - 1] || metrics.lineHeight);
+      const edited = active && i >= start && i <= end ? ' is-edited' : '';
+      marks.push(`<div class="artifact-source-gutter-line${edited}" data-line="${i}" style="height:${height}px;line-height:${metrics.lineHeight}px">${i}</div>`);
+    }
+    return marks.join('');
+  }
+
+  function syncSourceGutter(metrics) {
+    const src = $('#artifactSource');
+    const gutter = $('#artifactSourceGutter');
+    if (!src || !gutter) return;
+    const sourceMetrics = metrics || getSourceLineMetrics();
+    gutter.innerHTML = buildGutterLineNumbers(sourceMetrics);
+    gutter.scrollTop = src.scrollTop || 0;
+  }
+
+  function syncSourceHighlightScroll() {
+    const src = $('#artifactSource');
+    const hl = $('#artifactSourceHighlight');
+    if (!src || !hl) return;
+    hl.style.transform = `translateY(-${src.scrollTop || 0}px)`;
+    positionSourceActiveHighlight();
+  }
+
+  function clearSourceActiveHighlight() {
+    const active = $('#artifactSourceActiveHighlight');
+    if (!active) return;
+    active.style.display = 'none';
+    active.style.height = '0px';
+    active.removeAttribute('data-start-line');
+    active.removeAttribute('data-end-line');
+  }
+
+  function positionSourceActiveHighlight(metricsArg, startLineArg, endLineArg) {
+    const src = $('#artifactSource');
+    const active = $('#artifactSourceActiveHighlight');
+    if (!src || !active) return false;
+    const metrics = metricsArg || getSourceLineMetrics();
+    const storedStart = Number(active.dataset.startLine || 0);
+    const storedEnd = Number(active.dataset.endLine || 0);
+    const startLine = Math.max(1, Number(startLineArg || storedStart) || 1);
+    const endLine = Math.max(startLine, Number(endLineArg || storedEnd) || startLine);
+    if (!active.dataset.startLine && startLineArg == null) return false;
+    const total = Math.max(1, metrics.heights.length || metrics.lines.length || 1);
+    const from = Math.max(1, Math.min(total, startLine));
+    const to = Math.max(from, Math.min(total, endLine));
+    let height = 0;
+    for (let i = from; i <= to; i += 1) {
+      height += Math.max(metrics.lineHeight, metrics.heights[i - 1] || metrics.lineHeight);
+    }
+    active.dataset.startLine = String(from);
+    active.dataset.endLine = String(to);
+    active.style.display = 'block';
+    active.style.top = Math.round(10 + sourceLineTop(metrics, from) - (src.scrollTop || 0)) + 'px';
+    active.style.height = Math.max(metrics.lineHeight, Math.round(height)) + 'px';
+    active.style.width = Math.max(0, Math.round(src.clientWidth || 0)) + 'px';
+    return true;
+  }
+
+  function sourcePanelReadyForHighlight() {
+    const src = $('#artifactSource');
+    const shell = $('#artifactSourceShell');
+    if (!src || !shell || currentTab !== 'source') return false;
+    if (shell.style.display === 'none' || src.style.display === 'none') return false;
+    const rect = src.getBoundingClientRect();
+    return src.offsetParent !== null && rect.width > 20 && rect.height > 20;
+  }
+
+  function applySourceEditHighlight(options = {}) {
+    const src = $('#artifactSource');
+    const hl = $('#artifactSourceHighlight');
+    const shell = $('#artifactSourceShell');
+    if (!src || !hl || !shell) return false;
+    if (options.waitForVisible && !sourcePanelReadyForHighlight()) return false;
+    const metrics = getSourceLineMetrics();
+    if (!editHighlightMatchesCurrentPath()) {
+      hl.innerHTML = '';
+      shell.classList.remove('has-edit-highlight');
+      clearSourceActiveHighlight();
+      syncSourceGutter(metrics);
+      syncSourceHighlightScroll();
+      return true;
+    }
+    const lines = [];
+    const total = Math.max(1, metrics.heights.length || metrics.lines.length || 1);
+    const { startLine, endLine } = resolveEditHighlightRange(src.value || '', total);
+    for (let i = 1; i <= total; i += 1) {
+      const height = Math.max(metrics.lineHeight, metrics.heights[i - 1] || metrics.lineHeight);
+      lines.push(i >= startLine && i <= endLine
+        ? `<div class="artifact-source-highlight-line" style="height:${height}px"></div>`
+        : `<div class="artifact-source-highlight-spacer" style="height:${height}px"></div>`);
+    }
+    hl.innerHTML = lines.join('');
+    shell.classList.add('has-edit-highlight');
+    if (options.scrollToHighlight !== false) {
+      src.scrollTop = Math.max(0, sourceLineTop(metrics, startLine) - (metrics.lineHeight * 2));
+    }
+    positionSourceActiveHighlight(metrics, startLine, endLine);
+    syncSourceHighlightScroll();
+    syncSourceGutter(metrics);
+    return true;
+  }
+
+  function scheduleSourceOverlaySync(options = {}) {
+    _sourceOverlayScrollPending = _sourceOverlayScrollPending || options.scrollToHighlight === true;
+    if (options.scrollToHighlight === true || options.retry === true) {
+      const retries = Number.isFinite(Number(options.retries)) ? Number(options.retries) : 8;
+      _sourceOverlayRetryCount = Math.max(_sourceOverlayRetryCount, retries);
+    }
+    if (_sourceOverlayRaf) return;
+    _sourceOverlayRaf = requestAnimationFrame(() => {
+      const shouldScroll = _sourceOverlayScrollPending;
+      _sourceOverlayRaf = 0;
+      _sourceOverlayScrollPending = false;
+      const ok = applySourceEditHighlight({ scrollToHighlight: shouldScroll, waitForVisible: true });
+      if (!ok && _sourceOverlayRetryCount > 0) {
+        _sourceOverlayRetryCount -= 1;
+        scheduleSourceOverlaySync({ scrollToHighlight: shouldScroll, retry: true, retries: _sourceOverlayRetryCount });
+      } else {
+        _sourceOverlayRetryCount = 0;
+      }
+    });
+  }
+
   function historyDisplayTitle() {
     if (historyMode === 'graph') return '知识图谱';
-    if (historyMode === 'category:images') return '图片';
+    if (historyMode === 'category:images') return '输出图片';
     if (historyMode === 'tag') return '标签';
     if (String(historyMode || '').startsWith('category:')) {
       const id = String(historyMode).slice(9);
@@ -706,7 +1064,7 @@
     if (titleEl && currentTab === 'history' && !historyPreview) titleEl.textContent = historyDisplayTitle();
     const actionBtn = $('#artifactHistoryActionBtn');
     if (actionBtn) {
-      const showSync = currentTab === 'history' && historyMode === 'graph';
+      const showSync = false;
       const showClassify = currentTab === 'history' && historyMode === 'category:outputs' && historySubFilter === 'inbox';
       actionBtn.style.display = (showSync || showClassify) ? 'inline-flex' : 'none';
       if (showSync) {
@@ -841,6 +1199,94 @@
     return versionByTitle.get(title) || [];
   }
 
+  function upsertDocumentVersion(title, filePath, content, meta = {}) {
+    const safeTitle = title || currentTitle || fileNameFromPath(filePath || '').replace(/\.md$/i, '') || 'Markdown';
+    const list = versionByTitle.get(safeTitle) || [];
+    const wantedPath = normalizePathForCompare(filePath);
+    let row = wantedPath ? list.find(item => normalizePathForCompare(item.path) === wantedPath) : null;
+    if (!row && viewVersionIndex >= 0 && viewVersionIndex < list.length) row = list[viewVersionIndex];
+    if (!row && list.length === 1) row = list[0];
+    if (!row) {
+      row = {
+        version: list.length + 1,
+        type: (meta.type || 'markdown').toLowerCase(),
+        language: (meta.language || '').toLowerCase(),
+        path: filePath || '',
+        content: content || '',
+        ts: Date.now(),
+      };
+      list.push(row);
+    } else {
+      row.type = (meta.type || row.type || 'markdown').toLowerCase();
+      row.language = (meta.language || row.language || '').toLowerCase();
+      row.path = filePath || row.path || '';
+      row.content = content || '';
+      row.ts = Date.now();
+    }
+    versionByTitle.set(safeTitle, list);
+    viewVersionIndex = Math.max(0, list.indexOf(row));
+    return row;
+  }
+
+  function changedLineRange(oldContent, newContent) {
+    const normOld = String(oldContent || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+    const normNew = String(newContent || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+    if (normOld === normNew) return null;
+    const oldLines = normOld.split('\n');
+    const newLines = normNew.split('\n');
+    let start = 0;
+    while (start < oldLines.length && start < newLines.length && oldLines[start] === newLines[start]) start += 1;
+    let oldEnd = oldLines.length - 1;
+    let newEnd = newLines.length - 1;
+    while (oldEnd >= start && newEnd >= start && oldLines[oldEnd] === newLines[newEnd]) {
+      oldEnd -= 1;
+      newEnd -= 1;
+    }
+    const total = Math.max(1, newLines.length);
+    const lineStart = Math.max(1, Math.min(total, start + 1));
+    const lineEnd = Math.max(lineStart, Math.min(total, newEnd + 1));
+    return {
+      lineStart,
+      lineEnd,
+      text: newLines.slice(lineStart - 1, lineEnd).join('\n'),
+    };
+  }
+
+  function renderMarkdownDiffHtml(oldContent, newContent) {
+    const normOld = String(oldContent || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+    const normNew = String(newContent || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+    const oldLines = normOld.split('\n');
+    const newLines = normNew.split('\n');
+    return newLines.map((line, i) => {
+      const html = esc(line);
+      return oldLines[i] === line ? html : '<span class="artifact-diff-added">' + html + '</span>';
+    }).join('\n');
+  }
+
+  async function fetchMarkdownDocument(pathText) {
+    const target = String(pathText || '').trim();
+    if (!target) throw new Error('path is required');
+    const attempts = [
+      apiBase() + '/api/system/file-content?path=' + encodeURIComponent(target),
+      apiBase() + '/api/knowledge/markdown?path=' + encodeURIComponent(target),
+    ];
+    let lastError = null;
+    for (const url of attempts) {
+      try {
+        const res = await fetch(url, {
+          cache: 'no-store',
+          headers: { 'Accept': 'application/json', 'Cache-Control': 'no-cache' },
+        });
+        const json = await readJsonResponse(res, '读取文档失败');
+        const data = json.data || {};
+        if (data.content !== undefined) return { ...data, path: data.path || target, content: String(data.content || '') };
+      } catch (e) {
+        lastError = e;
+      }
+    }
+    throw lastError || new Error('读取文档失败');
+  }
+
   function currentContentForPanel(parsed, streaming) {
     const act = parsed.activeArtifact;
     if (act) return { attrs: act.attrs, content: act.content, incomplete: streaming };
@@ -864,12 +1310,16 @@
     return window.__hermesLastArtifactBody || '';
   }
 
-  function syncSourceEditor(content) {
+  function syncSourceEditor(content, options = {}) {
     const src = $('#artifactSource');
     if (!src) return;
     const text = content || '';
-    if (src.value !== text) src.value = text;
+    if (src.value !== text) {
+      src.value = text;
+      resetSourceMetricsCache();
+    }
     _sourceLastSaved = text;
+    if (options.highlight !== false) scheduleSourceOverlaySync({ scrollToHighlight: options.scrollToHighlight === true });
   }
 
   function setSourceSaveStatus(text, tone) {
@@ -917,6 +1367,9 @@
         const data = await readJsonResponse(res, '保存失败：请重启 WebUI 后端后再试');
         currentFilePath = data.data && data.data.path ? data.data.path : currentFilePath;
         currentTitle = data.data && data.data.title ? data.data.title : meta.title;
+        // 初始化快照
+        if (data.data && data.data.path && data.data.content !== undefined) updateDocumentSnapshot(data.data.path, data.data.content);
+        else if (currentFilePath) updateDocumentSnapshot(currentFilePath, meta.body);
         historyData = null;
       }
       _sourceLastSaved = meta.body;
@@ -941,20 +1394,31 @@
   function selectionEditPrompt(text, mode) {
     const title = currentTitle || '当前知识库文档';
     const file = currentFilePath || (historyPreview && historyPreview.path) || '';
-    const label = mode === 'source' ? '代码模式选区' : '预览选区';
+    const ctx = getCurrentMarkdownContext();
+
+    // 生成简洁的行号标签，类似 Cursor 风格
+    let lineTag = '';
+    if (ctx && ctx.lineStart) {
+      if (ctx.lineStart === ctx.lineEnd) {
+        lineTag = `L${ctx.lineStart}`;
+      } else {
+        lineTag = `L${ctx.lineStart}-${ctx.lineEnd}`;
+      }
+    }
+
+    const fileLabel = file ? fileNameFromPath(file) : title;
+    const locationTag = lineTag ? `${fileLabel}:${lineTag}` : fileLabel;
+
     return [
-      '请对当前知识库文档做局部编辑，并把结果写回原文档。',
-      '只修改下面选中的局部内容，不要重写全文；保持原文风格、Markdown 层级和上下文语气。',
-      '如果你能操作文件，请读取文档路径，定位选区文本并替换为修改后的片段，然后保存。',
+      `请修改文档 ${locationTag} 的内容：`,
       '',
-      '【文档】' + title,
-      file ? '【文档路径】' + file : '【文档路径】当前 Artifact 尚未保存，请先根据上下文更新当前知识库文档',
-      '【来源】' + label,
-      '【选中内容】',
+      '```',
       text,
+      '```',
       '',
-      '【修改要求】',
-      ''
+      '要求：只修改选中部分，保持原文风格和格式，修改后写回原文档。',
+      '',
+      '修改指令：'
     ].join('\n');
   }
 
@@ -962,12 +1426,41 @@
     const selectedText = String(text || '').trim().slice(0, 12000);
     if (!selectedText) return null;
     const sourceText = getSourceText() || '';
+    let lineStart = 0;
+    let lineEnd = 0;
+    let selectionStart = -1;
+    let selectionEnd = -1;
+    const src = $('#artifactSource');
+    if (mode === 'source' && src && currentTab === 'source') {
+      selectionStart = src.selectionStart ?? -1;
+      selectionEnd = src.selectionEnd ?? -1;
+      if (selectionStart >= 0 && selectionEnd > selectionStart) {
+        const range = getLineRangeFromOffsets(sourceText, selectionStart, selectionEnd);
+        lineStart = range.lineStart;
+        lineEnd = range.lineEnd;
+      }
+    }
+    if (selectionStart < 0 || selectionEnd <= selectionStart) {
+      const index = sourceText.indexOf(selectedText);
+      if (index >= 0) {
+        selectionStart = index;
+        selectionEnd = index + selectedText.length;
+        const range = getLineRangeFromOffsets(sourceText, selectionStart, selectionEnd);
+        lineStart = range.lineStart;
+        lineEnd = range.lineEnd;
+      }
+    }
     return {
       id: 'local_edit_' + Date.now(),
       title: currentTitle || firstHeading(sourceText) || '当前知识库文档',
       path: currentFilePath || (historyPreview && historyPreview.path) || '',
       mode: mode === 'source' ? 'source' : 'preview',
       selectedText,
+      originalContent: selectedText,
+      lineStart,
+      lineEnd,
+      selectionStart,
+      selectionEnd,
       sourceSnapshot: sourceText.slice(0, 200000),
       createdAt: Date.now(),
     };
@@ -978,11 +1471,53 @@
   }
 
   function clearLocalEditContext(id) {
-    if (!id || (localEditContext && localEditContext.id === id)) localEditContext = null;
+    const shouldClear = !id || !localEditContext || localEditContext.id === id;
+    if (!shouldClear) return;
+    localEditContext = null;
+    const card = document.querySelector('.edit-reference-card');
+    if (card) card.remove();
   }
 
-  async function applyLocalEditReplacement(replacement, contextId) {
-    const ctx = localEditContext && (!contextId || localEditContext.id === contextId) ? localEditContext : null;
+  function buildLocalEditUpdatedText(ctx, nextText) {
+    if (!ctx) return '';
+    const source = String(ctx.sourceSnapshot || getSourceText() || window.__hermesLastArtifactBody || '');
+    const selected = String(ctx.selectedText || '');
+    const replacement = String(nextText || '');
+    if (!source || !selected) return '';
+
+    const selectionStart = Number(ctx.selectionStart);
+    const selectionEnd = Number(ctx.selectionEnd);
+    if (Number.isFinite(selectionStart) && Number.isFinite(selectionEnd) && selectionStart >= 0 && selectionEnd >= selectionStart) {
+      if (source.slice(selectionStart, selectionEnd) === selected) {
+        return source.slice(0, selectionStart) + replacement + source.slice(selectionEnd);
+      }
+    }
+
+    const start = Number(ctx.lineStart || 0);
+    const end = Number(ctx.lineEnd || 0);
+    if (start > 0 && end >= start) {
+      const normalize = value => String(value || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+      const lines = normalize(source).split('\n');
+      const selectedByLine = lines.slice(start - 1, end).join('\n').trim();
+      if (selectedByLine === normalize(selected).trim()) {
+        lines.splice(start - 1, end - start + 1, ...normalize(replacement).trim().split('\n'));
+        return lines.join('\n');
+      }
+    }
+
+    const index = source.indexOf(selected);
+    if (index >= 0 && source.indexOf(selected, index + selected.length) < 0) {
+      return source.slice(0, index) + replacement + source.slice(index + selected.length);
+    }
+    return '';
+  }
+
+  async function applyLocalEditReplacement(replacement, contextRef) {
+    const contextId = typeof contextRef === 'object' && contextRef ? contextRef.id : contextRef;
+    const fallbackCtx = typeof contextRef === 'object' && contextRef?.selectedText ? contextRef : null;
+    const ctx = localEditContext && (!contextId || localEditContext.id === contextId)
+      ? localEditContext
+      : fallbackCtx;
     if (!ctx || !ctx.selectedText) {
       if (global.toast) global.toast('没有可应用的局部编辑选区', 'warning');
       return false;
@@ -992,45 +1527,58 @@
       if (global.toast) global.toast('没有可应用的替换内容', 'warning');
       return false;
     }
-    let source = getSourceText() || ctx.sourceSnapshot || '';
-    if (!source.includes(ctx.selectedText) && ctx.path) {
-      try {
-        const res = await fetch(apiBase() + '/api/system/file-content?path=' + encodeURIComponent(ctx.path), { cache: 'no-store' });
-        const data = await readJsonResponse(res, '读取文档失败');
-        source = String((data.data && data.data.content) || '');
-      } catch (_) {}
-    }
-    if (!source.includes(ctx.selectedText)) {
-      if (global.toast) global.toast('原选区已变化，无法自动替换', 'warning');
+    if (!ctx.path) {
+      if (global.toast) global.toast('当前文档尚未保存，无法快速写回', 'warning');
       return false;
     }
-    const updated = source.replace(ctx.selectedText, nextText);
-    if (ctx.path) {
-      const res = await fetch(apiBase() + '/api/system/file-content', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ path: ctx.path, content: updated }),
-      });
-      await readJsonResponse(res, '写回文档失败');
-      currentFilePath = ctx.path;
-      currentTitle = ctx.title || currentTitle;
-    } else {
-      currentTitle = ctx.title || currentTitle;
-      const res = await fetch(apiBase() + '/api/system/md-library', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ title: currentTitle, folder: inferFolderFromContent(updated, currentTitle), content: updated }),
-      });
-      const data = await readJsonResponse(res, '保存文档失败');
-      currentFilePath = data.data && data.data.path ? data.data.path : currentFilePath;
-      currentTitle = data.data && data.data.title ? data.data.title : currentTitle;
+
+    const optimisticUpdated = buildLocalEditUpdatedText(ctx, nextText);
+    const res = await fetch(apiBase() + '/api/knowledge/markdown/replace', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        path: ctx.path,
+        oldText: ctx.selectedText,
+        newText: nextText,
+        lineStart: ctx.lineStart || 0,
+        lineEnd: ctx.lineEnd || 0,
+        returnContent: !optimisticUpdated,
+      }),
+    });
+    const data = await readJsonResponse(res, '写回文档失败');
+    const updated = String((data.data && data.data.content) || optimisticUpdated || '');
+    if (!updated) {
+      if (global.toast) global.toast('写回成功但未返回文档内容', 'warning');
+      return false;
     }
+
+    const nextLineCount = Math.max(1, nextText.split('\n').length);
+    const range = ctx.lineStart
+      ? { lineStart: Math.max(1, Number(ctx.lineStart) || 1), lineEnd: Math.max(1, Number(ctx.lineStart) || 1) + nextLineCount - 1 }
+      : (() => {
+          const fallbackOffset = Math.max(0, updated.indexOf(nextText));
+          return getLineRangeFromOffsets(updated, fallbackOffset, fallbackOffset + nextText.length);
+        })();
+    lastEditHighlight = {
+      path: ctx.path,
+      startLine: range.lineStart,
+      endLine: range.lineEnd,
+      text: nextText,
+      createdAt: Date.now(),
+    };
+
+    currentFilePath = ctx.path;
+    currentTitle = ctx.title || currentTitle;
     window.__hermesLastArtifactBody = updated;
+    window.__hermesCurrentSourceBody = updated;
     historyData = null;
+    updateDocumentSnapshot(ctx.path, updated, data.data || {});
     clearLocalEditContext(ctx.id);
-    recordCompletedArtifacts([{ attrs: { title: currentTitle || ctx.title, type: 'markdown', path: currentFilePath }, content: updated }]);
-    openRef(currentTitle || ctx.title || '当前知识库文档');
-    if (global.toast) global.toast('已应用到当前文档选区', 'success');
+    upsertDocumentVersion(currentTitle || ctx.title, currentFilePath, updated, { type: 'markdown' });
+    syncSourceEditor(updated, { scrollToHighlight: true });
+    openRef(currentTitle || ctx.title || '当前知识库文档', { tab: 'source', scrollToHighlight: true });
+    scheduleSourceOverlaySync({ scrollToHighlight: true, retry: true, retries: 12 });
+    if (global.toast) global.toast('已快速应用到当前文档选区', 'success');
     return true;
   }
 
@@ -1040,10 +1588,12 @@
       if (global.toast) global.toast('请先回到对话页再局部编辑', 'warning');
       return;
     }
-    const prompt = selectionEditPrompt(text, mode);
+
+    const simplePrompt = '修改指令：';
     localEditContext = createLocalEditContext(text, mode);
+    showEditReferenceCard();
     const prefix = ta.value && ta.value.trim() ? '\n\n' : '';
-    ta.value = (ta.value || '') + prefix + prompt;
+    ta.value = (ta.value || '') + prefix + simplePrompt;
     ta.focus();
     ta.selectionStart = ta.selectionEnd = ta.value.length;
     ta.dispatchEvent(new Event('input', { bubbles: true }));
@@ -1051,38 +1601,134 @@
     if (global.toast) global.toast('已引用选中内容，可补充修改要求后发送', 'success');
   }
 
+  function showEditReferenceCard() {
+    const ctx = localEditContext || getCurrentMarkdownContext();
+    if (!ctx) return;
+
+    const existing = document.querySelector('.edit-reference-card');
+    if (existing) existing.remove();
+
+    const card = document.createElement('div');
+    card.className = 'edit-reference-card';
+    card.innerHTML = buildComposerEditReferenceCard(ctx);
+    const removeBtn = card.querySelector('.card-remove');
+    if (removeBtn) {
+      removeBtn.addEventListener('click', () => {
+        clearLocalEditContext(ctx.id);
+      });
+    }
+
+    const chatInput = document.getElementById('chatInput');
+    if (chatInput && chatInput.parentElement) {
+      chatInput.parentElement.insertBefore(card, chatInput);
+    }
+  }
+
+  function showMultiStepEdit(text, mode) {
+    // 多步骤编辑：弹出 textarea 让用户逐条输入修改指令
+    const ctx = getCurrentMarkdownContext();
+    const pathStr = ctx && ctx.path ? ctx.path : '';
+    const linesStr = (ctx && ctx.lineStart) ? (ctx.lineStart === ctx.lineEnd ? ('第 ' + ctx.lineStart + ' 行') : ('第 ' + ctx.lineStart + '-' + ctx.lineEnd + ' 行')) : '';
+    const fileLabel = pathStr ? fileNameFromPath(pathStr) + (linesStr ? ' · ' + linesStr : '') : '当前选区';
+    const overlay = document.createElement('div');
+    overlay.className = 'artifact-multi-step-overlay';
+    overlay.style.cssText = 'position:fixed;inset:0;z-index:9998;background:rgba(0,0,0,0.4);display:flex;align-items:center;justify-content:center';
+    overlay.onclick = function(e) { if (e.target === this) this.remove(); };
+
+    const panel = document.createElement('div');
+    panel.style.cssText = 'background:var(--c-surface1);border:1px solid var(--c-hairline);border-radius:12px;padding:20px;max-width:520px;width:90%;max-height:70vh;overflow-y:auto;box-shadow:0 8px 32px rgba(0,0,0,0.2)';
+    panel.onclick = function(e) { e.stopPropagation(); };
+
+    panel.innerHTML = '<div style="font-size:14px;font-weight:600;margin-bottom:4px">分步编辑</div>' +
+      '<div style="font-size:12px;color:var(--c-ink-muted);margin-bottom:12px">' + esc(fileLabel) + '</div>' +
+      '<textarea id="multiStepInput" placeholder="逐条输入修改指令，每行一步&#10;例：&#10;1. 把第二段改短&#10;2. 加一个总结句&#10;3. 更新标题" style="width:100%;min-height:100px;padding:10px;border:1px solid var(--c-hairline);border-radius:8px;background:var(--c-surface2);color:var(--c-ink);font-size:13px;font-family:inherit;resize:vertical;box-sizing:border-box"></textarea>' +
+      '<div style="display:flex;gap:8px;margin-top:12px;justify-content:flex-end">' +
+      '<button class="artifact-multi-step-cancel" style="padding:8px 16px;border-radius:8px;border:1px solid var(--c-hairline);background:transparent;color:var(--c-ink);cursor:pointer;font-size:13px">取消</button>' +
+      '<button class="artifact-multi-step-confirm" style="padding:8px 16px;border-radius:8px;border:none;background:var(--c-accent);color:#fff;cursor:pointer;font-size:13px;font-weight:500">生成编辑指令</button>' +
+      '</div>';
+
+    overlay.appendChild(panel);
+    document.body.appendChild(overlay);
+
+    const textarea = panel.querySelector('#multiStepInput');
+    const cancelBtn = panel.querySelector('.artifact-multi-step-cancel');
+    const confirmBtn = panel.querySelector('.artifact-multi-step-confirm');
+
+    cancelBtn.onclick = function() { overlay.remove(); };
+    confirmBtn.onclick = function() {
+      const steps = (textarea.value || '').split('\n').map(s => s.trim()).filter(Boolean);
+      const stepsText = steps.length ? steps.map((s, i) => (i + 1) + '. ' + s).join('\n') : '';
+      overlay.remove();
+      // 构建分步编辑 prompt
+      const basePrompt = selectionEditPrompt(text, mode);
+      const multiPart = stepsText ? '\n\n【分步修改要求】\n' + stepsText + '\n\n请按顺序逐一执行以上修改步骤。完成一步后继续下一步，直到所有步骤完成。' : '';
+      const finalPrompt = basePrompt + multiPart;
+      localEditContext = createLocalEditContext(text, mode);
+      const ta = document.getElementById('chatInput');
+      if (ta) {
+        const prefix = ta.value && ta.value.trim() ? '\n\n' : '';
+        ta.value = (ta.value || '') + prefix + finalPrompt;
+        ta.focus();
+        ta.selectionStart = ta.selectionEnd = ta.value.length;
+        ta.dispatchEvent(new Event('input', { bubbles: true }));
+        if (typeof global.autoResizeInput === 'function') global.autoResizeInput(ta);
+        if (global.toast) global.toast('已生成 ' + steps.length + ' 步编辑指令', 'success');
+      }
+    };
+
+    setTimeout(function() { if (textarea) textarea.focus(); }, 100);
+  }
+
   function hideLocalEditBubble() {
     const bubble = document.getElementById('artifactLocalEditBubble');
-    if (bubble) bubble.classList.remove('show');
+    if (bubble) {
+      bubble.classList.remove('show');
+      // 添加淡出效果
+      bubble.style.opacity = '0';
+      bubble.style.transform = 'scale(0.95) translateY(4px)';
+      setTimeout(() => {
+        bubble.style.opacity = '';
+        bubble.style.transform = '';
+      }, 200);
+    }
   }
 
   function showLocalEditBubble(x, y, text, mode) {
     let bubble = document.getElementById('artifactLocalEditBubble');
     if (!bubble) {
-      bubble = document.createElement('button');
-      bubble.type = 'button';
+      bubble = document.createElement('div');
       bubble.id = 'artifactLocalEditBubble';
       bubble.className = 'artifact-local-edit-bubble';
-      bubble.title = '引用选区进行局部编辑';
-      bubble.setAttribute('aria-label', '引用选区进行局部编辑');
-      bubble.innerHTML = renderToolbarIcon('magic') + '<span>局部编辑</span>';
+      bubble.innerHTML = '<button type="button" class="artifact-local-edit-btn" aria-label="局部编辑">' + renderToolbarIcon('magic') + '</button>';
       document.body.appendChild(bubble);
       bubble.addEventListener('mousedown', event => event.preventDefault());
     }
+    // 从当前上下文获取路径和行号
+    const ctx = getCurrentMarkdownContext();
+    const pathStr = ctx && ctx.path ? ctx.path : '';
+    const linesStr = (ctx && ctx.lineStart) ? (ctx.lineStart === ctx.lineEnd ? ('第 ' + ctx.lineStart + ' 行') : ('第 ' + ctx.lineStart + '-' + ctx.lineEnd + ' 行')) : '';
     bubble._selectedText = text;
     bubble._selectedMode = mode;
-    bubble.onclick = () => {
-      insertLocalEditPrompt(bubble._selectedText || '', bubble._selectedMode || 'preview');
-      hideLocalEditBubble();
-    };
-    bubble.style.left = Math.min(global.innerWidth - 116, Math.max(8, x + 10)) + 'px';
-    bubble.style.top = Math.min(global.innerHeight - 44, Math.max(8, y + 10)) + 'px';
+    bubble._ctxPath = pathStr;
+    bubble._ctxLines = linesStr;
+    const btn = bubble.querySelector('.artifact-local-edit-btn');
+    if (btn) {
+      btn.innerHTML = renderToolbarIcon('magic');
+      btn.onclick = () => {
+        insertLocalEditPrompt(bubble._selectedText || '', bubble._selectedMode || 'preview');
+        hideLocalEditBubble();
+      };
+    }
+    bubble.style.left = Math.min(global.innerWidth - 260, Math.max(8, x + 10)) + 'px';
+    bubble.style.top = Math.min(global.innerHeight - 56, Math.max(8, y + 10)) + 'px';
     bubble.classList.add('show');
   }
 
   function maybeShowLocalEditBubble(event) {
     const target = event && event.target;
     if (!target || target.closest('#artifactLocalEditBubble')) return;
+
+    // 只在代码模式显示局部编辑
     const src = $('#artifactSource');
     if (target === src && currentTab === 'source') {
       const start = src.selectionStart || 0;
@@ -1092,15 +1738,9 @@
       else hideLocalEditBubble();
       return;
     }
-    const preview = target.closest && target.closest('#artifactPreview,.artifact-history-preview');
-    if (!preview) { hideLocalEditBubble(); return; }
-    const sel = global.getSelection ? global.getSelection() : null;
-    const text = sel ? String(sel.toString() || '').trim() : '';
-    if (text.length < 2) { hideLocalEditBubble(); return; }
-    let node = sel.anchorNode;
-    if (node && node.nodeType === 3) node = node.parentElement;
-    if (!node || !preview.contains(node)) { hideLocalEditBubble(); return; }
-    showLocalEditBubble(event.clientX, event.clientY, text.slice(0, 4000), 'preview');
+
+    // 预览模式不显示局部编辑bubble
+    hideLocalEditBubble();
   }
 
   async function fileToDataUrl(file) {
@@ -1203,7 +1843,9 @@
       return;
     }
     const title = cur.attrs.title || '未命名';
-    if (currentTitle && currentTitle !== title && !cur.attrs.path) currentFilePath = '';
+    const nextPath = cur.attrs.path || '';
+    if (nextPath) currentFilePath = nextPath;
+    else if (currentTitle && currentTitle !== title) currentFilePath = '';
     currentTitle = title;
     const typ = (cur.attrs.type || 'markdown').toLowerCase();
     const lang = cur.attrs.language || '';
@@ -1282,27 +1924,48 @@
     setTimeout(() => shell.classList.remove('artifact-flash'), 400);
   }
 
-  function openRef(title) {
+  function openRef(title, options = {}) {
+    const targetTab = options.tab === 'source' ? 'source' : 'preview';
     currentTitle = title;
     const list = getVersionList(title);
     viewVersionIndex = list.length ? list.length - 1 : -1;
     layout = 'SPLIT_VIEW';
-    setTab('preview');
+    if (targetTab === 'source') {
+      currentTab = 'source';
+      historyPreview = null;
+      const hist = $('#artifactHistory');
+      const prev = $('#artifactPreview');
+      const src = $('#artifactSource');
+      const srcShell = $('#artifactSourceShell');
+      if (hist) hist.style.display = 'none';
+      if (prev) prev.style.display = 'none';
+      if (srcShell) srcShell.style.display = 'flex';
+      if (src) src.style.display = 'block';
+      syncToolbarActive();
+    } else {
+      setTab('preview');
+    }
     loadSplit();
     applyLayout();
     syncToolbarActive();
     if (list.length && viewVersionIndex >= 0) {
       const row = list[viewVersionIndex];
+      currentFilePath = row.path || currentFilePath || '';
       window.__hermesLastArtifactBody = row.content;
       window.__hermesCurrentSourceBody = row.content;
       updatePanelUI(
-        { attrs: { title, type: row.type, language: row.language }, content: row.content, incomplete: false },
+        { attrs: { title, type: row.type, language: row.language, path: row.path || currentFilePath || '' }, content: row.content, incomplete: false },
         false
       );
+      // 初始化快照
+      updateDocumentSnapshot(row.path || currentFilePath || '', row.content);
     } else {
       updatePanelUI(null, false);
     }
-    flashPanel();
+    if (targetTab === 'source') {
+      scheduleSourceOverlaySync({ scrollToHighlight: options.scrollToHighlight === true });
+    }
+    if (options.flash !== false) flashPanel();
   }
 
   function openEmpty(title, message) {
@@ -1516,14 +2179,25 @@
     </div>
     <div id="artifactGenerating" class="artifact-generating" style="display:none"><span class="dot-pulse"></span> 生成中…</div>
     <div id="artifactPreview" class="artifact-preview"></div>
-    <textarea id="artifactSource" class="artifact-source artifact-source-editor" style="display:none" spellcheck="false"></textarea>
+    <div id="artifactSourceShell" class="artifact-source-shell" style="display:none">
+      <div id="artifactSourceEditBadge" class="artifact-source-edit-badge" style="display:none"></div>
+        <div id="artifactSourcePane" class="artifact-source-pane">
+          <div id="artifactSourceGutter" class="artifact-source-gutter" aria-hidden="true"></div>
+          <div class="artifact-source-editor-wrap">
+          <div id="artifactSourceMeasure" class="artifact-source-measure" aria-hidden="true"></div>
+          <div id="artifactSourceHighlight" class="artifact-source-highlight" aria-hidden="true"></div>
+          <div id="artifactSourceActiveHighlight" class="artifact-source-active-highlight" aria-hidden="true"></div>
+          <textarea id="artifactSource" class="artifact-source artifact-source-editor" style="display:none" spellcheck="false" wrap="soft"></textarea>
+        </div>
+      </div>
+    </div>
     <div id="artifactHistory" class="artifact-history" style="display:none"></div>
   </div>
   <div class="image-lightbox" id="imageLightbox">
     <div class="lightbox-backdrop" onclick="HermesArtifact.closeImageLightbox()"></div>
     <div class="lightbox-content">
       <button class="lightbox-close" onclick="HermesArtifact.closeImageLightbox()" aria-label="关闭">✕</button>
-      <img class="lightbox-img" id="lightboxImg" alt="预览" />
+      <img class="lightbox-img" id="lightboxImg" alt="预览" onclick="HermesArtifact.toggleImageLightboxZoom(this,event)" />
       <div class="lightbox-prompt" id="lightboxPrompt" onclick="HermesArtifact.copyLightboxPrompt()" title="点击复制提示词"></div>
     </div>
   </div>
@@ -1536,14 +2210,30 @@
     loadSplit();
     ensureShellMarkup();
     const src = $('#artifactSource');
+    const gutter = $('#artifactSourceGutter');
     if (src && src.dataset.editBound !== '1') {
       src.dataset.editBound = '1';
       src.addEventListener('input', () => {
         updateCurrentArtifactBody(src.value || '');
+        scheduleSourceOverlaySync({ scrollToHighlight: false });
+      });
+      src.addEventListener('scroll', () => {
+        if (gutter) gutter.scrollTop = src.scrollTop || 0;
+        syncSourceHighlightScroll();
       });
       src.addEventListener('paste', handleSourcePaste);
       src.addEventListener('mouseup', maybeShowLocalEditBubble);
       src.addEventListener('keyup', maybeShowLocalEditBubble);
+    }
+    if (src && !_sourceResizeObs && typeof ResizeObserver !== 'undefined') {
+      _sourceResizeObs = new ResizeObserver(() => {
+        resetSourceMetricsCache();
+        syncSourceLayerGeometry();
+        scheduleSourceOverlaySync({ scrollToHighlight: false });
+      });
+      _sourceResizeObs.observe(src);
+      const wrap = $('#artifactSourcePane');
+      if (wrap) _sourceResizeObs.observe(wrap);
     }
     bindResize();
     bindToolbarMenus();
@@ -1555,6 +2245,7 @@
     }
     applyLayout();
     syncToolbarActive();
+    scheduleSourceOverlaySync({ scrollToHighlight: false });
     if (global.mermaid && typeof global.mermaid.initialize === 'function') {
       try {
         global.mermaid.initialize({ startOnLoad: false, theme: document.documentElement.dataset.theme === 'light' ? 'default' : 'dark' });
@@ -1599,7 +2290,7 @@
     if (viewVersionIndex < 0) viewVersionIndex = list.length - 1;
     viewVersionIndex = Math.max(0, Math.min(list.length - 1, viewVersionIndex + delta));
     const row = list[viewVersionIndex];
-    updatePanelUI({ attrs: { title: currentTitle, type: row.type, language: row.language }, content: row.content, incomplete: false }, false);
+    updatePanelUI({ attrs: { title: currentTitle, type: row.type, language: row.language, path: row.path || currentFilePath || '' }, content: row.content, incomplete: false }, false);
   }
 
   function setTab(tab) {
@@ -1608,10 +2299,12 @@
     syncToolbarActive();
     const prev = $('#artifactPreview');
     const src = $('#artifactSource');
+    const srcShell = $('#artifactSourceShell');
     const hist = $('#artifactHistory');
     if (tab === 'history') {
       if (prev) prev.style.display = 'none';
       if (src) src.style.display = 'none';
+      if (srcShell) srcShell.style.display = 'none';
       syncToolbarState();
       if (hist) {
         hist.style.display = 'block';
@@ -1623,19 +2316,23 @@
     const list = getVersionList(currentTitle);
     if (list.length && (viewVersionIndex < 0 || viewVersionIndex >= list.length)) viewVersionIndex = list.length - 1;
     const row = list.length && viewVersionIndex >= 0 ? list[viewVersionIndex] : null;
+    if (row?.path) currentFilePath = row.path;
     const body = (row && row.content != null ? row.content : '') || window.__hermesCurrentSourceBody || window.__hermesLastArtifactBody || (src ? src.value : '') || '';
     const typ = row ? (row.type || 'markdown') : 'markdown';
     const lang = row ? (row.language || '') : '';
     if (tab === 'source') {
       if (prev) prev.style.display = 'none';
+      if (srcShell) srcShell.style.display = 'flex';
       if (src) {
-        syncSourceEditor(body);
         src.style.display = 'block';
+        syncSourceEditor(body);
+        scheduleSourceOverlaySync({ scrollToHighlight: false });
       }
       window.__hermesCurrentSourceBody = body;
       window.__hermesLastArtifactBody = body;
     } else {
       if (src) src.style.display = 'none';
+      if (srcShell) srcShell.style.display = 'none';
       if (prev) {
         prev.style.display = 'block';
         flushPreviewNow(typ, lang, body, prev);
@@ -1658,7 +2355,7 @@
         <div class="history-card-menu" id="${cardId}">
           <button type="button" onclick="HermesArtifact.renameHistoryFile('${safePath}', '${safeName}')">编辑命名</button>
           <button type="button" onclick="HermesArtifact.copyHistoryFile('${safePath}')">复制文件</button>
-          <button type="button" onclick="HermesArtifact.moveHistoryFile('${safePath}')">移动分类</button>
+          <button type="button" onclick="HermesArtifact.moveHistoryFile('${safePath}')">移动分类位置</button>
           <button type="button" class="danger" onclick="HermesArtifact.deleteHistoryFile('${safePath}')">删除</button>
         </div>
         <button type="button" class="history-card-main" aria-label="预览 ${esc(title)}" onclick="HermesArtifact.previewHistoryFile('${safePath}', '${safeName}')">
@@ -1694,16 +2391,24 @@
   function renderToolbarCategoryMenu() {
     const menu = $('#artifactLibraryMenu');
     if (!menu) return;
-    const categories = historyData?.vaultCategories || [];
-    const categoryButtons = categories.map(item => {
-      const id = String(item.id || item.folder || 'outputs');
-      const label = item.label || item.folder || '文档';
-      const count = (item.files || []).length;
-      return `<button class="${historyMode === 'category:' + id ? 'active' : ''}" onclick="HermesArtifact.setHistoryMode('category:${esc(id)}')">${esc(label)}<span>${count}</span></button>`;
-    }).join('');
+    const files = historyData?.filesFlat || [];
+    const images = imageWaterfallData || [];
+    const tags = historyData?.tags || [];
+    const categories = (historyData?.vaultCategories || []).filter(item => item && item.id !== 'outputs');
+    const categoryButtons = categories
+      .filter(item => (item.files || []).length || item.dynamic || item.id !== 'inbox')
+      .map(item => {
+        const mode = 'category:' + item.id;
+        const count = (item.files || []).length;
+        return `<button class="${historyMode === mode ? 'active' : ''}" onclick="HermesArtifact.setHistoryMode('${esc(mode)}')">${esc(item.label || item.folder || '分类')}<span>${count || ''}</span></button>`;
+      })
+      .join('');
     menu.innerHTML = `
-      ${categoryButtons || `<button class="${historyMode === 'category:outputs' ? 'active' : ''}" onclick="HermesArtifact.setHistoryMode('category:outputs')">输出文档<span>${(historyData?.filesFlat || []).length}</span></button>`}
-      <button class="${historyMode === 'category:images' ? 'active' : ''}" onclick="HermesArtifact.setHistoryMode('category:images')">图片</button>
+      <button class="${historyMode === 'category:outputs' ? 'active' : ''}" onclick="HermesArtifact.setHistoryMode('category:outputs')">输出文档<span>${files.length}</span></button>
+      <button class="${historyMode === 'tag' ? 'active' : ''}" onclick="HermesArtifact.setHistoryMode('tag')">按标签<span>${tags.length || ''}</span></button>
+      ${categoryButtons ? `<div class="doc-library-menu-sep"></div>${categoryButtons}` : ''}
+      <div class="doc-library-menu-sep"></div>
+      <button class="${historyMode === 'category:images' ? 'active' : ''}" onclick="HermesArtifact.setHistoryMode('category:images')">输出图片<span>${images.length || ''}</span></button>
       <button class="${historyMode === 'graph' ? 'active' : ''}" onclick="HermesArtifact.setHistoryMode('graph')">知识图谱</button>
     `;
     menu.style.display = historyCategoryMenuOpen ? 'flex' : 'none';
@@ -1748,10 +2453,10 @@
     const currentCategoryId = String(historyMode || '').startsWith('category:') ? String(historyMode).slice(9) : 'outputs';
     const currentCategory = categories.find(item => item.id === currentCategoryId) || outputCategory;
     const documentCategories = categories.filter(item => item.id !== 'inbox');
-    const viewTitles = { 'category:outputs': '输出文档', 'category:images': '图片', 'graph': '知识图谱' };
+    const viewTitles = { 'category:outputs': '输出文档', 'category:images': '输出图片', 'graph': '知识图谱' };
     const viewTitle = viewTitles[historyMode] || (currentCategory.label || currentCategory.folder || '输出文档');
     const viewHeader = '';
-    if (!all.length) {
+    if (!all.length && historyMode !== 'category:images' && historyMode !== 'graph') {
       hist.innerHTML = viewHeader + renderDocListEmpty();
       return;
     }
@@ -1798,25 +2503,18 @@
       return;
     }
     if (historyMode === 'category:outputs') {
-      // 输出文档视图 — 按当前真实文件夹动态生成子 tab
+      // 输出文档视图 — 子过滤只保留「全部 / 临时收件箱」；自动分类由右上工具栏按钮承载。
       const inboxCategory = categories.find(item => item.id === 'inbox') || { id: 'inbox', label: '临时收件箱', folder: '临时收件箱', files: all.filter(f => f.folder === '临时收件箱') };
       const allCount = all.length;
       const tabs = [
         `<button class="${historySubFilter === 'all' ? 'active' : ''}" onclick="HermesArtifact.setSubFilter('all')">全部 (${allCount})</button>`,
-        ...documentCategories.map(item => `<button class="${historySubFilter === 'cat:' + item.id ? 'active' : ''}" onclick="HermesArtifact.setSubFilter('cat:${esc(String(item.id))}')">${esc(item.label || item.folder || '文档')} (${(item.files || []).length})</button>`),
         `<button class="${historySubFilter === 'inbox' ? 'active' : ''}" onclick="HermesArtifact.setSubFilter('inbox')">临时收件箱 (${(inboxCategory.files || []).length})</button>`,
-        `<button class="doc-auto-classify-btn" onclick="HermesArtifact.autoClassify()">自动分类</button>`,
       ];
       const subTabs = `<div class="doc-sub-tabs">${tabs.join('')}</div>`;
       let files, title;
       if (historySubFilter === 'inbox') {
         files = inboxCategory.files || [];
         title = '临时收件箱';
-      } else if (String(historySubFilter || '').startsWith('cat:')) {
-        const subId = String(historySubFilter).slice(4);
-        const hit = categories.find(item => item.id === subId);
-        files = hit ? (hit.files || []) : [];
-        title = hit ? (hit.label || hit.folder || '文档') : '文档';
       } else {
         files = all;
         title = '全部文档';
@@ -1867,7 +2565,7 @@
     try {
       const res = await fetch(apiBase() + '/api/images/', { cache: 'no-store' });
       const data = await res.json();
-      const images = (Array.isArray(data) ? data : (data.data || data.images || [])).filter(img => img.kind === 'output' && (img.url || img.filename));
+      const images = (Array.isArray(data) ? data : (data.data || data.images || [])).filter(img => img.kind === 'output' && (img.publicUrl || img.url || img.id || img.filename));
       imageWaterfallData = images;
       renderImageWaterfall(images);
     } catch (e) {
@@ -1888,39 +2586,85 @@
       return;
     }
     const cards = images.map(img => {
-      const imgUrl = img.url || ('/api/images/file/' + encodeURIComponent(img.filename));
-      const prompt = esc(img.prompt || img.sourcePrompt || '无提示词');
-      return `<div class="image-waterfall-card" onclick="HermesArtifact.openImageLightbox('${esc(imgUrl)}', '${prompt.replace(/'/g, "\\'")}')">
-        <img src="${esc(imgUrl)}" alt="${prompt}" loading="lazy" />
-        <div class="image-waterfall-prompt" title="${prompt}" onclick="event.stopPropagation();HermesArtifact.copyImagePrompt(this)">${prompt}</div>
+      const imgUrl = getImagePreviewUrl(img);
+      const promptText = img.prompt || img.sourcePrompt || '无提示词';
+      const prompt = esc(promptText);
+      return `<div class="image-waterfall-card" data-url="${esc(imgUrl)}" data-prompt="${prompt}" onclick="HermesArtifact.openImageLightboxFromCard(this)">
+        <div class="image-waterfall-thumb"><img src="${esc(imgUrl)}" alt="${prompt}" loading="lazy" /></div>
+        <div class="image-waterfall-prompt" title="点击复制提示词" onclick="event.stopPropagation();HermesArtifact.copyImagePrompt(this.closest('.image-waterfall-card'))">${prompt}</div>
       </div>`;
     }).join('');
     hist.innerHTML = headHtml + tabsHtml + '<div class="image-waterfall">' + cards + '</div>';
   }
 
-  function openImageLightbox(url, prompt) {
+  function getImagePreviewUrl(img) {
+    if (!img) return '';
+    if (img.publicUrl) return img.publicUrl;
+    if (img.url) return img.url;
+    if (img.id) return '/api/images/file/' + encodeURIComponent(img.id);
+    if (img.filename) return '/api/images/file/' + encodeURIComponent(img.filename);
+    return '';
+  }
+
+  function ensureImageLightboxLayer() {
     const lb = document.getElementById('imageLightbox');
+    if (!lb) return null;
+    if (lb.parentElement !== document.body) document.body.appendChild(lb);
+    if (lb.dataset.bound !== '1') {
+      lb.dataset.bound = '1';
+      lb.addEventListener('click', (event) => {
+        if (event.target === lb || event.target.classList.contains('lightbox-backdrop')) closeImageLightbox();
+      });
+    }
+    return lb;
+  }
+
+  function openImageLightboxFromCard(card) {
+    if (!card) return;
+    openImageLightbox(card.dataset.url || '', card.dataset.prompt || '无提示词');
+  }
+  function openImageLightbox(url, prompt) {
+    const lb = ensureImageLightboxLayer();
     if (!lb) return;
     const img = lb.querySelector('.lightbox-img');
     const promptEl = lb.querySelector('.lightbox-prompt');
     if (img) { img.src = url; }
-    if (promptEl) { promptEl.textContent = prompt || '无提示词'; promptEl.title = prompt || ''; }
+    if (promptEl) {
+      const text = prompt || '无提示词';
+      promptEl.innerHTML = '<div class="lightbox-prompt-text"></div><button type="button" class="lightbox-prompt-copy" onclick="event.stopPropagation();HermesArtifact.copyLightboxPrompt()">复制提示词</button>';
+      const textEl = promptEl.querySelector('.lightbox-prompt-text');
+      if (textEl) textEl.textContent = text;
+      promptEl.title = text;
+    }
     lb.classList.add('open');
   }
 
+  function toggleImageLightboxZoom(img, event) {
+    if (event) event.stopPropagation();
+    if (!img) return;
+    img.classList.toggle('zoomed');
+  }
   function closeImageLightbox() {
     const lb = document.getElementById('imageLightbox');
-    if (lb) lb.classList.remove('open');
+    if (lb) {
+      lb.classList.remove('open');
+      const img = lb.querySelector('.lightbox-img');
+      if (img) {
+        img.removeAttribute('src');
+        img.classList.remove('zoomed');
+      }
+    }
   }
 
   function copyImagePrompt(el) {
-    const text = el ? (el.textContent || el.title || '') : '';
+    const card = el && el.closest ? el.closest('.image-waterfall-card') : el;
+    const text = card ? (card.dataset && card.dataset.prompt ? card.dataset.prompt : (card.textContent || card.title || '')) : '';
     if (!text) return;
     navigator.clipboard.writeText(text).then(() => showToast('提示词已复制')).catch(() => {});
   }
 
   function copyLightboxPrompt() {
-    const promptEl = document.querySelector('#imageLightbox .lightbox-prompt');
+    const promptEl = document.querySelector('#imageLightbox .lightbox-prompt-text') || document.querySelector('#imageLightbox .lightbox-prompt');
     if (!promptEl) return;
     navigator.clipboard.writeText(promptEl.textContent || '').then(() => showToast('提示词已复制')).catch(() => {});
   }
@@ -2036,6 +2780,8 @@
         recordCompletedArtifacts([{ attrs: { title: name, type: 'markdown' }, content: data.data.content }]);
         currentTitle = name;
         currentFilePath = path;
+        // 初始化文档快照，让后续 diff 比较有基准
+        updateDocumentSnapshot(path, data.data.content);
         try { if (global.state) global.state.artifactContextIgnored = false; } catch (_) {}
         window.__hermesLastArtifactBody = data.data.content;
         window.__hermesCurrentSourceBody = data.data.content;
@@ -2154,11 +2900,11 @@
               </svg>
             </div>
             <div class="doc-rename-title">
-              <h3>移动分类</h3>
-              <p>根据当前知识库分类选择目标位置。</p>
+              <h3>移动分类位置</h3>
+              <p>移动会改变文件所在文件夹；多分类请通过 Markdown 标签维护。</p>
             </div>
           </div>
-          <div class="doc-move-file" title="${esc(file)}">当前：${esc(currentFolder || '未分类')}</div>
+          <div class="doc-move-file" title="${esc(file)}">当前文件夹：${esc(currentFolder || '未分类')}</div>
           <div class="doc-move-category-list">${buttons}</div>
           <div class="rename-actions">
             <button class="btn btn-ghost" id="historyMoveCancel">取消</button>
@@ -2507,6 +3253,195 @@
     _prevCompletedArtifactCount = 0;
   }
 
+  async function checkArtifactFileChanged() {
+    try {
+      const ctx = getCurrentMarkdownContext();
+      if (!ctx || !ctx.path) return { changed: false };
+
+      const res = await fetch(apiBase() + '/api/knowledge/markdown/status?path=' + encodeURIComponent(ctx.path), {
+        cache: 'no-store',
+        headers: { 'Accept': 'application/json', 'Cache-Control': 'no-cache' }
+      });
+
+      if (!res.ok) return { changed: false, error: 'fetch_failed' };
+
+      const json = await res.json();
+      if (json.code !== 0 || !json.data) return { changed: false, error: 'no_data' };
+
+      const remote = json.data;
+      const snapshot = ctx.snapshot || {};
+
+      // 比较 hash 或 mtime
+      const hashChanged = snapshot.hash && remote.hash && snapshot.hash !== remote.hash;
+      const mtimeChanged = snapshot.mtime && remote.mtime && remote.mtime > snapshot.mtime;
+      const changed = hashChanged || mtimeChanged;
+
+      if (changed) {
+        return { changed: true, remote, snapshot };
+      }
+
+      return { changed: false };
+    } catch (e) {
+      console.warn('[Artifact] checkArtifactFileChanged error:', e);
+      return { changed: false, error: e.message };
+    }
+  }
+
+  async function refreshArtifactDocument(options = {}) {
+    try {
+      const explicitPath = String(options.path || '').trim();
+      const ctx = explicitPath ? { path: explicitPath, title: options.title || currentTitle || fileNameFromPath(explicitPath).replace(/\.md$/i, '') } : getCurrentMarkdownContext();
+      if (!ctx || !ctx.path) return false;
+
+      const data = await fetchMarkdownDocument(ctx.path);
+      const documentPath = data.path || ctx.path;
+      const documentTitle = options.title || ctx.title || currentTitle || fileNameFromPath(documentPath).replace(/\.md$/i, '') || 'Markdown';
+      // 如果快照不存在，先从当前编辑器内容初始化（应对边缘情况）
+      if (!_currentDocSnapshot) {
+        const currentBody = getSourceText() || '';
+        updateDocumentSnapshot(documentPath, currentBody || data.content);
+      }
+      const oldContent = String(options.oldContent !== undefined
+        ? options.oldContent
+        : ((_currentDocSnapshot && _currentDocSnapshot.content) || getSourceText() || window.__hermesLastArtifactBody || ''));
+      const newContent = String(data.content || '');
+      const diffRange = changedLineRange(oldContent, newContent);
+
+      _currentDocSnapshot = {
+        path: documentPath,
+        content: newContent,
+        mtime: data.mtime,
+        hash: data.hash,
+        size: data.size
+      };
+
+      currentFilePath = documentPath;
+      currentTitle = documentTitle;
+      window.__hermesLastArtifactBody = newContent;
+      window.__hermesCurrentSourceBody = newContent;
+      historyData = null;
+      upsertDocumentVersion(documentTitle, documentPath, newContent, { type: 'markdown' });
+      updateDocumentSnapshot(documentPath, newContent, data);
+
+      if (diffRange) {
+        lastEditHighlight = {
+          path: documentPath,
+          startLine: diffRange.lineStart,
+          endLine: diffRange.lineEnd,
+          text: diffRange.text,
+          createdAt: Date.now(),
+        };
+      }
+
+      // 计算行级 diff 并渲染绿色高亮
+      const prev = $('#artifactPreview');
+      if (prev && oldContent !== newContent) {
+        // 清除旧高亮（有新修改时自动清除）
+        clearOldDiffHighlights(prev);
+
+        // 统一行尾符，避免 CRLF/LF 差异导致全绿
+        if (!diffRange) {
+          // 只是行尾符不同，不显示高亮
+          flushPreviewNow('markdown', '', newContent, prev);
+        } else {
+          flushPreviewNow('markdown', '', renderMarkdownDiffHtml(oldContent, newContent), prev);
+        }
+      } else if (prev) {
+        flushPreviewNow('markdown', '', newContent, prev);
+      }
+
+      if (options.tab === 'source' || currentTab === 'source') {
+        layout = 'SPLIT_VIEW';
+        loadSplit();
+        currentTab = 'source';
+        historyPreview = null;
+        const hist = $('#artifactHistory');
+        const srcShell = $('#artifactSourceShell');
+        const src = $('#artifactSource');
+        if (hist) hist.style.display = 'none';
+        if (prev) prev.style.display = 'none';
+        if (srcShell) srcShell.style.display = 'flex';
+        if (src) src.style.display = 'block';
+        applyLayout();
+        syncToolbarActive();
+        syncSourceEditor(newContent, { scrollToHighlight: options.scrollToHighlight !== false });
+      }
+      if (diffRange) scheduleSourceOverlaySync({ scrollToHighlight: options.scrollToHighlight !== false, retry: true, retries: 12 });
+      notifyArtifactContextChanged();
+
+      // 显示绿色高亮提示
+      if (options.toast !== false) showDocumentChangedToast();
+
+      return true;
+    } catch (e) {
+      console.warn('[Artifact] refreshArtifactDocument error:', e);
+      return false;
+    }
+  }
+
+  function clearOldDiffHighlights(container) {
+    if (!container) return;
+    // 移除所有旧的diff高亮class
+    const oldHighlights = container.querySelectorAll('.artifact-diff-added');
+    oldHighlights.forEach(el => {
+      const parent = el.parentNode;
+      if (parent) {
+        // 将子节点移到父节点，去除span包裹
+        while (el.firstChild) {
+          parent.insertBefore(el.firstChild, el);
+        }
+        parent.removeChild(el);
+      }
+    });
+  }
+
+  function showDocumentChangedToast() {
+    // 移除已存在的toast
+    const existing = document.querySelector('.artifact-change-toast');
+    if (existing) existing.remove();
+
+    // 创建新的toast
+    const toast = document.createElement('div');
+    toast.className = 'artifact-change-toast';
+    toast.innerHTML = '<span class="toast-icon">✓</span><span>文档已更新</span>';
+    document.body.appendChild(toast);
+
+    // 2.5秒后淡出并移除
+    setTimeout(() => {
+      toast.classList.add('fade-out');
+      setTimeout(() => toast.remove(), 300);
+    }, 2500);
+  }
+
+  function updateDocumentSnapshot(path, content, meta = {}) {
+    if (!path || !content) return;
+    const crypto = typeof window !== 'undefined' && window.crypto;
+    let hash = '';
+    if (crypto && crypto.subtle) {
+      // 简单的客户端 hash（实际应该用服务端返回的）
+      hash = String(content.length) + '_' + content.slice(0, 100).length;
+    }
+    _currentDocSnapshot = {
+      path,
+      content,
+      mtime: meta.mtime || Date.now(),
+      hash: meta.hash || hash,
+      size: meta.size || content.length
+    };
+    // 清除旧的 diff 高亮
+    clearDiffHighlights();
+  }
+
+  function clearDiffHighlights() {
+    const prev = $('#artifactPreview');
+    if (prev) {
+      const diffs = prev.querySelectorAll('.artifact-diff-added');
+      diffs.forEach(function(el) {
+        el.className = '';
+      });
+    }
+  }
+
   const API = {
     parseHermesStream,
     resetSession,
@@ -2554,17 +3489,39 @@
     syncAndRefreshGraph,
     autoClassify,
     openImageLightbox,
+    openImageLightboxFromCard,
+    toggleImageLightboxZoom,
     closeImageLightbox,
     copyImagePrompt,
     copyLightboxPrompt,
     insertLocalEditPrompt,
     getLocalEditContext,
     clearLocalEditContext,
-    applyLocalEditReplacement
+    applyLocalEditReplacement,
+    checkArtifactFileChanged,
+    refreshArtifactDocument,
+    updateDocumentSnapshot
   };
 
+
+  if (!global.__hermesArtifactMessageBound) {
+    global.__hermesArtifactMessageBound = true;
+    global.addEventListener('message', (event) => {
+      const msg = event && event.data;
+      if (!msg || typeof msg !== 'object') return;
+      if (msg.type === 'artifact-refresh') {
+        try {
+          if (currentTab === 'history') loadHistory();
+          else refreshCurrentView();
+        } catch (_) {}
+      }
+    });
+  }
   global.HermesArtifact = API;
 })(typeof window !== 'undefined' ? window : this);
+
+
+
 
 
 

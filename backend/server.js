@@ -52,7 +52,27 @@ loadDotEnvFile(path.join(__dirname, '..', '.env'));
 loadDotEnvFile(path.join(__dirname, '.env'));
 
 const app = express();
-const PORT = process.env.PORT || 3381;
+const DEFAULT_WEBUI_PORT = 3381;
+const PORT = Number(process.env.WEBUI_PORT || process.env.HERMES_WEBUI_PORT || DEFAULT_WEBUI_PORT);
+if (!Number.isFinite(PORT) || PORT <= 0) {
+  throw new Error(`Invalid WEBUI_PORT: ${process.env.WEBUI_PORT || process.env.HERMES_WEBUI_PORT}`);
+}
+if (process.env.PORT && !process.env.WEBUI_PORT && !process.env.HERMES_WEBUI_PORT) {
+  console.warn(`[hermes] ignoring generic PORT=${process.env.PORT}; use WEBUI_PORT to change the WebUI port.`);
+}
+
+function logProcessError(type, error) {
+  const message = error && error.stack ? error.stack : String(error || 'unknown error');
+  console.error(`[hermes] ${type}:`, message);
+}
+
+process.on('uncaughtException', (error) => {
+  logProcessError('uncaughtException', error);
+});
+
+process.on('unhandledRejection', (reason) => {
+  logProcessError('unhandledRejection', reason);
+});
 
 app.use(cors());
 app.use(express.json({ limit: '30mb' }));
@@ -117,8 +137,17 @@ app.use((err, req, res, _next) => {
   res.status(500).json({ code: 500, data: null, msg: err.message || 'internal error' });
 });
 
-app.listen(PORT, '0.0.0.0', () => {
+const server = app.listen(PORT, '0.0.0.0', () => {
   try { paths.ensureWorkspaceDirs(); } catch (error) { console.warn('[hermes] failed to prepare workspace dirs:', error.message); }
   console.log(`[hermes] backend listening on http://0.0.0.0:${PORT}`);
   feishuStream.startFromConfig().catch(error => console.warn('[feishu-stream] startup skipped:', error.message));
+});
+
+server.on('error', (error) => {
+  logProcessError('serverError', error);
+  if (error && error.code === 'EADDRINUSE') {
+    console.error(`[hermes] port ${PORT} is already in use.`);
+    process.exitCode = 1;
+    setTimeout(() => process.exit(1), 50);
+  }
 });
