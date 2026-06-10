@@ -218,7 +218,7 @@ server.registerTool(
 server.registerTool(
   'webui_markdown_insert_image',
   {
-    description: 'Insert a WebUI generated/uploaded image into a Markdown document in the WebUI MD output library. Copies the image beside the target document into an images/ folder and writes a relative Markdown image reference. Use this when the user asks to put an image into a report/document/Markdown file. Do not claim success unless this tool returns success.',
+    description: 'Insert a WebUI generated/uploaded image into a Markdown document in the WebUI MD output library. Embeds the image directly as a Base64 data:image URL so the .md file remains self-contained when shared. Use this when the user asks to put an image into a report/document/Markdown file. Do not claim success unless this tool returns success.',
     inputSchema: {
       path: z.string().describe('Target Markdown path relative to the WebUI MD output library, e.g. report.md or folder/report.md.'),
       imageId: z.string().describe('WebUI image id or image URL, e.g. out_xxx, in_xxx, or /api/images/file/out_xxx.'),
@@ -246,7 +246,7 @@ server.registerTool(
 server.registerTool(
   'webui_markdown_create',
   {
-    description: 'Create and save a Markdown document into the WebUI MD output library and return an Artifact card preview. Use this when the user asks to output, generate, create, save, or write a document, report, note, tutorial, summary, card, article, or any Markdown content. The tool writes the file, then returns an artifact tag that the frontend renders as a clickable card.',
+    description: 'Create and save a Markdown document into the WebUI MD output library and return an Artifact card preview. Use this when the user asks to output, generate, create, save, or write a document, report, note, tutorial, summary, card, article, or any Markdown content. When content references WebUI generated/uploaded images, WebUI embeds those local images as Base64 data:image URLs on save so the .md file is self-contained. The tool writes the file, then returns an artifact tag that the frontend renders as a clickable card.',
     inputSchema: {
       title: z.string().describe('Document title. Used as the card title and default filename. Max 80 chars.'),
       path: z.string().optional().describe('Optional relative file path under the MD output library (e.g. folder/report.md). Defaults to sanitized title + .md.'),

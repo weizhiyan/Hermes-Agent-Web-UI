@@ -71,7 +71,7 @@ const WEBUI_SELF_PROTECTION_PROMPT = `【WebUI 对话执行规则】
 可用 WebUI 本地工具协议：
 - webui_image_generate({"prompt":"最终提示词","sourcePrompt":"用户原始需求","attachmentIds":["可选附件ID"]})：生成/编辑图片，WebUI 后端会执行并返回图片。
 - webui_markdown_create({"title":"文档标题","path":"可选相对路径.md","content":"完整 Markdown 内容"})：把输出文档保存到 MD 输出库并展示 Artifact。
-- webui_markdown_insert_image({"path":"target.md or absolute .md path","imageId":"image id or url","alt":"image alt","position":"top|append"}): copy a WebUI image beside the Markdown document and write a relative image reference. Use position="top" when the user says ???/??/??; use append only for bottom/end.
+- webui_markdown_insert_image({"path":"target.md or absolute .md path","imageId":"image id or url","alt":"image alt","position":"top|append"}): embed a WebUI image directly into the Markdown document as a Base64 data:image URL. Use position="top" when the user says ???/??/??; use append only for bottom/end.
   ??? WebUI ???????????????????????????????????/?????????????????????????????????
 - webui_markdown_write 与 webui_file_write 可作为 webui_markdown_create 的同义调用，但只允许写入 MD 输出库内的 .md 文件。
 - 调用工具时不要包在 Markdown 代码块中；如果运行时只把工具调用当文本输出，WebUI 会自动兜底执行。
@@ -943,28 +943,87 @@ function webuiVideoToolResultPayload(data = {}) {
 }
 
 function imageRecordsForMarkdownTool() {
+  const records = [];
   try {
     const imageRoot = paths.imageRoot();
     const indexPath = path.join(imageRoot, 'images-index.json');
-    const fromIndex = fs.existsSync(indexPath) ? JSON.parse(fs.readFileSync(indexPath, 'utf8')) : [];
-    const fromStore = store.read('images', []);
-    return [...(Array.isArray(fromIndex) ? fromIndex : []), ...(Array.isArray(fromStore) ? fromStore : [])]
-      .filter(Boolean);
+    if (fs.existsSync(indexPath)) {
+      const fromIndex = JSON.parse(fs.readFileSync(indexPath, 'utf8'));
+      records.push(...(Array.isArray(fromIndex) ? fromIndex : (Array.isArray(fromIndex?.records) ? fromIndex.records : [])));
+    }
   } catch (_) {
-    return [];
+    // Keep going: a stale/corrupt image index should not disable Markdown embedding.
   }
+  try {
+    const fromStore = store.read('images', []);
+    records.push(...(Array.isArray(fromStore) ? fromStore : []));
+  } catch (_) {}
+  try {
+    records.push(...collectMarkdownImageFiles(paths.imageInputDir(), 'input'));
+    records.push(...collectMarkdownImageFiles(paths.imageOutputDir(), 'output'));
+  } catch (_) {}
+  const seen = new Set();
+  return records.filter(item => {
+    if (!item) return false;
+    const key = String(item.id || item.relativePath || item.path || item.fullPath || item.filename || '').toLowerCase();
+    if (!key || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function collectMarkdownImageFiles(dir, kind, out = []) {
+  let entries = [];
+  try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch (_) { return out; }
+  for (const entry of entries) {
+    const fullPath = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      collectMarkdownImageFiles(fullPath, kind, out);
+    } else if (entry.isFile() && /\.(png|jpe?g|jfif|webp|gif|svg|avif|bmp)$/i.test(entry.name)) {
+      out.push({
+        id: '',
+        kind,
+        filename: entry.name,
+        originalName: entry.name,
+        path: fullPath,
+        fullPath,
+        relativePath: path.relative(paths.imageRoot(), fullPath),
+      });
+    }
+  }
+  return out;
+}
+
+function markdownImageLookupTokens(value = '') {
+  const raw = String(value || '').trim();
+  const decoded = (() => { try { return decodeURIComponent(raw); } catch { return raw; } })();
+  const withoutQuery = decoded.split(/[?#]/)[0];
+  const lastPart = withoutQuery.split(/[\\/]/).filter(Boolean).pop() || '';
+  const fileIdMatch = decoded.match(/\/api\/images\/file\/([^/?#]+)/i);
+  const fileId = fileIdMatch ? fileIdMatch[1] : lastPart;
+  const hashTail = String(fileId || lastPart || '').split('_').filter(Boolean).pop() || '';
+  return [...new Set([raw, decoded, withoutQuery, lastPart, fileId, hashTail].map(v => String(v || '').trim()).filter(Boolean))];
 }
 
 function resolveWebuiImageForMarkdown(imageId = '') {
   const value = String(imageId || '').trim();
   if (!value) return null;
   const decoded = (() => { try { return decodeURIComponent(value); } catch { return value; } })();
+  const tokens = markdownImageLookupTokens(value);
   const records = imageRecordsForMarkdownTool();
   const found = records.find(item => {
-    const ids = [item.id, item.filename, item.originalName, item.url, item.publicUrl, item.path, item.relativePath]
+    const relative = String(item.relativePath || '').replace(/\\/g, '/');
+    const baseName = path.basename(String(item.path || item.fullPath || item.filename || item.originalName || ''));
+    const baseStem = baseName ? path.basename(baseName, path.extname(baseName)) : '';
+    const ids = [item.id, item.filename, item.originalName, item.url, item.publicUrl, item.path, item.fullPath, item.relativePath, relative, baseName, baseStem]
       .map(v => String(v || '').trim())
       .filter(Boolean);
-    return ids.some(id => id === decoded || id === value || decoded.includes(id) || value.includes(id));
+    if (ids.some(id => id === decoded || id === value || tokens.includes(id))) return true;
+    return ids.some(id => {
+      if (id.length >= 8 && (decoded.includes(id) || value.includes(id))) return true;
+      const stemTail = path.basename(id, path.extname(id)).split('_').filter(Boolean).pop() || '';
+      return stemTail.length >= 6 && tokens.some(token => token.endsWith(stemTail) || stemTail.endsWith(token));
+    });
   });
   if (!found) return null;
   const candidates = [
@@ -975,6 +1034,49 @@ function resolveWebuiImageForMarkdown(imageId = '') {
   ].filter(Boolean);
   const fullPath = candidates.find(item => fs.existsSync(item));
   return fullPath ? { ...found, fullPath } : null;
+}
+
+function mimeForMarkdownImage(image = {}) {
+  const explicit = String(image.mime || image.mimetype || image.contentType || '').trim().toLowerCase();
+  if (explicit.startsWith('image/')) return explicit;
+  const ext = path.extname(String(image.fullPath || image.filename || image.originalName || '')).toLowerCase();
+  if (ext === '.jpg' || ext === '.jpeg' || ext === '.jfif') return 'image/jpeg';
+  if (ext === '.webp') return 'image/webp';
+  if (ext === '.gif') return 'image/gif';
+  if (ext === '.svg') return 'image/svg+xml';
+  if (ext === '.avif') return 'image/avif';
+  if (ext === '.bmp') return 'image/bmp';
+  return 'image/png';
+}
+
+function imageDataUrlForMarkdownImage(image = {}) {
+  if (!image || !image.fullPath || !fs.existsSync(image.fullPath)) return '';
+  if (!mimeForMarkdownImage(image).startsWith('image/')) return '';
+  const buffer = fs.readFileSync(image.fullPath);
+  return `data:${mimeForMarkdownImage(image)};base64,${buffer.toString('base64')}`;
+}
+
+function markdownImageDataUrlFromSrc(src = '') {
+  const value = String(src || '').trim();
+  if (!value) return value;
+  if (/^data:image\//i.test(value)) return value;
+  const image = resolveWebuiImageForMarkdown(value);
+  if (!image) return value;
+  return imageDataUrlForMarkdownImage(image) || value;
+}
+
+function embedWebuiMarkdownImages(content = '') {
+  return String(content || '').replace(/!\[([^\]\r\n]*)\]\(([^)\s]+)(?:\s+["'][^"']*["'])?\)/g, (match, alt, src) => {
+    const dataUrl = markdownImageDataUrlFromSrc(src);
+    if (!dataUrl || dataUrl === src) return match;
+    return `![${String(alt || '').replace(/[\]\n\r]/g, ' ')}](${dataUrl})`;
+  });
+}
+
+function compactMarkdownImagePreview(markdown = '') {
+  return String(markdown || '').replace(/\(data:image\/[^;]+;base64,[^)]+\)/gi, match => {
+    return match.length > 96 ? `(data:image/...;base64,${match.length} chars)` : match;
+  });
 }
 
 function resolveMarkdownLibraryPath(inputPath = '', { mustExist = false } = {}) {
@@ -1065,25 +1167,19 @@ async function runWebuiMarkdownInsertImageFallback({ call, res, toolCalls }) {
     const { fullPath, relPath } = resolveMarkdownLibraryPath(call.path, { mustExist: true });
     const image = resolveWebuiImageForMarkdown(call.imageId);
     if (!image) throw new Error('image not found: ' + call.imageId);
-    const imageDir = path.join(path.dirname(fullPath), 'images');
-    fs.mkdirSync(imageDir, { recursive: true });
-    const ext = path.extname(image.fullPath) || '.png';
-    const base = safeName(path.basename(image.filename || image.originalName || image.id || 'image', ext)) || 'image';
-    const destName = base + '_' + Date.now().toString(36) + ext;
-    const destPath = path.join(imageDir, destName);
-    fs.copyFileSync(image.fullPath, destPath);
-    const relImage = path.relative(path.dirname(fullPath), destPath).replace(/\\/g, '/');
-    const markdownLine = `![${call.alt.replace(/[\]\n\r]/g, ' ')}](${relImage})`;
+    const dataUrl = imageDataUrlForMarkdownImage(image);
+    if (!dataUrl) throw new Error('image cannot be embedded: ' + call.imageId);
+    const markdownLine = `![${call.alt.replace(/[\]\n\r]/g, ' ')}](${dataUrl})`;
     const current = fs.readFileSync(fullPath, 'utf8');
     const next = insertMarkdownImageLine(current, markdownLine, call.position);
     fs.writeFileSync(fullPath, next, 'utf8');
-    const payload = { success:true, type:'webui_markdown_insert_image_result', path: relPath, imagePath: relImage, fullImagePath: destPath, fullPath, markdown: markdownLine, position: call.position || 'append' };
-    const preview = JSON.stringify(payload);
+    const payload = { success:true, type:'webui_markdown_insert_image_result', path: relPath, embedded:true, imagePath:'', fullImagePath: image.fullPath, fullPath, markdown: markdownLine, position: call.position || 'append' };
+    const preview = JSON.stringify({ ...payload, markdown: compactMarkdownImagePreview(markdownLine), dataUrlLength: dataUrl.length });
     for (let i = toolCalls.length - 1; i >= 0; i--) {
       if (!toolCalls[i].done && toolCalls[i].name === toolName) { toolCalls[i].done = true; toolCalls[i].is_error = false; toolCalls[i].duration = Date.now() - startedAt; toolCalls[i].preview = preview; break; }
     }
     sseWrite(res, 'tool_complete', { event_type:'tool.completed', name: toolName, preview: redactSecrets(preview), is_error:false, duration: Date.now() - startedAt });
-    return { ok:true, content:`Inserted image into ${payload.path}\n\n${markdownLine}`, payload };
+    return { ok:true, content:`Embedded image into ${payload.path}\n\n${compactMarkdownImagePreview(markdownLine)}`, payload };
   } catch (error) {
     const preview = error.message || 'markdown insert image failed';
     for (let i = toolCalls.length - 1; i >= 0; i--) {
@@ -1234,8 +1330,9 @@ async function runWebuiMarkdownTextToolFallback({ call, res, toolCalls }) {
   }
   try {
     const { fullPath, relPath } = resolveMarkdownLibraryPath(call.path);
+    const embeddedContent = embedWebuiMarkdownImages(call.content);
     fs.mkdirSync(path.dirname(fullPath), { recursive: true });
-    fs.writeFileSync(fullPath, call.content, 'utf8');
+    fs.writeFileSync(fullPath, embeddedContent, 'utf8');
     const stats = fs.statSync(fullPath);
     const payload = {
       success: true,
@@ -1245,9 +1342,9 @@ async function runWebuiMarkdownTextToolFallback({ call, res, toolCalls }) {
       fullPath,
       size: stats.size,
       mtime: stats.mtimeMs,
-      artifact: `<artifact type="markdown" title="${call.title.replace(/"/g, '&quot;')}">\n${call.content}\n</artifact>`,
+      artifact: `<artifact type="markdown" title="${call.title.replace(/"/g, '&quot;')}">\n${embeddedContent}\n</artifact>`,
     };
-    const preview = JSON.stringify(payload);
+    const preview = JSON.stringify({ ...payload, artifact: compactMarkdownImagePreview(payload.artifact) });
     for (let i = toolCalls.length - 1; i >= 0; i--) {
       if (!toolCalls[i].done && (toolCalls[i].name === 'webui_markdown_create' || toolCalls[i].name === 'webui_markdown_write' || toolCalls[i].name === 'webui_file_write')) {
         toolCalls[i].done = true;
@@ -1958,6 +2055,17 @@ router.post('/:id/messages', async (req, res) => {
           }
           break;
 
+        case 'agent_step':
+          sseWrite(res, 'agent_step', {
+            phase: event.phase || '',
+            status: event.status || 'running',
+            title: redactSecrets(event.title || ''),
+            detail: redactSecrets(event.detail || ''),
+            raw: redactSecrets(event.raw || ''),
+            error: !!event.error,
+          });
+          break;
+
         case 'heartbeat':
           sseWrite(res, 'heartbeat', { ts: event.ts || Date.now(), runningTools: runningToolSnapshots(toolCalls).length });
           break;
@@ -2059,6 +2167,15 @@ router.post('/:id/messages', async (req, res) => {
         } else if (followEvent.type === 'tool_running') {
           const toolEvent = normalizeToolEvent(followEvent);
           sseWrite(res, 'tool_running', { event_type: toolEvent.event_type, name: toolEvent.name, preview: redactSecrets(toolEvent.preview || ''), elapsedMs: toolEvent.elapsedMs || 0 });
+        } else if (followEvent.type === 'agent_step') {
+          sseWrite(res, 'agent_step', {
+            phase: followEvent.phase || '',
+            status: followEvent.status || 'running',
+            title: redactSecrets(followEvent.title || ''),
+            detail: redactSecrets(followEvent.detail || ''),
+            raw: redactSecrets(followEvent.raw || ''),
+            error: !!followEvent.error,
+          });
         } else if (followEvent.type === 'session') {
           if (agentSessionId(followEvent)) sessionIdFromDone = agentSessionId(followEvent);
           sseWrite(res, 'perf', { traceId, userMsgId, assistantMsgId, stage: 'hermes-session', ...hermesSessionPayload(sessionIdFromDone) });
@@ -2110,6 +2227,15 @@ router.post('/:id/messages', async (req, res) => {
           } else if (followEvent.type === 'tool_running') {
             const toolEvent = normalizeToolEvent(followEvent);
             sseWrite(res, 'tool_running', { event_type: toolEvent.event_type, name: toolEvent.name, preview: redactSecrets(toolEvent.preview || ''), elapsedMs: toolEvent.elapsedMs || 0 });
+          } else if (followEvent.type === 'agent_step') {
+            sseWrite(res, 'agent_step', {
+              phase: followEvent.phase || '',
+              status: followEvent.status || 'running',
+              title: redactSecrets(followEvent.title || ''),
+              detail: redactSecrets(followEvent.detail || ''),
+              raw: redactSecrets(followEvent.raw || ''),
+              error: !!followEvent.error,
+            });
           } else if (followEvent.type === 'session') {
             if (agentSessionId(followEvent)) sessionIdFromDone = agentSessionId(followEvent);
             sseWrite(res, 'perf', { traceId, userMsgId, assistantMsgId, stage: 'hermes-session', ...hermesSessionPayload(sessionIdFromDone) });

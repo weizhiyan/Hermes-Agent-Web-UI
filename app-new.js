@@ -350,6 +350,7 @@ async function apiStream(path, body, callbacks) {
           case 'tool': callbacks.onTool?.(data); break;
           case 'tool_running': callbacks.onToolRunning?.(data); break;
           case 'tool_complete': callbacks.onToolComplete?.(data); break;
+          case 'agent_step': callbacks.onAgentStep?.(data); break;
           case 'heartbeat': callbacks.onHeartbeat?.(data); break;
           case 'agent_raw': callbacks.onAgentRaw?.(data); break;
           case 'agent_exit': callbacks.onAgentExit?.(data); break;
@@ -2112,39 +2113,44 @@ function processEventText(event){
   const type=String(event?.type||event?.stage||'');
   const name=toolDisplayName(event);
   const ms=Number(event?.ms||event?.elapsed||event?.elapsedMs||0);
-  const suffix=ms?` ? ${ms}ms`:'';
-  if(type==='queued') return 'Queued request';
-  if(type==='sse-flushed') return `Stream connected${suffix}`;
-  if(type==='route-selected') {
-    if(event?.route==='direct') return `Using direct model route${event?.reason?`: ${event.reason}`:''}`;
-    const runtime=event?.runtime&&event.runtime!=='auto' ? ` (${event.runtime})` : '';
-    return `Using Hermes Agent route${runtime}${event?.reason?`: ${event.reason}`:''}`;
+  const suffix=ms?` · ${ms}ms`:'';
+  if(type==='agent-step'||type==='agent_step') {
+    const title=String(event?.title||'Agent 步骤').trim();
+    const detail=String(event?.detail||'').trim();
+    return detail ? `${title}：${detail}` : title;
   }
-  if(type==='model-fallback') return `Model fallback${event?.to?`: ${event.to}`:''}`;
-  if(type==='hermes-api-connect') return 'Connecting to Hermes API Server';
-  if(type==='hermes-api-failed') return `Hermes API unavailable, falling back to native CLI${event?.reason?`: ${event.reason}`:''}`;
+  if(type==='queued') return '已加入执行队列';
+  if(type==='sse-flushed') return `已连接事件流${suffix}`;
+  if(type==='route-selected') {
+    if(event?.route==='direct') return `使用直连模型${event?.reason?`：${event.reason}`:''}`;
+    const runtime=event?.runtime&&event.runtime!=='auto' ? ` (${event.runtime})` : '';
+    return `使用 Hermes Agent${runtime}${event?.reason?`：${event.reason}`:''}`;
+  }
+  if(type==='model-fallback') return `模型已切换${event?.to?`：${event.to}`:''}`;
+  if(type==='hermes-api-connect') return '正在连接 Hermes API 服务';
+  if(type==='hermes-api-failed') return `Hermes API 不可用，切换到本地 CLI${event?.reason?`：${event.reason}`:''}`;
   if(type==='hermes-session') {
     const sid=event?.sessionId||event?.hermesSessionId||event?.session_id||'';
-    return `Hermes session${sid?`: ${sid}`:''}`;
+    return `Hermes 会话已建立${sid?`：${sid}`:''}`;
   }
-  if(type==='runtime-selected') return event?.runtime==='cli' ? 'Using native Hermes CLI runtime' : `Using Hermes runtime${event?.runtime?`: ${event.runtime}`:''}`;
-  if(type==='route-fallback') return event?.route==='hermes-cli' ? 'Fallback to native Hermes CLI' : 'Fallback to Hermes Agent';
-  if(type==='agent-ask') return `Waiting for user confirmation${event?.title?`: ${event.title}`:''}`;
-  if(type==='agent-ask-result') return event?.status==='answered' ? 'User confirmation received' : `User confirmation: ${event?.status||'unknown'}`;
-  if(type==='skill-match') return event?.items?.length ? `Skills matched: ${event.items.map(item=>item.trigger?`${item.name} (${item.trigger})`:item.name).join(', ')}` : (event?.names?.length ? `Skills matched: ${event.names.join(', ')}` : 'No dedicated skill matched');
-  if(type==='first-hermes-event') return `First Hermes event${event?.eventType?`: ${event.eventType}`:''}${suffix}`;
-  if(type==='cli-spawned') return `Native Hermes process started${suffix}`;
-  if(type==='first-cli-stdout') return `Native Hermes started output${suffix}`;
-  if(type==='first-token') return `First response token${suffix}`;
-  if(type==='tool-start') return `Tool started: ${name||'tool'}`;
-  if(type==='tool-running') return `Tool running: ${name||'tool'}${suffix}`;
-  if(type==='agent-raw') return `${event?.stream==='stderr'?'stderr':'stdout'}: ${String(event?.text||'').slice(0,160)}`;
-  if(type==='agent-exit') return `Native Hermes exited: code=${event?.code ?? 'unknown'}${event?.stderrTail?', stderr: '+String(event.stderrTail).slice(0,120):''}`;
-  if(type==='tool-done') return `${event?.error?'Tool failed':'Tool completed'}: ${name||'tool'}`;
-  if(type==='done') return `Completed${suffix}`;
-  if(type==='error') return `Error: ${event?.message||'request failed'}`;
-  if(type==='aborted') return 'Aborted';
-  if(type) return `Event: ${type}${suffix}`;
+  if(type==='runtime-selected') return event?.runtime==='cli' ? '已选择本地 Hermes CLI 运行时' : `已选择 Hermes 运行时${event?.runtime?`：${event.runtime}`:''}`;
+  if(type==='route-fallback') return event?.route==='hermes-cli' ? '已回退到本地 Hermes CLI' : '已回退到 Hermes Agent';
+  if(type==='agent-ask') return `等待你的确认${event?.title?`：${event.title}`:''}`;
+  if(type==='agent-ask-result') return event?.status==='answered' ? '已收到你的确认' : `确认结果：${event?.status||'unknown'}`;
+  if(type==='skill-match') return event?.items?.length ? `已匹配技能：${event.items.map(item=>item.trigger?`${item.name} (${item.trigger})`:item.name).join('、')}` : (event?.names?.length ? `已匹配技能：${event.names.join('、')}` : '未匹配到专用技能');
+  if(type==='first-hermes-event') return `收到 Hermes 首个事件${event?.eventType?`：${event.eventType}`:''}${suffix}`;
+  if(type==='cli-spawned') return `本地 Hermes 进程已启动${suffix}`;
+  if(type==='first-cli-stdout') return `本地 Hermes 开始输出${suffix}`;
+  if(type==='first-token') return `开始生成回复${suffix}`;
+  if(type==='tool-start') return `开始调用工具：${name||'tool'}`;
+  if(type==='tool-running') return `正在执行工具：${name||'tool'}${suffix}`;
+  if(type==='agent-raw') return `${event?.stream==='stderr'?'运行日志':'输出'}：${String(event?.text||'').slice(0,160)}`;
+  if(type==='agent-exit') return `本地 Hermes 已退出：code=${event?.code ?? 'unknown'}${event?.stderrTail?'，日志：'+String(event.stderrTail).slice(0,120):''}`;
+  if(type==='tool-done') return `${event?.error?'工具执行失败':'工具执行完成'}：${name||'tool'}`;
+  if(type==='done') return `执行完成${suffix}`;
+  if(type==='error') return `出错：${event?.message||event?.msg||'请求失败'}`;
+  if(type==='aborted') return '已中断';
+  if(type) return `事件：${type}${suffix}`;
   return '';
 }
 
@@ -2204,25 +2210,65 @@ function renderToolArtifactCardsHtml(toolCalls){
 
 function processEventTone(event){
   const type=String(event?.type||event?.stage||'');
+  if(type==='agent-step'||type==='agent_step') {
+    const status=String(event?.status||'').toLowerCase();
+    if(status==='error'||event?.error) return 'error';
+    if(status==='done'||status==='completed'||status==='success') return 'success';
+    return 'active';
+  }
   if(type==='error'||event?.error) return 'error';
   if(type==='tool-done') return event?.error?'error':'success';
   if(type==='done') return 'success';
-  if(type==='tool-start'||type==='tool-running') return 'active';
+  if(['tool-start','tool-running','first-token','first-hermes-event','cli-spawned','hermes-api-connect'].includes(type)) return 'active';
   return 'info';
 }
 
-function renderProcessTimelineHtml(events=[]){
-  const rows=(Array.isArray(events)?events:[]).map((event,i)=>{
+function processEventIsTaskStep(event){
+  const type=String(event?.type||event?.stage||'');
+  return type==='agent-step'||type==='agent_step'||type==='tool-start'||type==='tool-running'||type==='tool-done'||type==='agent-ask'||type==='agent-ask-result'||type==='error'||type==='done';
+}
+
+function processEventDisplayList(events=[], isStreaming=false){
+  const list=Array.isArray(events)?events:[];
+  const hasSemantic=list.some(event=>{
+    const type=String(event?.type||event?.stage||'');
+    return type==='agent-step'||type==='agent_step'||type==='tool-start'||type==='tool-running'||type==='tool-done';
+  });
+  const visible=hasSemantic ? list.filter(processEventIsTaskStep) : list;
+  return isStreaming ? visible : visible.slice(-18);
+}
+
+function processEventSummary(events=[], isStreaming=false){
+  const list=Array.isArray(events)?events:[];
+  const visible=processEventDisplayList(list, isStreaming).filter(event=>processEventText(event));
+  const last=[...visible].reverse().find(event=>String(event?.type||event?.stage||'')!=='done');
+  const done=visible.find(event=>String(event?.type||event?.stage||'')==='done');
+  const error=[...visible].reverse().find(event=>processEventTone(event)==='error');
+  const runningTool=[...visible].reverse().find(event=>String(event?.type||event?.stage||'')==='tool-running' || String(event?.type||event?.stage||'')==='tool-start');
+  if(error) return { status:'error', label:'执行出错', detail:processEventText(error), count:visible.length };
+  if(isStreaming){
+    const current=runningTool || last;
+    return { status:'running', label:runningTool?'正在执行中':'思考中', detail:current?processEventText(current):'正在等待 Agent 返回事件', count:visible.length };
+  }
+  const doneMs=Number(done?.ms||0);
+  return { status:'done', label:'执行完成', detail:`已收集 ${visible.length} 个步骤${doneMs?` · ${doneMs}ms`:''}`, count:visible.length };
+}
+
+function renderProcessTimelineHtml(events=[], options={}){
+  const isStreaming=!!options.isStreaming;
+  const list=Array.isArray(events)?events:[];
+  const visibleEvents=processEventDisplayList(list, isStreaming);
+  const rows=visibleEvents.map((event,i)=>{
     const label=processEventText(event);
     if(!label) return '';
     const tone=processEventTone(event);
-    const ms=Number(event?.ms||event?.elapsed||event?.elapsedMs||0);
-    const time=event?.at?formatChatDate({ts:event.at},'short'):(ms?('+'+ms+'ms'):('#'+(i+1)));
     const name=event?.name?'<span>'+esc(event.name)+'</span>':'';
     const route=event?.route?'<span>'+esc(event.route)+'</span>':'';
-    return '<div class="process-timeline-row '+tone+'"><span class="process-timeline-dot"></span><span class="process-timeline-time">'+esc(time)+'</span><span class="process-timeline-text">'+esc(label)+'</span><span class="process-timeline-meta">'+name+route+'</span></div>';
+    return '<div class="process-timeline-row '+tone+'"><span class="process-timeline-text">'+esc(label)+'</span><span class="process-timeline-meta">'+name+route+'</span></div>';
   }).filter(Boolean).join('');
-  return rows?'<div class="process-timeline">'+rows+'</div>':'';
+  const hiddenCount=Math.max(0, list.length-visibleEvents.length);
+  const hidden=hiddenCount?'<div class="process-timeline-more">已收起更早 '+hiddenCount+' 个事件</div>':'';
+  return rows?'<div class="process-timeline">'+hidden+rows+'</div>':'';
 }
 function renderThinkingPanel(m,idPrefix){
   if(!m||m.role!=='assistant') return '';
@@ -2230,22 +2276,28 @@ function renderThinkingPanel(m,idPrefix){
   const rawThink=cleanThinkingContent([m.thinking||m.reasoning||'',tagThink].filter(Boolean).join('\n---\n'));
   const cleanContent=(m.content||'').replace(/<(?:redacted_thinking|think)>[\s\S]*?<\/(?:redacted_thinking|think)>/gi,'').trim();
   const skipThink=rawThink&&cleanContent&&rawThink.trim().length>20&&cleanContent.includes(rawThink.trim().slice(0,40));
-  const processHtml=renderProcessTimelineHtml(m.processEvents||[]);
+  const isStreaming=!!m._streaming;
+  const processHtml=renderProcessTimelineHtml(m.processEvents||[], { isStreaming });
   const hasRealThink=Boolean(rawThink&&!skipThink);
   const body=hasRealThink?rawThink:processHtml;
   if(!body) return '';
   const id='th_'+(idPrefix||m._msgId||(m.ts||Date.now()))+'_'+(m.ts||0);
   const duration=m.thinkingDuration?` · ${m.thinkingDuration}ms`:'';
-  const isStreaming=!!m._streaming;
-  const label=hasRealThink?(isStreaming?'模型推理中':'模型推理'):(isStreaming?'执行中':'执行过程');
-  return `<div class="msg-thinking">
+  const summary=processEventSummary(m.processEvents||[], isStreaming);
+  const label=hasRealThink?(isStreaming?'模型推理中':'模型推理'):summary.label;
+  const detail=hasRealThink?(isStreaming?'正在整理推理内容':'点击查看推理内容'):summary.detail;
+  const expandedStore=window.__hermesThinkingExpanded instanceof Set ? window.__hermesThinkingExpanded : (window.__hermesThinkingExpanded=new Set());
+  const collapsed=!expandedStore.has(id);
+  return `<div class="msg-thinking ${isStreaming?'is-running':'is-finished'} ${summary.status==='error'?'has-error':''}">
       <div class="msg-thinking-header" onclick="toggleAllThinking('${id}')">
         <svg class="thinking-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M8.5 3.8 7.4 6.2 5 7.3l2.4 1.1 1.1 2.4 1.1-2.4L12 7.3 9.6 6.2 8.5 3.8Z"/><path d="M15.8 10.5 14.4 14l-3.4 1.4 3.4 1.4 1.4 3.4 1.4-3.4 3.4-1.4-3.4-1.4-1.4-3.5Z"/></svg>
-        <span class="thinking-label">${label}${isStreaming?'<span class="thinking-dots"><span></span><span></span><span></span></span>':''}</span>
+        <span class="thinking-label">${esc(label)}${isStreaming?'<span class="thinking-dots"><span></span><span></span><span></span></span>':''}</span>
+        <span class="thinking-current">${esc(detail)}</span>
         <span class="thinking-duration">${duration}</span>
-        <span class="thinking-toggle collapsed" id="toggle_${id}">▶</span>
+        <span class="thinking-count">${summary.count?summary.count+' 步':''}</span>
+        <span class="thinking-toggle ${collapsed?'collapsed':''}" id="toggle_${id}">▶</span>
       </div>
-      <div class="msg-thinking-body collapsed${hasRealThink?' is-raw':' is-timeline'}" id="body_${id}">${hasRealThink?esc(body):body}</div>
+      <div class="msg-thinking-body ${collapsed?'collapsed':''}${hasRealThink?' is-raw':' is-timeline'}" id="body_${id}">${hasRealThink?esc(body):body}</div>
     </div>`;
 }
 
@@ -2516,6 +2568,9 @@ function toggleAllThinking(id){
   const toggle=document.getElementById('toggle_'+id);
   if(clicked) clicked.classList.toggle('collapsed');
   if(toggle) toggle.classList.toggle('collapsed');
+  const expandedStore=window.__hermesThinkingExpanded instanceof Set ? window.__hermesThinkingExpanded : (window.__hermesThinkingExpanded=new Set());
+  if(clicked&&!clicked.classList.contains('collapsed')) expandedStore.add(id);
+  else expandedStore.delete(id);
 }
 function cleanMessageContent(raw){
   let content = redactSecrets(raw || '');
@@ -4303,7 +4358,7 @@ async function sendMessage(){
     const sameRoute=last && item.type===last.type && ['sse-flushed','route-selected','cli-spawned','first-cli-stdout'].includes(item.type);
     if(sameToolProgress || sameRoute) list[list.length-1]={...last,...item};
     else list.push(item);
-    assistantMsg.processEvents=list.slice(-12);
+    assistantMsg.processEvents=list.slice(-80);
   }
 
   const profile=profileForChat(c);
@@ -4531,6 +4586,21 @@ async function sendMessage(){
         };
       }
       pushProcessEvent({ type:'tool-running', name, elapsed:data.elapsedMs||0 });
+      renderMsgUpdate(msgId, assistantMsg);
+    },
+    onAgentStep(data) {
+      const title=String(data?.title||'Agent 步骤').trim();
+      const detail=String(data?.detail||'').trim();
+      if(!title && !detail) return;
+      pushProcessEvent({
+        type:'agent-step',
+        phase:data?.phase||'',
+        status:data?.status||'running',
+        title,
+        detail,
+        raw:data?.raw||'',
+        error:!!data?.error
+      });
       renderMsgUpdate(msgId, assistantMsg);
     },
     onHeartbeat(data) {

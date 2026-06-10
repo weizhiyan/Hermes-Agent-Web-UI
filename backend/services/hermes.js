@@ -20,6 +20,7 @@ const ANSI_CONTROL_RE = /(?:\x1B\[[0-?]*[ -/]*[@-~]|\x1B\][\s\S]*?(?:\x07|\x1B\\
 const SESSION_RE = /\bsession:\s*([A-Za-z0-9_-]+)/i;
 const SESSION_ID_RE = /\bsession_id:\s*([A-Za-z0-9_-]+)/i;
 const RESUMED_SESSION_RE = /(?:^|[^\w])↻?\s*Resumed session\s+([A-Za-z0-9_-]+)\s*\((\d+)\s+user message[s]?,\s*(\d+)\s+total message[s]?\)/i;
+const TERMINAL_DECOR_RE = /^[\s│┃┆┊┌└├┤┬┴─═╭╰╮╯╞╡╪╔╚╗╝║╠╣╦╩╬•●○◦▪▫■□◇◆▶▷▸▹▾▿⠁-⣿\[\]\(\)]+/u;
 let cachedHermesCommand = null;
 let cachedHermesCommandAt = 0;
 let lastGoodHermesCommand = null;
@@ -623,11 +624,69 @@ function cleanAgentLine(line) {
   return String(line || '').replace(/\r$/, '').replace(ANSI_CONTROL_RE, '');
 }
 
+function compactLocalPath(value = '') {
+  const text = String(value || '').trim().replace(/^['"]|['"]$/g, '');
+  if (!text) return '';
+  const cwd = process.cwd().replace(/\\/g, '/').replace(/\/+$/, '');
+  const normalized = text.replace(/\\/g, '/');
+  if (normalized.toLowerCase().startsWith(cwd.toLowerCase() + '/')) {
+    return normalized.slice(cwd.length + 1).replace(/\//g, '\\');
+  }
+  return text;
+}
+
+function parseTerminalAgentStep(line) {
+  const clean = cleanAgentLine(line);
+  const trimmed = clean.trim();
+  if (!trimmed) return null;
+  const text = trimmed.replace(TERMINAL_DECOR_RE, '').trim();
+  if (!text) return null;
+
+  let m;
+  if ((m = text.match(/^plan\s+(\d+)\s+task\(s\)/i))) {
+    return { type: 'agent_step', phase: 'plan', status: 'running', title: '制定计划', detail: `${m[1]} 个任务`, raw: trimmed };
+  }
+  if ((m = text.match(/^plan\s+(\d+)\/(\d+)\s+task\(s\)/i))) {
+    return { type: 'agent_step', phase: 'plan', status: 'running', title: '推进计划', detail: `${m[1]}/${m[2]} 个任务`, raw: trimmed };
+  }
+  if ((m = text.match(/^preparing\s+([a-z_][\w-]*)\.{0,3}/i))) {
+    const action = m[1].replace(/_/g, ' ');
+    if (/^(todo|execute code|patch)$/i.test(action)) {
+      const title = /todo/i.test(action) ? '准备任务计划' : (/patch/i.test(action) ? '准备应用修改' : '准备执行代码');
+      return { type: 'agent_step', phase: /patch/i.test(action) ? 'patch' : 'exec', status: 'running', title, detail: '', raw: trimmed };
+    }
+    return null;
+  }
+  if ((m = text.match(/^exec\s+(.+?)(?:\s+\d+(?:\.\d+)?s)?$/i))) {
+    const code = m[1].trim();
+    if (/^import\s+/i.test(code)) return null;
+    const openMatch = code.match(/open\((?:r)?["']([^"']+)["']/i);
+    if (openMatch) {
+      return { type: 'agent_step', phase: 'file', status: 'running', title: '读取文件', detail: compactLocalPath(openMatch[1]), raw: trimmed };
+    }
+    return { type: 'agent_step', phase: 'exec', status: 'running', title: '执行代码', detail: code.slice(0, 160), raw: trimmed };
+  }
+  if ((m = text.match(/^patch\s+(.+?)(?:\s+\d+(?:\.\d+)?s)?(?:\s+\[(.+)\])?$/i))) {
+    const detail = compactLocalPath(m[1]);
+    const failed = /failed|error|失败/i.test(m[2] || '');
+    return { type: 'agent_step', phase: 'patch', status: failed ? 'error' : 'running', title: failed ? '应用修改失败' : '应用修改', detail, error: failed, raw: trimmed };
+  }
+  if ((m = text.match(/^Self-improvement review:\s*(.+)$/i))) {
+    return { type: 'agent_step', phase: 'memory', status: 'done', title: '更新 Agent 记忆', detail: m[1].trim(), raw: trimmed };
+  }
+  if (/failed to read file/i.test(text)) {
+    return { type: 'agent_step', phase: 'file', status: 'error', title: '读取文件失败', detail: text.slice(0, 200), error: true, raw: trimmed };
+  }
+  return null;
+}
+
 function parseAgentLine(line) {
   const clean = cleanAgentLine(line);
   const trimmed = clean.trim();
   if (!trimmed) return null;
   let m;
+  const terminalStep = parseTerminalAgentStep(trimmed);
+  if (terminalStep) return terminalStep;
   if ((m = trimmed.match(RESUMED_SESSION_RE))) return { type: 'session', sessionId: m[1] };
   if ((m = trimmed.match(SESSION_RE))) return { type: 'session', sessionId: m[1] };
   if ((m = trimmed.match(SESSION_ID_RE))) return { type: 'session', sessionId: m[1] };
@@ -801,7 +860,7 @@ async function* hermesStream(prompt, history, modelCfg, fullCfg = {}) {
       const cleanLine = cleanAgentLine(line);
       if (cleanLine.trim()) yieldQueue.push({ type: 'raw_stderr', stream: 'stderr', runId, text: cleanLine.trim().slice(0, 4000), ts: Date.now() });
       const event = parseAgentLine(line);
-      if (event && event.type === 'session') stderrEvents.push(event);
+      if (event && (event.type === 'session' || event.type === 'agent_step')) stderrEvents.push(event);
     };
     child.stderr.on('data', chunk => {
       armIdleTimer();
@@ -835,7 +894,7 @@ async function* hermesStream(prompt, history, modelCfg, fullCfg = {}) {
         const cleanLine = line.replace(/\r$/, '');
         if (cleanLine.trim()) yield { type: 'raw_line', stream: 'stdout', runId, text: cleanLine.slice(0, 4000), ts: Date.now() };
         const event = parseAgentLine(line);
-        if (event && event.type !== 'session') meaningfulStdout = true;
+        if (event && !['session', 'agent_step'].includes(event.type)) meaningfulStdout = true;
         if (event) yield event;
       }
     }
@@ -843,7 +902,7 @@ async function* hermesStream(prompt, history, modelCfg, fullCfg = {}) {
     if (stdoutBuffer.trim()) {
       yield { type: 'raw_line', stream: 'stdout', runId, text: stdoutBuffer.trim().slice(0, 4000), ts: Date.now() };
       const event = parseAgentLine(stdoutBuffer);
-      if (event && event.type !== 'session') meaningfulStdout = true;
+      if (event && !['session', 'agent_step'].includes(event.type)) meaningfulStdout = true;
       if (event) yield event;
     }
     const exitCode = await closePromise;

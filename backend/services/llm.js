@@ -42,6 +42,11 @@ function shouldUseHermesAgent({ cfg = {}, settings = {}, last = '', libraryItem 
   return { useHermes: false, reason: 'normal-chat-direct' };
 }
 
+function isHermesRouteLocked(cfg = {}, settings = {}) {
+  const mode = String(cfg.routingMode || settings.routingMode || 'auto').toLowerCase();
+  return cfg.forceHermes === true || mode === 'hermes' || mode === 'agent';
+}
+
 function authHeaders({ key = '', authType = 'bearer', authHeader = '' } = {}) {
   const headers = { 'Content-Type': 'application/json' };
   if (!key || authType === 'none') return headers;
@@ -462,7 +467,7 @@ async function* chatStream(cfg, messages) {
     cfg.forceDirect = false;
   }
   let route = shouldUseHermesAgent({ cfg, settings, last, libraryItem });
-  if (hasImages && scene === 'vision' && canUseDirectApi(libraryItem)) {
+  if (hasImages && scene === 'vision' && canUseDirectApi(libraryItem) && !isHermesRouteLocked(cfg, settings)) {
     route = { useHermes: false, reason: 'vision-attachment-direct' };
   }
   const runtimeMode = agentRuntimeMode(cfg, settings);
