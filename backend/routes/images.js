@@ -11,6 +11,9 @@ const { captureKnowledge } = require('../services/knowledgeCapture');
 const router = express.Router();
 const IMAGE_API_TIMEOUT_MS = Math.max(120000, Number(process.env.WEBUI_IMAGE_API_TIMEOUT_MS || 600000));
 const IMAGE_DOWNLOAD_TIMEOUT_MS = Math.max(60000, Number(process.env.WEBUI_IMAGE_DOWNLOAD_TIMEOUT_MS || 180000));
+const VIDEO_API_TIMEOUT_MS = Math.max(180000, Number(process.env.WEBUI_VIDEO_API_TIMEOUT_MS || 900000));
+const VIDEO_DOWNLOAD_TIMEOUT_MS = Math.max(120000, Number(process.env.WEBUI_VIDEO_DOWNLOAD_TIMEOUT_MS || 600000));
+const VIDEO_SYNC_WAIT_MS = Math.max(3000, Number(process.env.WEBUI_VIDEO_SYNC_WAIT_MS || 15000));
 
 
 function captureImageGenerationRecord({ sourcePrompt = '', prompt = '', inputs = [], outputs = [], model = '', provider = '', mode = '', chatId = '', optimizedByAgent = false } = {}) {
@@ -270,12 +273,132 @@ function assertValidImageBuffer(buffer, source = 'image') {
   return mime;
 }
 
-function readRecords() {
-  return store.read(IMAGE_KEY, []);
+function imageIndexPath() {
+  return path.join(paths.imageRoot(), 'images-index.json');
+}
+
+function readImageIndexRecords() {
+  try {
+    const file = imageIndexPath();
+    if (!fs.existsSync(file)) return [];
+    const json = JSON.parse(fs.readFileSync(file, 'utf8'));
+    return Array.isArray(json) ? json : (Array.isArray(json.records) ? json.records : []);
+  } catch (_) {
+    return [];
+  }
+}
+
+function writeImageIndexRecords(records = []) {
+  try {
+    ensureDir(paths.imageRoot());
+    fs.writeFileSync(imageIndexPath(), JSON.stringify(records.slice(0, 1000), null, 2), 'utf8');
+  } catch (_) {}
+}
+
+function recordIdentity(record = {}) {
+  const rel = String(record.relativePath || imageRelativePath(record) || '').replace(/\\/g, '/').toLowerCase();
+  const rawPath = normalizeStoredImagePath(record.path || imagePathFromRelative(record.relativePath || ''));
+  const resolved = rawPath ? path.resolve(rawPath).toLowerCase() : '';
+  return record.id || rel || resolved || '';
+}
+
+function mergeImageRecords(...lists) {
+  const map = new Map();
+  for (const list of lists) {
+    for (const record of (Array.isArray(list) ? list : [])) {
+      if (!record || typeof record !== 'object') continue;
+      const key = recordIdentity(record);
+      if (!key) continue;
+      map.set(key, { ...(map.get(key) || {}), ...record });
+    }
+  }
+  return [...map.values()].sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0)).slice(0, 1000);
+}
+
+function readRecords({ rescan = true } = {}) {
+  const merged = mergeImageRecords(readImageIndexRecords(), store.read(IMAGE_KEY, []));
+  return rescan ? syncImageRecordsFromDisk(merged).records : merged;
 }
 
 function writeRecords(records) {
-  store.write(IMAGE_KEY, records);
+  const normalized = mergeImageRecords(records);
+  store.write(IMAGE_KEY, normalized);
+  writeImageIndexRecords(normalized);
+}
+
+function imageRecordIdFromFile(filePath = '', kind = 'output') {
+  const name = path.basename(filePath, path.extname(filePath));
+  const suffix = name.match(/_([a-f0-9]{6,12})$/i)?.[1] || crypto.createHash('sha1').update(filePath).digest('hex').slice(0, 10);
+  const statPart = (() => { try { return Math.round(fs.statSync(filePath).mtimeMs).toString(36); } catch { return Date.now().toString(36); } })();
+  return `${kind === 'input' ? 'in' : 'out'}_${statPart}_${suffix}`;
+}
+
+function promptFromImageFilename(filePath = '') {
+  const base = path.basename(filePath, path.extname(filePath));
+  return base.replace(/^\d{8}-\d{6}_/, '').replace(/_[a-f0-9]{6,12}$/i, '').replace(/_/g, ' ').trim();
+}
+
+function collectImageFiles(dir, kind, out = []) {
+  let entries = [];
+  try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return out; }
+  for (const entry of entries) {
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) collectImageFiles(full, kind, out);
+    else if (entry.isFile() && /\.(png|jpe?g|webp|gif)$/i.test(entry.name)) out.push({ path: full, kind });
+  }
+  return out;
+}
+
+function canonicalImagePath(filePath = '') {
+  const resolved = path.resolve(normalizeStoredImagePath(filePath));
+  try { return fs.realpathSync(resolved).toLowerCase(); } catch (_) { return resolved.toLowerCase(); }
+}
+
+function syncImageRecordsFromDisk(records = [], options = {}) {
+  const byPath = new Set(records.map(r => canonicalImagePath(r.path || imagePathFromRelative(r.relativePath || ''))).filter(Boolean));
+  const byRelative = new Set(records.map(r => String(r.relativePath || imageRelativePath(r) || '').replace(/\\/g, '/').toLowerCase()).filter(Boolean));
+  const additions = [];
+  let skipped = 0;
+  const files = [
+    ...collectImageFiles(paths.imageOutputDir(), 'output'),
+    ...collectImageFiles(paths.imageInputDir(), 'input'),
+  ];
+  for (const file of files) {
+    const resolved = path.resolve(file.path);
+    const realKey = canonicalImagePath(resolved);
+    const rel = path.relative(paths.imageRoot(), resolved);
+    const relKey = rel.replace(/\\/g, '/').toLowerCase();
+    if (byPath.has(realKey) || byRelative.has(relKey)) { skipped++; continue; }
+    let stat = null;
+    try { stat = fs.statSync(resolved); } catch { skipped++; continue; }
+    const id = imageRecordIdFromFile(resolved, file.kind);
+    const prompt = file.kind === 'output' ? promptFromImageFilename(resolved) : '';
+    additions.push({
+      id,
+      kind: file.kind,
+      filename: path.basename(resolved),
+      originalName: path.basename(resolved),
+      mime: detectImageMime(fs.readFileSync(resolved).slice(0, 32)) || (path.extname(resolved).toLowerCase() === '.jpg' || path.extname(resolved).toLowerCase() === '.jpeg' ? 'image/jpeg' : 'image/png'),
+      size: stat.size,
+      path: resolved,
+      relativePath: rel,
+      url: publicUrlFor(id),
+      publicUrl: publicUrlFor(id),
+      prompt,
+      sourcePrompt: prompt,
+      model: '',
+      provider: '',
+      inputs: [],
+      createdAt: stat.mtimeMs ? Math.round(stat.mtimeMs) : Date.now(),
+    });
+    byPath.add(realKey);
+    byRelative.add(relKey);
+  }
+  const merged = additions.length ? mergeImageRecords(additions, records) : mergeImageRecords(records);
+  if (additions.length || options.forceWrite) writeRecords(merged);
+  const stats = { scanned: files.length, added: additions.length, skipped, total: merged.length };
+  if (options.log || additions.length) console.log(`[images] scanned=${stats.scanned} added=${stats.added} skipped=${stats.skipped} total=${stats.total}`);
+  return { records: merged, stats };
 }
 
 function publicUrlFor(id) {
@@ -321,13 +444,16 @@ function normalizeStoredImagePath(target = '') {
 function imageRelativePath(record = {}) {
   if (record.relativePath) return String(record.relativePath);
   if (!record.path) return '';
-  const stored = path.resolve(normalizeStoredImagePath(record.path));
+  const normalized = normalizeStoredImagePath(record.path);
+  const stored = path.resolve(normalized);
   const legacyRoot = path.resolve(path.join(store.DATA_DIR, 'images'));
   const currentRoot = path.resolve(paths.imageRoot());
   for (const root of [currentRoot, legacyRoot]) {
     const rel = path.relative(root, stored);
     if (rel && !rel.startsWith('..') && !path.isAbsolute(rel)) return rel;
   }
+  const match = String(normalized).match(/[\/]images[\/](outputs|inputs)[\/](.+)$/i);
+  if (match) return path.join(match[1].toLowerCase(), match[2]);
   return '';
 }
 
@@ -347,14 +473,41 @@ function existingImagePath(record = {}) {
 }
 
 function addRecord(record) {
-  const records = readRecords();
-  records.unshift(record);
-  writeRecords(records.slice(0, 1000));
+  const records = readRecords({ rescan: false });
+  const merged = mergeImageRecords([record], records);
+  writeRecords(merged);
   return record;
 }
 
 function findRecord(id) {
   return readRecords().find(r => r.id === id);
+}
+
+function normalizeImageRecordForClient(r = {}, req = null) {
+  const id = r.id || '';
+  return {
+    id,
+    kind: r.kind,
+    name: r.originalName || r.filename,
+    filename: r.filename,
+    originalName: r.originalName || r.filename,
+    mime: r.mime,
+    size: r.size,
+    path: r.path,
+    relativePath: r.relativePath || imageRelativePath(r),
+    url: r.url || (id ? publicUrlFor(id) : ''),
+    publicUrl: id ? (req ? toPublicUrl(req, id) : (r.publicUrl || publicUrlFor(id))) : (r.publicUrl || r.url || ''),
+    createdAt: r.createdAt,
+    prompt: r.prompt,
+    sourcePrompt: r.sourcePrompt,
+    model: r.model,
+    provider: r.provider,
+    inputs: r.inputs || [],
+    revisedPrompt: r.revisedPrompt || '',
+    sourceUrl: r.sourceUrl || '',
+    taskId: r.taskId || '',
+    videoId: r.videoId || '',
+  };
 }
 
 function authHeaders({ key = '', authType = 'bearer', authHeader = '' } = {}, json = true) {
@@ -383,6 +536,92 @@ function isImageLibraryModel(model = {}) {
   return ['openai-image', 'openai_image'].includes(model.apiFormat)
     || model.kind === 'image'
     || (tags.includes('image') && !tags.includes('vision'));
+}
+
+
+function isVideoLibraryModel(model = {}) {
+  const tags = Array.isArray(model.tags) ? model.tags.map(t => String(t).toLowerCase()) : [];
+  const name = String(model.name || model.id || '').toLowerCase();
+  return ['openai-video', 'openai_video'].includes(model.apiFormat)
+    || model.kind === 'video'
+    || tags.includes('video')
+    || /video|sora|runway|kling|pika|veo/.test(name);
+}
+
+function isAgnesModel(model = {}) {
+  const text = [model.provider, model.name, model.id, model.base].filter(Boolean).join(' ').toLowerCase();
+  return /agnes|apihub\.agnes-ai\.com|sapiens/.test(text);
+}
+
+function videoModelConfig() {
+  const root = store.read('models', {});
+  if (!root || typeof root !== 'object' || (!root.webui && !root.agent)) return modelConfigForScope('webui');
+  const webui = root.webui || {};
+  const agent = root.agent || {};
+  const webuiLibrary = Array.isArray(webui.library) ? webui.library : [];
+  const agentLibrary = Array.isArray(agent.library) ? agent.library : [];
+  const webuiHasVideo = !!webui.scenarios?.video || webuiLibrary.some(isVideoLibraryModel);
+  if (webuiHasVideo) return { ...webui };
+  return { ...agent, library: agentLibrary };
+}
+
+function resolveVideoModel(modelId = 'auto') {
+  const cfg = videoModelConfig();
+  const lib = Array.isArray(cfg.library) ? cfg.library : [];
+  const wanted = modelId && modelId !== 'auto' ? modelId : (cfg.scenarios?.video || '');
+  const videoModels = lib.filter(m => m.enabled !== false && isVideoLibraryModel(m));
+  let model = lib.find(m => m.id === wanted || m.name === wanted);
+  if (!model && videoModels.length) model = videoModels[0];
+  if (!model) {
+    const err = new Error('WebUI video generation is not configured yet. Please add an OpenAI Video compatible model and bind it to the Video Generation scenario.');
+    err.status = 400;
+    throw err;
+  }
+  if (model.enabled === false) {
+    if (videoModels.length) return videoModels[0];
+    const err = new Error('The configured WebUI video model is disabled. Please enable a video model before generating videos.');
+    err.status = 400;
+    throw err;
+  }
+  if (!isVideoLibraryModel(model)) {
+    if (videoModels.length) return videoModels[0];
+    const err = new Error(`The Video Generation scenario is bound to ${model.name || model.id}, but it is not marked as a video model.`);
+    err.status = 400;
+    throw err;
+  }
+  return model;
+}
+
+function explicitVideoSecondsFromText(value = '') {
+  const text = String(value || '');
+  const en = text.match(/(\d{1,2})\s*(?:s|sec|secs|second|seconds)\b/i);
+  const zh = text.match(/(\d{1,2})\s*?/);
+  const n = Number((en && en[1]) || (zh && zh[1]) || 0);
+  return n > 0 ? Math.max(1, Math.min(n, 20)) : 0;
+}
+
+function videoEndpoint(base) {
+  const clean = String(base || '').replace(/\/+$/, '');
+  if (!clean) return '';
+  if (/\/v1\/videos$/i.test(clean)) return clean;
+  if (/\/videos?\/generations$/i.test(clean)) return clean.replace(/\/video\/generations$/i, '/videos').replace(/\/videos\/generations$/i, '/videos');
+  if (clean.endsWith('/v1')) return `${clean}/videos`;
+  return `${clean}/v1/videos`;
+}
+
+function parseSize(value = '', fallbackWidth = 1152, fallbackHeight = 768) {
+  const match = String(value || '').match(/(\d{2,5})\s*[x×*]\s*(\d{2,5})/i);
+  return match ? { width: Number(match[1]), height: Number(match[2]) } : { width: fallbackWidth, height: fallbackHeight };
+}
+
+function videoFrameParams(seconds = 5) {
+  const wanted = Math.max(1, Math.min(Number(seconds || 5) || 5, 18));
+  const candidates = [81, 121, 161, 201, 241, 281, 321, 361, 401, 441];
+  let numFrames = candidates[0];
+  for (const value of candidates) {
+    if (Math.abs(value / 24 - wanted) < Math.abs(numFrames / 24 - wanted)) numFrames = value;
+  }
+  return { num_frames: numFrames, frame_rate: 24 };
 }
 
 function resolveImageModel(modelId = 'auto') {
@@ -457,10 +696,14 @@ function buildImageToImageFallbackPrompt(prompt = '') {
 
 async function fetchJsonWithRetry(url, model, body) {
   const headers = authHeaders(model, true);
+  const payload = isAgnesModel(model)
+    ? { ...body, extra_body: { ...(body.extra_body || {}), response_format: body.extra_body?.response_format || body.response_format || 'b64_json' } }
+    : { ...body, response_format: body.response_format || 'b64_json' };
+  if (isAgnesModel(model)) delete payload.response_format;
   const first = await fetch(url, {
     method: 'POST',
     headers,
-    body: JSON.stringify({ ...body, response_format: body.response_format || 'b64_json' }),
+    body: JSON.stringify(payload),
     signal: AbortSignal.timeout(IMAGE_API_TIMEOUT_MS),
   });
   if (first.ok) return first.json();
@@ -585,7 +828,309 @@ async function saveGeneratedItem(item, req, meta = {}) {
   });
 }
 
-const IMAGE2_DIR = path.resolve(process.env.HERMES_IMAGE2_SKILL_DIR || '/mnt/e/AI/记忆/skills/image2');
+
+function videoExtFromMime(mime = '') {
+  const value = String(mime || '').toLowerCase();
+  if (value.includes('webm')) return '.webm';
+  if (value.includes('quicktime') || value.includes('mov')) return '.mov';
+  if (value.includes('mpeg')) return '.mpeg';
+  return '.mp4';
+}
+function extractVideoItems(json = {}) {
+  if (Array.isArray(json.data)) return json.data;
+  if (Array.isArray(json.videos)) return json.videos;
+  if (Array.isArray(json.output)) return json.output.flatMap(item => Array.isArray(item.content) ? item.content : [item]);
+  return [json].filter(Boolean);
+}
+function videoUrlFromItem(item = {}) { return item.url || item.video_url || item.href || item.download_url || item.output_url || item.file_url || item.remixed_from_video_id || item.video || ''; }
+function videoBase64FromItem(item = {}) { return item.b64_json || item.base64 || item.video_base64 || item.data || ''; }
+function videoIdFromItem(item = {}) { return item.video_id || item.videoId || item.id || item.data?.video_id || item.data?.id || ''; }
+function findExistingVideoRecords({ taskId = '', videoId = '', sourceUrl = '' } = {}) {
+  const cleanTaskId = String(taskId || '').trim();
+  const cleanVideoId = String(videoId || '').trim();
+  const cleanSourceUrl = String(sourceUrl || '').trim();
+  if (!cleanTaskId && !cleanVideoId && !cleanSourceUrl) return [];
+  return readRecords({ rescan: false }).filter(record => {
+    if (!record || record.kind !== 'video') return false;
+    if (cleanTaskId && String(record.taskId || '').trim() === cleanTaskId) return true;
+    if (cleanVideoId && String(record.videoId || '').trim() === cleanVideoId) return true;
+    if (cleanSourceUrl && String(record.sourceUrl || '').trim() === cleanSourceUrl) return true;
+    return false;
+  }).filter(record => existingImagePath(record));
+}
+function sleep(ms) { return new Promise(resolve => setTimeout(resolve, ms)); }
+function videoTaskIdFromJson(json = {}) {
+  return json.task_id || json.taskId || json.id || json.data?.task_id || json.data?.id || '';
+}
+
+async function fetchAgnesImageToImage(url, model, body, inputs = [], publicBase = '') {
+  const images = inputs.map(input => imageInputPublicUrl(input, publicBase) || imageInputDataUrl(input)).filter(Boolean);
+  return fetchJsonWithRetry(url, model, {
+    ...body,
+    extra_body: {
+      ...(body.extra_body || {}),
+      image: images,
+      response_format: 'b64_json',
+    },
+  });
+}
+function videoIdFromJson(json = {}) {
+  return json.video_id || json.videoId || json.data?.video_id || json.data?.videoId || json.data?.data?.video_id || '';
+}
+function videoStatusFromJson(json = {}) {
+  return String(json.status || json.data?.status || json.data?.data?.status || '').toLowerCase();
+}
+function isVideoTaskPending(json = {}) {
+  const status = videoStatusFromJson(json);
+  return ['queued', 'pending', 'processing', 'running', 'in_progress', 'not_start', 'submitted', 'created'].includes(status) || /%$/.test(String(json.data?.progress || json.progress || ''));
+}
+function isVideoTaskFailed(json = {}) {
+  const status = videoStatusFromJson(json);
+  return ['failed', 'error', 'cancelled', 'canceled'].includes(status) || !!(json.error || json.data?.error || json.data?.fail_reason);
+}
+function videoStatusUrl(base, taskId, videoId = '') {
+  const clean = String(base || '').replace(/\/+$/, '');
+  const id = String(taskId || '').trim();
+  const vid = String(videoId || '').trim();
+  if (!clean || (!id && !vid)) return '';
+  if (vid && isAgnesModel({ base: clean })) {
+    const root = clean.replace(/\/v1(?:\/videos)?$/i, '').replace(/\/videos$/i, '');
+    return `${root}/agnesapi?video_id=${encodeURIComponent(vid)}`;
+  }
+  return `${clean.replace(/\/v1\/videos$/i, '/v1')}/videos/${encodeURIComponent(id || vid)}`;
+}
+async function fetchVideoJsonWithRetry(url, model, body) {
+  const headers = authHeaders(model, true);
+  let lastError = null;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    if (attempt) await sleep(1500 * attempt);
+    const response = await fetch(url, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(Math.min(VIDEO_API_TIMEOUT_MS, 180000)),
+    });
+    const text = await response.text().catch(() => '');
+    if (response.ok) {
+      try { return text ? JSON.parse(text) : {}; } catch (_) { return {}; }
+    }
+    const error = new Error(`Video API failed HTTP ${response.status}: ${text.slice(0, 300)}`);
+    error.status = response.status;
+    lastError = error;
+    if (![408, 409, 425, 429, 500, 502, 503, 504, 524].includes(Number(response.status))) break;
+  }
+  throw lastError || new Error('Video API failed');
+}
+function videoRequestShouldTryNext(status = 0, text = '') {
+  const code = Number(status || 0);
+  if ([400, 404, 405, 415, 422].includes(code)) return true;
+  return /unknown parameter|unsupported|missing.*image|invalid.*image|incorrect padding|base64|image_url|first_frame|input_image|multipart|uploadfile|not json serializable|field|required/i.test(String(text || ''));
+}
+
+function imageInputDataUrl(input = {}) {
+  const filePath = input.path || existingImagePath(input);
+  if (!filePath || !fs.existsSync(filePath)) return '';
+  const mime = input.mime || 'image/png';
+  const base64 = fs.readFileSync(filePath).toString('base64');
+  return `data:${mime};base64,${base64}`;
+}
+
+function imageInputPublicUrl(input = {}, publicBase = '') {
+  const base = String(publicBase || process.env.WEBUI_PUBLIC_BASE || '').replace(/\/+$/, '');
+  const id = input.id || '';
+  if (base && id) return `${base}${publicUrlFor(id)}`;
+  const value = String(input.publicUrl || input.url || '').trim();
+  return /^https?:\/\//i.test(value) ? value : '';
+}
+
+async function fetchVideoMultipart(url, model, body, inputs = [], imageField = 'image') {
+  const form = new FormData();
+  Object.entries(body || {}).forEach(([key, value]) => {
+    if (value !== undefined && value !== null && value !== '') form.append(key, String(value));
+  });
+  inputs.slice(0, 1).forEach((input, index) => {
+    const buffer = fs.readFileSync(input.path);
+    const blob = new Blob([buffer], { type: input.mime || 'image/png' });
+    const name = input.originalName || input.filename || `input_${index}.png`;
+    form.append(imageField, blob, name);
+  });
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: authHeaders(model, false),
+    body: form,
+    signal: AbortSignal.timeout(Math.min(VIDEO_API_TIMEOUT_MS, 180000)),
+  });
+  const text = await response.text().catch(() => '');
+  if (response.ok) {
+    try { return text ? JSON.parse(text) : {}; } catch (_) { return {}; }
+  }
+  const error = new Error(`Video API failed HTTP ${response.status}: ${text.slice(0, 300)}`);
+  error.status = response.status;
+  error.responseText = text;
+  throw error;
+}
+
+async function fetchVideoWithInputs(url, model, body, inputs = [], publicBase = '') {
+  if (!inputs.length) return fetchVideoJsonWithRetry(url, model, body);
+  const dataUrl = imageInputDataUrl(inputs[0]);
+  const rawBase64 = dataUrl.replace(/^data:[^;]+;base64,/i, '');
+  const publicUrls = inputs.map(input => imageInputPublicUrl(input, publicBase)).filter(Boolean);
+  const usablePublicUrls = publicUrls.filter(url => !/^https?:\/\/(?:127\.0\.0\.1|localhost|0\.0\.0\.0|::1)(?::\d+)?\//i.test(url));
+  const agnesPreferredImages = isAgnesModel(model) ? usablePublicUrls : publicUrls;
+  const firstImage = agnesPreferredImages[0] || (isAgnesModel(model) ? rawBase64 : dataUrl);
+  const attempts = [
+    { label: 'json:image', run: () => fetchVideoJsonWithRetry(url, model, { ...body, image: firstImage }) },
+    { label: 'json:extra_body.image', run: () => fetchVideoJsonWithRetry(url, model, { ...body, extra_body: { ...(body.extra_body || {}), image: agnesPreferredImages.length > 1 ? agnesPreferredImages : [firstImage] } }) },
+    { label: 'json:image_url:data-url', run: () => fetchVideoJsonWithRetry(url, model, { ...body, image_url: dataUrl }) },
+    { label: 'json:input_image:data-url', run: () => fetchVideoJsonWithRetry(url, model, { ...body, input_image: dataUrl }) },
+    { label: 'json:images:data-url', run: () => fetchVideoJsonWithRetry(url, model, { ...body, images: [dataUrl] }) },
+    { label: 'json:image_base64', run: () => fetchVideoJsonWithRetry(url, model, { ...body, image_base64: rawBase64 }) },
+    { label: 'json:first_frame_image_base64', run: () => fetchVideoJsonWithRetry(url, model, { ...body, first_frame_image: rawBase64 }) },
+    { label: 'multipart:image', run: () => fetchVideoMultipart(url, model, body, inputs, 'image') },
+    { label: 'multipart:first_frame_image', run: () => fetchVideoMultipart(url, model, body, inputs, 'first_frame_image') },
+  ];
+  const failures = [];
+  for (const attempt of attempts) {
+    try {
+      return await attempt.run();
+    } catch (error) {
+      failures.push(`${attempt.label}: ${error.message || error}`);
+      if (!videoRequestShouldTryNext(error.status, error.responseText || error.message)) break;
+    }
+  }
+  const err = new Error(`图生视频请求失败，已尝试 ${failures.length} 种参考图传参方式：${failures.join('；')}`);
+  err.status = 500;
+  throw err;
+}
+
+function resolveGenerationInputs(attachmentIds = []) {
+  const ids = Array.isArray(attachmentIds) ? attachmentIds.map(String).filter(Boolean) : [];
+  if (!ids.length) return [];
+  const records = readRecords();
+  return ids
+    .map(id => records.find(r => r.id === id))
+    .map(r => {
+      const filePath = r ? existingImagePath(r) : '';
+      return filePath ? { ...r, path: filePath } : null;
+    })
+    .filter(r => r && ['input', 'output'].includes(r.kind) && String(r.mime || '').startsWith('image/') && isInsideImageRoot(r.path));
+}
+
+async function pollVideoTaskIfNeeded(json = {}, model = {}) {
+  const initialItems = extractVideoItems(json).filter(item => videoUrlFromItem(item) || videoBase64FromItem(item));
+  if (initialItems.length) return json;
+  const taskId = videoTaskIdFromJson(json);
+  if (!taskId || !isVideoTaskPending(json)) return json;
+  const url = videoStatusUrl(model.base, taskId, videoIdFromJson(json));
+  if (!url) return json;
+  const startedAt = Date.now();
+  let lastJson = json;
+  while (Date.now() - startedAt < Math.min(VIDEO_API_TIMEOUT_MS, VIDEO_SYNC_WAIT_MS)) {
+    await sleep(5000);
+    const response = await fetch(url, { method: 'GET', headers: authHeaders(model, true), signal: AbortSignal.timeout(Math.min(30000, VIDEO_API_TIMEOUT_MS)) });
+    const text = await response.text().catch(() => '');
+    if (!response.ok) {
+      const err = new Error(`Video task polling failed HTTP ${response.status}: ${text.slice(0, 300)}`);
+      err.status = response.status;
+      throw err;
+    }
+    lastJson = text ? JSON.parse(text) : {};
+    const items = extractVideoItems(lastJson).filter(item => videoUrlFromItem(item) || videoBase64FromItem(item));
+    if (items.length) return lastJson;
+    if (isVideoTaskFailed(lastJson)) throw new Error('Video task failed: ' + JSON.stringify(lastJson.error || lastJson.data?.error || lastJson.data?.fail_reason || lastJson).slice(0, 500));
+    if (!isVideoTaskPending(lastJson) && !items.length) return lastJson;
+  }
+  return { ...lastJson, __pendingVideoTask: true, taskId, status: videoStatusFromJson(lastJson) || videoStatusFromJson(json) || 'queued' };
+}
+async function saveGeneratedVideoItem(item, req, meta = {}) {
+  const sourceUrl = videoUrlFromItem(item);
+  const videoId = meta.videoId || videoIdFromItem(item);
+  const existing = findExistingVideoRecords({ taskId: meta.taskId, videoId, sourceUrl });
+  if (existing.length) return normalizeImageRecordForClient(existing[0], req);
+  const id = imageId('vid');
+  let buffer = null;
+  let mime = 'video/mp4';
+  const base64 = videoBase64FromItem(item);
+  if (base64 && /^data:/i.test(base64)) {
+    const parsed = parseDataUrl(base64);
+    buffer = parsed.buffer;
+    mime = parsed.mime || mime;
+  } else if (base64 && /^[A-Za-z0-9+/=\s]+$/.test(String(base64).slice(0, 200))) {
+    buffer = Buffer.from(String(base64).replace(/\s+/g, ''), 'base64');
+  } else if (sourceUrl) {
+    const r = await fetch(sourceUrl, { signal: AbortSignal.timeout(VIDEO_DOWNLOAD_TIMEOUT_MS) });
+    if (!r.ok) throw new Error(`Download generated video failed HTTP ${r.status}`);
+    const contentType = String(r.headers.get('content-type') || '').split(';')[0].trim().toLowerCase();
+    const arr = await r.arrayBuffer();
+    buffer = Buffer.from(arr);
+    mime = contentType || mime;
+  }
+  if (!buffer || !buffer.length) throw new Error('Video API did not return recognizable video data.');
+  if (!String(mime || '').toLowerCase().startsWith('video/')) mime = 'video/mp4';
+  const ext = videoExtFromMime(mime);
+  const dir = monthDir(paths.imageOutputDir());
+  const filename = `${dateStamp()}_${promptSlug(meta.sourcePrompt || meta.prompt || 'video')}_${id.slice(-6)}${ext}`;
+  const filePath = path.join(dir, filename);
+  fs.writeFileSync(filePath, buffer);
+  return addRecord({ id, kind: 'video', filename, originalName: filename, mime, size: buffer.length, path: filePath, relativePath: path.relative(paths.imageRoot(), filePath), url: publicUrlFor(id), publicUrl: toPublicUrl(req, id), prompt: meta.prompt || '', sourcePrompt: meta.sourcePrompt || '', model: meta.model || '', provider: meta.provider || '', inputs: meta.inputs || [], sourceUrl, taskId: meta.taskId || '', videoId, createdAt: Date.now() });
+}
+async function generateVideoFromPrompt({ prompt = '', sourcePrompt = '', attachmentIds = [], model = 'auto', size = '1024x1024', seconds = 5, chatId = '', publicBase = '', userMsgId = '', assistantMsgId = '' } = {}) {
+  const cleanPrompt = redactSecrets(String(prompt || sourcePrompt || '').trim());
+  const cleanSourcePrompt = redactSecrets(String(sourcePrompt || prompt || '').trim());
+  if (!cleanPrompt) { const err = new Error('prompt required'); err.status = 400; throw err; }
+  const inputs = resolveGenerationInputs(attachmentIds);
+  const selectedModel = resolveVideoModel(model);
+  const url = videoEndpoint(selectedModel.base);
+  if (!url) { const err = new Error('Video model API base is missing.'); err.status = 400; throw err; }
+  const videoPrompt = inputs.length
+    ? `Use the provided reference image as the first frame and visual source. Preserve the reference image identity, character, composition, color palette, outfit, facial features, and illustration style. Only add natural motion/camera movement requested by the user. Do not redesign or replace the subject. ${cleanPrompt}`
+    : cleanPrompt;
+  const resolvedSeconds = explicitVideoSecondsFromText(cleanSourcePrompt || cleanPrompt) || Number(seconds || 5) || 5;
+  const dimensions = parseSize(size, 1152, 768);
+  const frames = videoFrameParams(resolvedSeconds);
+  const requestBody = isAgnesModel(selectedModel)
+    ? { model: selectedModel.name || selectedModel.id, prompt: videoPrompt, width: dimensions.width, height: dimensions.height, ...frames }
+    : { model: selectedModel.name || selectedModel.id, prompt: videoPrompt, size, seconds: String(resolvedSeconds) };
+  const firstJson = await fetchVideoWithInputs(url, selectedModel, requestBody, inputs, publicBase);
+  const json = await pollVideoTaskIfNeeded(firstJson, selectedModel);
+  if (json.__pendingVideoTask) {
+    const taskId = json.taskId || videoTaskIdFromJson(firstJson) || videoTaskIdFromJson(json);
+    const status = json.status || videoStatusFromJson(json) || 'queued';
+    const content = 'Video task submitted but still pending. Task ID: ' + taskId + ', status: ' + status;
+    return {
+      model: selectedModel.name,
+      provider: selectedModel.provider,
+      prompt: cleanPrompt,
+      sourcePrompt: cleanSourcePrompt,
+      mode: inputs.length ? 'image-to-video' : 'text-to-video',
+      status: 'pending',
+      taskId,
+      videoId: json.video_id || json.data?.video_id || json.data?.data?.id || firstJson.video_id || '',
+      taskStatus: status,
+      outputs: [],
+      inputs: inputs.map(i => ({ id: i.id, path: i.path, url: i.url, publicUrl: toPublicUrl({ body: { publicBase } }, i.id), name: i.originalName || i.filename })),
+      content,
+      raw: json,
+      chat: null,
+    };
+  }
+  const items = extractVideoItems(json);
+  if (!items.length) throw new Error('Video API returned an invalid response. Please check video model config or API key.');
+  const completedTaskId = videoTaskIdFromJson(firstJson) || videoTaskIdFromJson(json) || '';
+  const reqLike = { body: { publicBase } };
+  const captureInputs = inputs.map(i => ({ id: i.id, path: i.path, url: i.url, publicUrl: toPublicUrl(reqLike, i.id), name: i.originalName || i.filename }));
+  const outputs = [];
+  for (const item of items) { if (outputs.length >= 2) break; outputs.push(await saveGeneratedVideoItem(item, reqLike, { prompt: cleanPrompt, sourcePrompt: cleanSourcePrompt, model: selectedModel.name, provider: selectedModel.provider, inputs: captureInputs, taskId: completedTaskId, videoId: videoIdFromItem(item) })); }
+  if (!outputs.length) throw new Error('Video result was returned but saving failed. Please check output directory permissions.');
+  const captureOutputs = outputs.map(o => ({ id: o.id, path: o.path, relativePath: o.relativePath || imageRelativePath(o), url: o.url || publicUrlFor(o.id), publicUrl: toPublicUrl(reqLike, o.id), name: o.filename || o.originalName, filename: o.filename, originalName: o.originalName || o.filename, mime: o.mime, size: o.size, createdAt: o.createdAt, prompt: o.prompt, sourcePrompt: o.sourcePrompt, model: o.model, provider: o.provider, taskId: o.taskId || completedTaskId, videoId: o.videoId || '' }));
+  const videoMd = captureOutputs.map((vid, i) => `[生成视频 ${i + 1}](${vid.publicUrl || vid.url})`).join('\n\n');
+  const assistantContent = `视频已生成\n\n视频提示词：\n${cleanPrompt}\n\n${videoMd}`;
+  const videoMode = inputs.length ? 'image-to-video' : 'text-to-video';
+  const chat = appendChatMessages(chatId, `\u89c6\u9891\u751f\u6210\uff1a${cleanSourcePrompt || cleanPrompt}`, assistantContent, selectedModel.name, { inputs: captureInputs, outputs: captureOutputs, prompt: cleanPrompt, sourcePrompt: cleanSourcePrompt, optimizedByAgent: false, mode: videoMode, mediaType: 'video', userMsgId, assistantMsgId });
+  return { model: selectedModel.name, provider: selectedModel.provider, prompt: cleanPrompt, sourcePrompt: cleanSourcePrompt, mode: videoMode, outputs: captureOutputs, inputs: captureInputs, content: assistantContent, chat: chat ? { id: chat.id, title: chat.title, updatedAt: chat.updatedAt, messageCount: chat.messages?.length || 0 } : null };
+}
+
+const IMAGE2_DIR = path.resolve(process.env.HERMES_IMAGE2_SKILL_DIR || path.join(paths.dataRoot(), 'skills', 'image2'));
 
 function readTextIfExists(filePath, maxChars = 12000) {
   try {
@@ -756,6 +1301,7 @@ function appendChatMessages(chatId, userContent, assistantContent, modelName, im
       sourcePrompt: imageRecords.sourcePrompt || '',
       optimizedByAgent: !!imageRecords.optimizedByAgent,
       mode: imageRecords.mode || '',
+      mediaType: imageRecords.mediaType || (String(imageRecords.mode || '').includes('video') ? 'video' : 'image'),
       optimizeSkill: imageRecords.optimizeSkill || '',
     },
   });
@@ -829,6 +1375,20 @@ async function generateImageFromPrompt({ prompt = '', sourcePrompt = '', optimiz
     selectedModel = candidate;
     try {
       if (inputs.length > 0) {
+        if (isAgnesModel(candidate)) {
+          const url = imageEndpoint(candidate.base, 'generations');
+          if (!url) {
+            const err = new Error('image generation url missing');
+            err.status = 400;
+            throw err;
+          }
+          json = await fetchAgnesImageToImage(url, candidate, {
+            model: candidate.name,
+            prompt: finalPrompt,
+            n: 1,
+            size: size || '1024x1024',
+          }, inputs, publicBase);
+        } else {
         const url = imageEndpoint(candidate.base, 'edits');
         if (!url) {
           const err = new Error('image edit url missing');
@@ -852,6 +1412,7 @@ async function generateImageFromPrompt({ prompt = '', sourcePrompt = '', optimiz
           });
           return form;
         });
+        }
       } else {
         const url = imageEndpoint(candidate.base, 'generations');
         if (!url) {
@@ -886,12 +1447,12 @@ async function generateImageFromPrompt({ prompt = '', sourcePrompt = '', optimiz
               usedImageEditFallback = true;
               break;
             } catch (fallbackError) {
-              failures.push(`${providerLabel(generationCandidate)}????????${fallbackError.message || fallbackError}`);
+              failures.push(`${providerLabel(generationCandidate)} \u56fe\u751f\u56fe\u56de\u9000\u5931\u8d25\uff1a${fallbackError.message || fallbackError}`);
             }
           }
           if (json) break;
         }
-        const err = new Error(failures.length > 1 ? `??????????${failures.join('?')}` : (e.message || 'image generation failed'));
+        const err = new Error(failures.length > 1 ? `\u56fe\u50cf\u751f\u6210\u5931\u8d25\uff0c\u5df2\u5c1d\u8bd5\u56de\u9000\uff1a${failures.join('\uff1b')}` : (e.message || 'image generation failed'));
         err.status = e.status || 500;
         throw err;
       }
@@ -899,7 +1460,7 @@ async function generateImageFromPrompt({ prompt = '', sourcePrompt = '', optimiz
   }
 
   const items = extractImageItems(json);
-  if (!items.length) throw new Error('?? API ?????????????????? API Key?');
+  if (!items.length) throw new Error('\u5916\u90e8\u56fe\u50cf API \u8fd4\u56de\u4e86\u65e0\u6548\u54cd\u5e94\uff0c\u8bf7\u68c0\u67e5\u56fe\u50cf\u6a21\u578b\u914d\u7f6e\u6216 API Key\u3002');
   const outputs = [];
   for (const item of items) {
     if (outputs.length >= 4) break;
@@ -926,7 +1487,7 @@ async function generateImageFromPrompt({ prompt = '', sourcePrompt = '', optimiz
     : '';
   const userContent = `图像生成：${cleanSourcePrompt || finalPrompt}${inputMd}`;
   const imageCaptureInputs = inputs.map(i => ({ id: i.id, path: i.path, url: i.url, publicUrl: toPublicUrl(reqLike, i.id), name: i.originalName || i.filename }));
-  const imageCaptureOutputs = outputs.map(o => ({ id: o.id, path: o.path, url: o.url, publicUrl: o.publicUrl, name: o.filename, prompt: o.prompt, sourcePrompt: o.sourcePrompt }));
+  const imageCaptureOutputs = outputs.map(o => ({ id: o.id, path: o.path, relativePath: o.relativePath || imageRelativePath(o), url: o.url || publicUrlFor(o.id), publicUrl: toPublicUrl(reqLike, o.id), name: o.filename || o.originalName, filename: o.filename, originalName: o.originalName || o.filename, mime: o.mime, size: o.size, createdAt: o.createdAt, prompt: o.prompt, sourcePrompt: o.sourcePrompt, model: o.model, provider: o.provider }));
   const imageMode = inputs.length ? (usedImageEditFallback ? 'image-to-image-fallback' : 'image-to-image') : 'text-to-image';
   const chat = appendChatMessages(chatId, userContent, assistantContent, selectedModel.name, {
     inputs: imageCaptureInputs,
@@ -961,8 +1522,8 @@ async function generateImageFromPrompt({ prompt = '', sourcePrompt = '', optimiz
     optimizedByAgent: !!optimizedByAgent,
     mode: imageMode,
     editFallback: usedImageEditFallback,
-    inputs,
-    outputs,
+    inputs: imageCaptureInputs,
+    outputs: imageCaptureOutputs,
     content: assistantContent,
     chat: chat ? { id: chat.id, title: chat.title, updatedAt: chat.updatedAt, messageCount: chat.messages?.length || 0 } : null,
   };
@@ -977,6 +1538,48 @@ router.post('/generate', async (req, res) => {
     res.fail(e.message || 'image generation failed', e.status || 500, e.status || 500);
   }
 });
+router.get('/video/task/:taskId', async (req, res) => {
+  const { taskId } = req.params || {};
+  const { model = 'auto', publicBase = '', videoId = '' } = req.query || {};
+  try {
+    const selectedModel = resolveVideoModel(model);
+    const url = videoStatusUrl(selectedModel.base, taskId, videoId);
+    if (!url) return res.fail('video task id required', 400, 400);
+    const response = await fetch(url, { method: 'GET', headers: authHeaders(selectedModel, true), signal: AbortSignal.timeout(30000) });
+    const text = await response.text().catch(() => '');
+    if (!response.ok) return res.fail('Video task query failed HTTP ' + response.status + ': ' + text.slice(0, 300), response.status, response.status);
+    const json = text ? JSON.parse(text) : {};
+    const items = extractVideoItems(json).filter(item => videoUrlFromItem(item) || videoBase64FromItem(item));
+    const existingByTask = findExistingVideoRecords({ taskId }).map(r => normalizeImageRecordForClient(r, req));
+    if (existingByTask.length) {
+      return res.ok({ status: videoStatusFromJson(json) || 'completed', taskId, outputs: existingByTask, raw: json });
+    }
+    if (!items.length) {
+      return res.ok({ status: videoStatusFromJson(json) || 'unknown', taskId, outputs: [], raw: json });
+    }
+    const reqLike = { body: { publicBase } };
+    const outputs = [];
+    for (const item of items) {
+      if (outputs.length >= 2) break;
+      outputs.push(await saveGeneratedVideoItem(item, reqLike, { prompt: req.query.prompt || '', sourcePrompt: req.query.sourcePrompt || '', model: selectedModel.name, provider: selectedModel.provider, taskId, videoId: videoIdFromItem(item) }));
+    }
+    const captureOutputs = outputs.map(o => ({ id: o.id, path: o.path, relativePath: o.relativePath || imageRelativePath(o), url: o.url || publicUrlFor(o.id), publicUrl: toPublicUrl(reqLike, o.id), name: o.filename || o.originalName, filename: o.filename, originalName: o.originalName || o.filename, mime: o.mime, size: o.size, createdAt: o.createdAt, prompt: o.prompt, sourcePrompt: o.sourcePrompt, model: o.model, provider: o.provider, taskId: o.taskId || taskId, videoId: o.videoId || '' }));
+    res.ok({ status: videoStatusFromJson(json) || 'completed', taskId, outputs: captureOutputs, raw: json });
+  } catch (e) {
+    res.fail(e.message || 'video task query failed', e.status || 500, e.status || 500);
+  }
+});
+
+router.post('/video/generate', async (req, res) => {
+  const { prompt = '', sourcePrompt = '', attachmentIds = [], model = 'auto', size = '1024x1024', seconds = 5, chatId = '', publicBase = '', userMsgId = '', assistantMsgId = '' } = req.body || {};
+  try {
+    const data = await generateVideoFromPrompt({ prompt, sourcePrompt, attachmentIds, model, size, seconds, chatId, publicBase, userMsgId, assistantMsgId });
+    res.ok(data);
+  } catch (e) {
+    res.fail(e.message || 'video generation failed', e.status || 500, e.status || 500);
+  }
+});
+
 router.get('/file/:id', (req, res) => {
   const record = findRecord(req.params.id);
   const filePath = record ? existingImagePath(record) : '';
@@ -988,23 +1591,23 @@ router.get('/file/:id', (req, res) => {
   res.sendFile(resolved);
 });
 
-router.get('/', (_req, res) => {
-  res.ok(readRecords().map(r => ({
-    id: r.id,
-    kind: r.kind,
-    name: r.originalName || r.filename,
-    mime: r.mime,
-    size: r.size,
-    path: r.path,
-    relativePath: r.relativePath || imageRelativePath(r),
-    url: r.url,
-    createdAt: r.createdAt,
-    prompt: r.prompt,
-    sourcePrompt: r.sourcePrompt,
-    model: r.model,
-    provider: r.provider,
-  })));
+router.get('/', (req, res) => {
+  let records = readRecords();
+  const limit = Number(req.query.limit || 0);
+  if (Number.isFinite(limit) && limit > 0) records = records.slice(0, Math.min(limit, 500));
+  res.ok(records.map(r => normalizeImageRecordForClient(r, req)));
+});
+
+router.post('/rescan', (req, res) => {
+  const before = readRecords({ rescan: false });
+  const result = syncImageRecordsFromDisk(before, { forceWrite: true, log: true });
+  res.ok({
+    ...result.stats,
+    before: before.length,
+    images: result.records.map(r => normalizeImageRecordForClient(r, req)),
+  });
 });
 
 module.exports = router;
 module.exports.generateImageFromPrompt = generateImageFromPrompt;
+module.exports.generateVideoFromPrompt = generateVideoFromPrompt;

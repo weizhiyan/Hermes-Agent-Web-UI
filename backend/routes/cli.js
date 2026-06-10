@@ -1,9 +1,12 @@
-﻿/**
+/**
  * Hermes CLI sessions bridge.
  * Reads real conversation history from Hermes Agent's session store.
  */
 const express = require('express');
 const { spawnSync } = require('child_process');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
 const store = require('../services/store');
 const { detectHermesCommand } = require('../services/hermes');
 const { chatStream } = require('../services/llm');
@@ -19,33 +22,21 @@ function modelConfigForScope(scope = 'agent') {
   return { ...(root || {}) };
 }
 const HIDDEN_KEY = 'cli-hidden-sessions';
-
-function shQuote(value) {
-  return `'${String(value || '').replace(/'/g, `'\\''`)}'`;
-}
+const WEBUI_HERMES_SESSION_KEY = 'webui-hermes-sessions';
+const WEBUI_CHAT_KEY = 'chats';
 
 function runHermes(args) {
   const hermes = detectHermesCommand();
-  if (!hermes) throw new Error('Hermes CLI 未找到。请先在 WSL 或本机安装 hermes。');
-
-const result = hermes.type === 'wsl'
-    ? spawnSync('wsl', ['-e', 'bash', '-lc', `export PATH="$HOME/.local/bin:$HOME/bin:/usr/local/bin:/usr/bin:/bin:$PATH"; hermes ${args.map(shQuote).join(' ')}`], {
-        encoding: 'utf8',
-        timeout: 25000,
-        maxBuffer: 20 * 1024 * 1024,
-        windowsHide: true,
-      })
-    : spawnSync('hermes', args, {
-        encoding: 'utf8',
-        timeout: 25000,
-        maxBuffer: 20 * 1024 * 1024,
-        windowsHide: true,
-        shell: true,
-      });
-
+  if (!hermes) throw new Error('Hermes CLI not found. Install native Hermes on Windows and ensure hermes is on PATH.');
+  const result = spawnSync(hermes.cmd || 'hermes', args, {
+    encoding: 'utf8',
+    timeout: 25000,
+    maxBuffer: 20 * 1024 * 1024,
+    windowsHide: true,
+  });
   if (result.error) throw new Error('hermes CLI: ' + result.error.message);
   if (result.status !== 0) {
-    throw new Error('hermes CLI exited ' + result.status + ': ' + (result.stderr || '').slice(0, 200));
+    throw new Error('hermes CLI exited ' + result.status + ': ' + (result.stderr || result.stdout || '').slice(0, 500));
   }
   return result.stdout;
 }
@@ -54,8 +45,39 @@ function sseWrite(res, event, data) {
   res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
 }
 
+function makeTraceId(prefix = 'cli') {
+  return prefix + '_' + Date.now().toString(36) + '_' + Math.random().toString(16).slice(2, 8);
+}
+
+function requestTraceId(req) {
+  const raw = String(req?.body?.traceId || '').trim();
+  return raw || makeTraceId('cli');
+}
+
 function hiddenSessions() {
   return new Set(store.read(HIDDEN_KEY, []));
+}
+
+function webuiHermesSessions() {
+  const ids = new Set();
+  const rows = store.read(WEBUI_HERMES_SESSION_KEY, []);
+  for (const item of (Array.isArray(rows) ? rows : [])) {
+    const id = String(item?.sessionId || item?.id || '').trim();
+    if (id) ids.add(id);
+  }
+  const chats = store.read(WEBUI_CHAT_KEY, []);
+  for (const chat of (Array.isArray(chats) ? chats : [])) {
+    for (const msg of (Array.isArray(chat?.messages) ? chat.messages : [])) {
+      const id = String(msg?.hermesSessionId || '').trim();
+      if (id) ids.add(id);
+    }
+  }
+  return ids;
+}
+
+function isWebuiSourceSession(session = {}) {
+  const raw = String(session.cliSource || session.sourceRaw || session.rawSource || '').toLowerCase();
+  return raw === 'webui' || raw.includes('webui');
 }
 
 function saveHiddenSessions(set) {
@@ -112,6 +134,8 @@ function normalizeSessionObject(item) {
     title: title || preview || id,
     preview,
     source: 'cli',
+    cliSource: item.source || item.origin || item.client_source || item.clientSource || '',
+    sourceRaw: item.source || item.origin || item.client_source || item.clientSource || '',
     lastActiveLabel: item.lastActiveLabel || item.last_active || item.lastActive || '',
     lastActive: item.lastActive || item.last_active || '',
     createdAt: createdAt > 10_000_000_000 ? createdAt : (createdAt ? Math.floor(createdAt * 1000) : t),
@@ -173,12 +197,109 @@ function parseSessionLine(line) {
     title: title || preview || id,
     preview,
     source: 'cli',
+    cliSource: item.source || item.origin || item.client_source || item.clientSource || '',
+    sourceRaw: item.source || item.origin || item.client_source || item.clientSource || '',
     lastActiveLabel: lastActive,
     lastActive,
     createdAt: t,
     updatedAt: t,
     readOnly: true,
   };
+}
+
+function sessionFileId(filePath = '') {
+  const base = path.basename(String(filePath || ''), '.json');
+  return base.replace(/^session_/, '');
+}
+
+function readSessionFile(filePath) {
+  try {
+    return JSON.parse(fs.readFileSync(filePath, 'utf8'));
+  } catch (_) {
+    return null;
+  }
+}
+
+function lightJsonString(head, key) {
+  const re = new RegExp('"' + key + '"\\s*:\\s*"((?:\\\\.|[^"\\\\])*)"');
+  const match = String(head || '').match(re);
+  if (!match) return '';
+  try { return JSON.parse('"' + match[1] + '"'); } catch (_) { return match[1]; }
+}
+
+function lightMessagePreview(head, role) {
+  const marker = '"role"';
+  let index = String(head || '').indexOf('"' + role + '"');
+  if (index < 0) index = String(head || '').indexOf(role);
+  if (index < 0) return '';
+  const slice = String(head || '').slice(Math.max(0, index - 300), index + 2400);
+  return cleanPreview(lightJsonString(slice, 'content')).slice(0, 220);
+}
+
+function sessionFromFile(filePath) {
+  let stat = null;
+  try { stat = fs.statSync(filePath); } catch (_) { return null; }
+  const id = sessionFileId(filePath);
+  if (!isSessionId(id)) return null;
+  return {
+    id,
+    title: id,
+    preview: '',
+    source: 'cli',
+    cliSource: 'cli',
+    sourceRaw: 'cli',
+    createdAt: parseSessionTime(id),
+    updatedAt: stat.mtimeMs || parseSessionTime(id),
+    readOnly: true,
+  };
+}
+
+function listSessionFiles(limit = 500) {
+  const rows = [];
+  for (const dir of candidateSessionDirs()) {
+    try {
+      for (const name of fs.readdirSync(dir)) {
+        if (/^session_.*\.json$/i.test(name)) rows.push(path.join(dir, name));
+      }
+    } catch (_) {}
+  }
+  return rows
+    .map(filePath => ({ filePath, mtime: fs.statSync(filePath).mtimeMs }))
+    .sort((a, b) => b.mtime - a.mtime)
+    .slice(0, limit)
+    .map(row => row.filePath);
+}
+
+function sessionsFromFiles(limit = 500) {
+  const seen = new Set();
+  return listSessionFiles(limit).map(sessionFromFile).filter(Boolean).filter(session => {
+    if (seen.has(session.id)) return false;
+    seen.add(session.id);
+    return true;
+  });
+}
+
+function exportSessionFromFile(id) {
+  const filePath = listSessionFiles(5000).find(file => sessionFileId(file) === id || path.basename(file, '.json') === id);
+  if (!filePath) return null;
+  const data = readSessionFile(filePath);
+  if (!data) return null;
+  const messages = mergeToolMessages(data.messages || []);
+  const createdAt = data.session_start ? Date.parse(data.session_start) : parseSessionTime(id);
+  const updatedAt = data.last_updated ? Date.parse(data.last_updated) : fs.statSync(filePath).mtimeMs;
+  return sanitizeChat({
+    id: data.session_id || data.id || id,
+    title: data.title || messages.find(m => m.role === 'user')?.content || '未命名对话',
+    model: data.model || 'unknown',
+    source: 'cli',
+    cliSource: data.platform || data.source || 'cli',
+    createdAt: Number.isFinite(createdAt) ? createdAt : parseSessionTime(id),
+    updatedAt: Number.isFinite(updatedAt) ? updatedAt : Date.now(),
+    messages,
+    messageCount: messages.length,
+    tokenUsage: { input: data.input_tokens || 0, output: data.output_tokens || 0 },
+    readOnly: true,
+  });
 }
 
 function mergeToolMessages(rawMessages) {
@@ -247,27 +368,32 @@ function mergeToolMessages(rawMessages) {
 
 router.get('/sessions', (req, res) => {
   try {
-    const limit = String(Math.min(Number(req.query.limit) || 500, 5000));
-    let raw = '';
-    try {
-      raw = runHermes(['sessions', 'list', '--limit', limit, '--json']);
-    } catch (_) {
-      raw = runHermes(['sessions', 'list', '--limit', limit]);
-    }
-    let sessions = parseSessionJson(raw);
-    if (!sessions.length) sessions = parseSessionText(raw);
+    const limitNumber = Math.min(Number(req.query.limit) || 500, 5000);
     const hidden = hiddenSessions();
-    res.ok(sessions.filter(session => session && !hidden.has(session.id)));
+    const sessions = sessionsFromFiles(Math.max(limitNumber * 8, 500));
+    const seen = new Set();
+    const visible = sessions.filter(session => {
+      if (!session || hidden.has(session.id) || seen.has(session.id)) return false;
+      seen.add(session.id);
+      return true;
+    });
+    res.ok(visible.slice(0, limitNumber));
   } catch (e) {
     console.warn('[cli] sessions list failed:', e.message);
     res.ok([]);
   }
 });
-
 router.get('/sessions/:id', (req, res) => {
   try {
-    const raw = runHermes(['sessions', 'export', '-', '--session-id', req.params.id]);
-    const data = JSON.parse(raw);
+    let data = null;
+    try {
+      const raw = runHermes(['sessions', 'export', '-', '--session-id', req.params.id]);
+      data = JSON.parse(raw);
+    } catch (error) {
+      const fileChat = exportSessionFromFile(req.params.id);
+      if (fileChat) return res.ok(fileChat);
+      throw error;
+    }
     const messages = mergeToolMessages(data.messages || []);
     res.ok(sanitizeChat({
       id: data.id,
@@ -301,10 +427,15 @@ router.post('/sessions/:id/messages', async (req, res) => {
   });
   res.flushHeaders();
 
+  const traceId = requestTraceId(req);
+  const userMsgId = req.body?.userMsgId ? String(req.body.userMsgId) : '';
+  const assistantMsgId = req.body?.assistantMsgId ? String(req.body.assistantMsgId) : '';
   const cfg = modelConfigForScope('agent');
   cfg._scene = req.body?.scene || 'chat';
   if (req.body?.model && req.body.model !== 'auto') cfg._requestedModel = req.body.model;
   cfg._resumeSessionId = String(req.params.id || '').trim();
+  cfg._traceId = traceId;
+  cfg._runId = traceId;
   cfg.quickMode = false;
 
   let full = '';
@@ -327,16 +458,16 @@ router.post('/sessions/:id/messages', async (req, res) => {
           sseWrite(res, 'tool_complete', event);
           break;
         case 'title':
-          sseWrite(res, 'title', { title: event.title, session_id: req.params.id });
+          sseWrite(res, 'title', { title: event.title, session_id: req.params.id, traceId, userMsgId, assistantMsgId });
           break;
         case 'session':
-          sseWrite(res, 'perf', { stage: 'hermes-session', sessionId: event.sessionId || req.params.id });
+          sseWrite(res, 'perf', { stage: 'hermes-session', sessionId: event.sessionId || req.params.id, traceId, userMsgId, assistantMsgId });
           break;
         case 'perf':
-          sseWrite(res, 'perf', event);
+          sseWrite(res, 'perf', { traceId, userMsgId, assistantMsgId, ...event });
           break;
         case 'error':
-          sseWrite(res, 'error', { msg: redactSecrets(event.text || '请求失败') });
+          sseWrite(res, 'error', { msg: redactSecrets(event.text || 'request failed'), traceId, userMsgId, assistantMsgId });
           break;
         case 'done':
           break;
@@ -347,9 +478,13 @@ router.post('/sessions/:id/messages', async (req, res) => {
       usage: { input_tokens: 0, output_tokens: 0 },
       reasoning_chars: reasoningFull.length,
       output_chars: full.length,
+      traceId,
+      userMsgId,
+      assistantMsgId,
+      runId: cfg._runId || traceId,
     });
   } catch (e) {
-    sseWrite(res, 'error', { msg: redactSecrets(e.message || '请求失败') });
+    sseWrite(res, 'error', { msg: redactSecrets(e.message || 'request failed'), traceId, userMsgId, assistantMsgId });
   } finally {
     res.end();
   }
@@ -364,4 +499,3 @@ router.delete('/sessions/:id', (req, res) => {
 
 router._parseSessionLine = parseSessionLine;
 module.exports = router;
-

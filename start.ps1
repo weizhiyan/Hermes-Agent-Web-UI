@@ -1,53 +1,42 @@
-﻿$ErrorActionPreference = 'Stop'
+$ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
-$backend = Join-Path $root 'backend'
-$logDir = Join-Path $root 'logs'
+Set-Location $root
 $port = $env:WEBUI_PORT
 if (-not $port) { $port = $env:HERMES_WEBUI_PORT }
 if (-not $port) { $port = '3381' }
 $env:WEBUI_PORT = $port
 Remove-Item Env:PORT -ErrorAction SilentlyContinue
 
-$rootEnv = Join-Path $root '.env'
-$backendEnv = Join-Path $backend '.env'
+$singleInstanceScript = Join-Path $root 'backend\scripts\webui-single-instance.ps1'
+& powershell -NoProfile -ExecutionPolicy Bypass -File $singleInstanceScript -Root $root
 
-function Import-EnvFile([string]$path) {
-  if (-not (Test-Path $path)) { return }
-  Get-Content $path | ForEach-Object {
-    $line = $_.Trim()
-    if (-not $line -or $line.StartsWith('#')) { return }
-    if ($line -match '^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$') {
-      $name = $matches[1]
-      $value = $matches[2].Trim()
-      if (($value.StartsWith('"') -and $value.EndsWith('"')) -or ($value.StartsWith("'") -and $value.EndsWith("'"))) {
-        $value = $value.Substring(1, $value.Length - 2)
-      }
-      if (-not [string]::IsNullOrEmpty($value) -and -not $env:$name) {
-        Set-Item -Path "Env:$name" -Value $value
-      }
-    }
-  }
-}
-
-Import-EnvFile $rootEnv
-Import-EnvFile $backendEnv
+Write-Host ''
+Write-Host '========================================'
+Write-Host '  Hermes Agent WebUI'
+Write-Host '========================================'
+Write-Host ''
+Write-Host 'Closing this PowerShell window will stop the WebUI backend.'
+Write-Host "The browser will open automatically after startup: http://127.0.0.1:$port/"
+Write-Host ''
 
 if (-not (Get-Command node -ErrorAction SilentlyContinue)) {
   Write-Host '[ERROR] Node.js 18+ is required.' -ForegroundColor Red
+  Read-Host 'Press Enter to exit'
   exit 1
 }
 
-if (-not (Test-Path (Join-Path $backend 'node_modules'))) {
-  Push-Location $backend
-  npm install
+$backendModules = Join-Path $root 'backend\node_modules'
+if (-not (Test-Path $backendModules)) {
+  Push-Location (Join-Path $root 'backend')
+  npm install --loglevel=error
   Pop-Location
 }
 
-if (-not (Test-Path $logDir)) {
-  New-Item -ItemType Directory -Path $logDir | Out-Null
+try {
+  node backend\supervisor.js
+} finally {
+  & powershell -NoProfile -ExecutionPolicy Bypass -File $singleInstanceScript -Root $root -Cleanup | Out-Null
 }
-
-Start-Process -FilePath node -ArgumentList 'backend/supervisor.js' -WorkingDirectory $root -WindowStyle Hidden
-
-Write-Host "Hermes Agent is starting on http://127.0.0.1:$port/"
-
+Write-Host ''
+Write-Host '[Hermes] WebUI stopped.'
+Read-Host 'Press Enter to exit'

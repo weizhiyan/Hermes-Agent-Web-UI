@@ -1,24 +1,38 @@
-﻿const express = require('express');
+﻿﻿﻿﻿const express = require('express');
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const store = require('../services/store');
 const paths = require('../services/paths');
 const { chatStream } = require('../services/llm');
-const { readCoreMemoryPrompt, readAgentRulesPrompt } = require('../services/memory');
+const { readCoreMemoryPrompt, readAgentMemoryPrompt, readAgentRulesPrompt } = require('../services/memory');
 const { redactSecrets, sanitizeAny, sanitizeChat } = require('../services/security');
 const { discoverExternalSkills, samePath, normalizeFsPath } = require('../services/skillDiscovery');
 const { builtinSkills, isBuiltinLike } = require('../services/builtinSkills');
 const modalBus = require('./modal');
 const { captureKnowledge } = require('../services/knowledgeCapture');
-const { generateImageFromPrompt } = require('./images');
+const { generateImageFromPrompt, generateVideoFromPrompt } = require('./images');
+const bridge = require('../services/hermes-python-bridge');
 
 const router = express.Router();
 const KEY = 'chats';
+
+const WEBUI_HERMES_SESSION_KEY = 'webui-hermes-sessions';
+function markWebuiHermesSession(sessionId, chatId = '') {
+  try {
+    const id = String(sessionId || '').trim();
+    if (!id) return;
+    const list = store.read(WEBUI_HERMES_SESSION_KEY, []);
+    const rows = Array.isArray(list) ? list.filter(item => item && item.sessionId !== id) : [];
+    rows.unshift({ sessionId: id, chatId: String(chatId || ''), source: 'webui', updatedAt: Date.now() });
+    store.write(WEBUI_HERMES_SESSION_KEY, rows.slice(0, 1000));
+  } catch (_) {}
+}
 const DEFAULT_SKILL_PROMPT_LIMIT = Math.max(1000, Number(process.env.HERMES_SKILL_PROMPT_LIMIT || 6000));
 const DEFAULT_KNOWLEDGE_SEARCH_LIMIT = Math.max(0, Math.min(Number(process.env.HERMES_KNOWLEDGE_SEARCH_LIMIT || 3), 8));
 const CONTEXT_KEEP_MESSAGES = Math.max(8, Number(process.env.HERMES_CONTEXT_KEEP_MESSAGES || 24));
 const CONTEXT_SUMMARY_TRIGGER = Math.max(CONTEXT_KEEP_MESSAGES + 6, Number(process.env.HERMES_CONTEXT_SUMMARY_TRIGGER || 36));
+const ENV_AUTO_CAPTURE_CHAT_MD = /^(1|true|yes|on)$/i.test(String(process.env.HERMES_AUTO_CAPTURE_CHAT_MD || ''));
 const WEBUI_ASK_BRIDGE_PROMPT = [
   '【WebUI 反问弹窗协议】',
   '当你需要向用户确认信息、让用户在多个方案中选择、确认路径/范围/风险，或需要用户授权后才能继续时，不要直接输出普通问题。',
@@ -53,6 +67,14 @@ const WEBUI_SELF_PROTECTION_PROMPT = `【WebUI 对话执行规则】
 - 用户要求读取、写入、保存、修改、同步、上传、下载、调用 API、操作语雀/飞书/Notion/网页/文件/目录/命令时，必须走 Hermes Agent 工具能力；不要用纯文字假装已经执行。
 - 只有工具或后端明确返回成功时，才说“已保存/已写入/已同步”。
 - 当前没有对应工具时，直接说明限制，并给出可行替代方案。
+
+可用 WebUI 本地工具协议：
+- webui_image_generate({"prompt":"最终提示词","sourcePrompt":"用户原始需求","attachmentIds":["可选附件ID"]})：生成/编辑图片，WebUI 后端会执行并返回图片。
+- webui_markdown_create({"title":"文档标题","path":"可选相对路径.md","content":"完整 Markdown 内容"})：把输出文档保存到 MD 输出库并展示 Artifact。
+- webui_markdown_insert_image({"path":"target.md or absolute .md path","imageId":"image id or url","alt":"image alt","position":"top|append"}): copy a WebUI image beside the Markdown document and write a relative image reference. Use position="top" when the user says ???/??/??; use append only for bottom/end.
+  ??? WebUI ???????????????????????????????????/?????????????????????????????????
+- webui_markdown_write 与 webui_file_write 可作为 webui_markdown_create 的同义调用，但只允许写入 MD 输出库内的 .md 文件。
+- 调用工具时不要包在 Markdown 代码块中；如果运行时只把工具调用当文本输出，WebUI 会自动兜底执行。
 
 2. 图像任务：
 - 当用户要求生成图片、画图、出图、改图、优化图片，或基于参考图生成视觉效果时，必须优先调用 WebUI 图像生成工具 webui_image_generate。
@@ -102,6 +124,10 @@ function saveAll(list) { store.write(KEY, list); }
 function safeName(name) {
   return String(name || 'conversation').replace(/[<>:"/\\|?*\x00-\x1F]/g, '_').slice(0, 80);
 }
+function isInsidePath(root, target) {
+  const rel = path.relative(path.resolve(root), path.resolve(target));
+  return rel === '' || (!!rel && !rel.startsWith('..') && !path.isAbsolute(rel));
+}
 function toMarkdown(chat) {
   const lines = [
     `# ${redactSecrets(chat.title || '未命名对话')}`,
@@ -118,6 +144,94 @@ function toMarkdown(chat) {
   });
   return lines.join('\n');
 }
+
+function videoTaskIdFromMessage(msg = {}) {
+  const genTask = msg && msg.imageGeneration && msg.imageGeneration.taskId ? String(msg.imageGeneration.taskId).trim() : '';
+  if (genTask) return genTask;
+  const text = [msg && msg.content, msg && msg.toolCalls ? JSON.stringify(msg.toolCalls) : '', msg && msg.tool_calls ? JSON.stringify(msg.tool_calls) : ''].join('\n');
+  return (String(text || '').match(/task_[A-Za-z0-9]+/) || [])[0] || '';
+}
+
+async function hydrateVideoTasksForChat(chat, req = null) {
+  if (!chat || !Array.isArray(chat.messages)) return { chat, changed: false };
+  let changed = false;
+  let hydrateChecks = 0;
+  const maxHydrateChecks = 2;
+  const host = req ? (req.get('host') || '127.0.0.1:3381') : '127.0.0.1:3381';
+  const protocol = req && req.protocol ? req.protocol : 'http';
+  const publicBase = protocol + '://' + host;
+  for (const msg of chat.messages) {
+    if (!msg || msg.role !== 'assistant') continue;
+    const taskId = videoTaskIdFromMessage(msg);
+    if (!taskId) continue;
+    const fallbackPrompt = previousUserContentForMessage(chat.messages, msg);
+    const currentOutputs = Array.isArray(msg.imageGeneration && msg.imageGeneration.outputs) ? msg.imageGeneration.outputs : [];
+    if (currentOutputs.length) {
+      const gen = msg.imageGeneration || {};
+      if (fallbackPrompt && (!gen.prompt || !gen.sourcePrompt)) {
+        msg.imageGeneration = {
+          ...gen,
+          prompt: gen.prompt || fallbackPrompt,
+          sourcePrompt: gen.sourcePrompt || fallbackPrompt,
+          optimizedPrompt: gen.optimizedPrompt || gen.prompt || fallbackPrompt,
+          outputs: currentOutputs.map(item => ({ ...item, prompt: item.prompt || gen.prompt || fallbackPrompt, sourcePrompt: item.sourcePrompt || gen.sourcePrompt || fallbackPrompt })),
+        };
+        changed = true;
+      }
+      continue;
+    }
+    if (hydrateChecks >= maxHydrateChecks) continue;
+    hydrateChecks += 1;
+    try {
+      const url = publicBase + '/api/images/video/task/' + encodeURIComponent(taskId)
+        + '?publicBase=' + encodeURIComponent(publicBase)
+        + '&prompt=' + encodeURIComponent((msg.imageGeneration && msg.imageGeneration.prompt) || '')
+        + '&sourcePrompt=' + encodeURIComponent((msg.imageGeneration && msg.imageGeneration.sourcePrompt) || '');
+      const response = await fetch(url, { signal: AbortSignal.timeout(8000) });
+      const json = await response.json().catch(() => ({}));
+      const data = json && json.code === 0 ? json.data : null;
+      const outputs = Array.isArray(data && data.outputs) ? data.outputs : [];
+      if (outputs.length) {
+        msg.imageGeneration = {
+          ...(msg.imageGeneration || {}),
+          status: 'done',
+          mediaType: 'video',
+          model: (data.raw && data.raw.model) || (msg.imageGeneration && msg.imageGeneration.model) || '',
+          provider: (msg.imageGeneration && msg.imageGeneration.provider) || '',
+          outputs,
+          inputs: (msg.imageGeneration && msg.imageGeneration.inputs) || [],
+          prompt: (msg.imageGeneration && msg.imageGeneration.prompt) || outputs[0].prompt || '',
+          sourcePrompt: (msg.imageGeneration && msg.imageGeneration.sourcePrompt) || outputs[0].sourcePrompt || '',
+          optimizedPrompt: (msg.imageGeneration && msg.imageGeneration.optimizedPrompt) || (msg.imageGeneration && msg.imageGeneration.prompt) || '',
+          mode: 'text-to-video',
+          taskId,
+          taskStatus: 'completed',
+          loadingText: '',
+          directMode: false,
+        };
+        msg.content = outputs.map((item, index) => {
+          const videoUrl = item.publicUrl || item.url || '';
+          return videoUrl ? '[Generated video ' + (index + 1) + '](' + videoUrl + ')' : '';
+        }).filter(Boolean).join('\n\n') || msg.content;
+        msg._streaming = false;
+        changed = true;
+      } else if (data && data.status && (!msg.imageGeneration || msg.imageGeneration.status !== 'done')) {
+        msg.imageGeneration = {
+          ...(msg.imageGeneration || {}),
+          status: 'loading',
+          mediaType: 'video',
+          taskId,
+          taskStatus: data.status || 'queued',
+          outputs: [],
+          loadingText: '\u89c6\u9891\u751f\u6210\u4e2d\uff0c\u5df2\u63d0\u4ea4\u4efb\u52a1',
+          directMode: false,
+        };
+      }
+    } catch (_) {}
+  }
+  return { chat, changed };
+}
+
 function writeMarkdown(chat) {
   const date = new Date(chat.updatedAt || chat.createdAt || Date.now());
   const monthFolder = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
@@ -171,6 +285,76 @@ function isAgentTaskIntent(text = '') {
   if (/(语雀|yuque|飞书|notion)/i.test(value) && /(编辑|修改|更新|发布|同步|上传|下载|导入|导出|读取|创建|新建|保存)/i.test(value)) return true;
   return false;
 }
+
+function isDocumentOutputIntent(text = '') {
+  const value = String(text || '');
+  if (!value.trim()) return false;
+  const actionRe = /输出|生成|导出|写|写成|保存|存成|整理成|转成|create|generate|export|write|save/i;
+  const targetRe = /md|markdown|文档|文章|报告|方案|笔记|总结|教程|doc|document|report|note/i;
+  return actionRe.test(value) && targetRe.test(value);
+}
+
+function isVideoOutputIntent(text = '') {
+  const value = String(text || '').trim();
+  if (!value) return false;
+  return /(video generation|text-to-video|image-to-video|generate.{0,80}(video|clip|animation|motion)|create.{0,80}(video|clip|animation|motion)|make.{0,80}(video|clip|animation|motion)|(\u751f\u6210|\u505a|\u521b\u5efa|\u8f93\u51fa|\u5236\u4f5c).{0,32}(\u89c6\u9891|\u77ed\u7247|\u52a8\u753b|\u52a8\u6548|\u52a8\u6001\u753b\u9762)|\u6587\u751f\u89c6\u9891|\u56fe\u751f\u89c6\u9891)/i.test(value);
+}
+
+function videoSecondsFromText(text = '') {
+  const value = String(text || '');
+  const en = value.match(/(\d{1,2})\s*(?:s|sec|secs|second|seconds)\b/i);
+  const zh = value.match(/(\d{1,2})\s*\u79d2/);
+  const matchedSeconds = Number((en && en[1]) || (zh && zh[1]) || 0);
+  return matchedSeconds > 0 ? Math.max(1, Math.min(matchedSeconds, 20)) : 0;
+}
+
+function videoFallbackCallFromText(text = '') {
+  const value = String(text || '').trim();
+  if (!value || !isVideoOutputIntent(value)) return null;
+  return { prompt: value, sourcePrompt: value, model: 'auto', size: '1024x1024', seconds: videoSecondsFromText(value) || 5, raw: value };
+}
+
+function isImageOutputIntent(text = '') {
+  const value = String(text || '').trim();
+  if (!value) return false;
+  const keywords = ['\u56fe\u50cf\u751f\u6210','\u751f\u6210\u56fe\u50cf','\u751f\u6210\u56fe\u7247','\u56fe\u7247\u751f\u6210','\u753b\u4e00\u5f20','\u753b\u5f20','\u753b\u56fe','\u51fa\u56fe','\u751f\u56fe','\u7ed8\u56fe','\u505a\u4e00\u5f20','\u505a\u5f20','\u6765\u4e00\u5f20','\u6d77\u62a5','\u5934\u50cf','\u58c1\u7eb8','\u63d2\u753b','\u6539\u56fe','\u4fee\u56fe','\u91cd\u753b','\u91cd\u7ed8','\u91cd\u65b0\u751f\u6210','\u91cd\u65b0\u753b','\u91cd\u65b0\u51fa','\u6362\u4e00\u5f20','\u6362\u5f20','\u6362\u98ce\u683c','\u518d\u6765\u4e00\u5f20','\u518d\u751f\u6210','\u518d\u753b','\u4f18\u5316\u56fe','\u8c03\u6574\u56fe'];
+  if (keywords.some(keyword => value.includes(keyword))) return true;
+  if (/\u4e0d\u884c.{0,12}\u91cd|\u4e0d\u597d\u770b.{0,12}\u91cd|\u53c2\u8003.{0,20}\u56fe|\u57fa\u4e8e.{0,20}\u56fe/i.test(value)) return true;
+  return /(generate|draw|create|edit|modify|optimize|change|replace|redraw|regenerate|rerender|remix|make).{0,80}(image|picture|photo|poster|avatar|wallpaper|illustration|visual|style)|regenerate|redraw|rerender|remix/i.test(value);
+}
+
+function imageFallbackCallFromText(text = '', chat = null) {
+  const value = String(text || '').trim();
+  if (!value || !isImageOutputIntent(value)) return null;
+  const messages = Array.isArray(chat?.messages) ? chat.messages : [];
+  const lastImage = [...messages].reverse().find(msg => msg && msg.role === 'assistant' && msg.imageGeneration && Array.isArray(msg.imageGeneration.outputs) && msg.imageGeneration.outputs.length);
+  const gen = lastImage?.imageGeneration || {};
+  const previousPrompt = gen.prompt || gen.optimizedPrompt || gen.sourcePrompt || gen.outputs?.[0]?.prompt || '';
+  const followupKeywords = ['\u91cd\u753b','\u91cd\u7ed8','\u91cd\u65b0\u751f\u6210','\u91cd\u65b0\u753b','\u91cd\u65b0\u51fa','\u6362\u4e00\u5f20','\u6362\u5f20','\u6362\u98ce\u683c','\u518d\u6765\u4e00\u5f20','\u518d\u751f\u6210','\u518d\u753b','\u4e0d\u884c','\u4e0d\u597d\u770b','\u8c03\u6574','\u4f18\u5316'];
+  const isFollowup = followupKeywords.some(keyword => value.includes(keyword)) || /redraw|regenerate|rerender|remix/i.test(value);
+  const prompt = isFollowup && previousPrompt
+    ? `Regenerate the previous WebUI image. Previous prompt: ${previousPrompt}\nCurrent user change request: ${value}`
+    : value;
+  return { prompt, sourcePrompt: value, model: 'auto', size: '1024x1024', raw: value };
+}
+
+function hasFakeMarkdownImageOutput(text = '') {
+  const value = String(text || '');
+  if (!value) return false;
+  const imageMd = /!\[[^\]]*\]\(([^)]+)\)/i;
+  if (!imageMd.test(value)) return false;
+  return !/webui_image_generate_result|\/api\/images\/file\/|\/uploads\/|https?:\/\//i.test(value);
+}
+
+function pendingAttachmentIdsFromReq(req) {
+  const body = req && req.body ? req.body : {};
+  const ids = [];
+  if (Array.isArray(body.pendingAttachmentIds)) ids.push(...body.pendingAttachmentIds);
+  if (Array.isArray(body.attachmentIds)) ids.push(...body.attachmentIds);
+  if (Array.isArray(body.attachments)) ids.push(...body.attachments.map(item => item && (item.id || item.attachmentId)).filter(Boolean));
+  return [...new Set(ids.map(id => String(id || '').trim()).filter(Boolean))];
+}
+
 function skillMatchInfo(skill = {}, text = '') {
   const triggerText = Array.isArray(skill.triggers) ? skill.triggers.join(' ') : String(skill.triggers || '');
   const haystack = String((skill.name || '') + ' ' + (skill.description || skill.desc || '') + ' ' + triggerText + ' ' + (skill.prompt || '')).toLowerCase();
@@ -229,6 +413,7 @@ function normalizeAgentSnapshot(body = {}) {
     name: agentName,
     role: String(body.agentRole || body.role || '').slice(0, 240),
     modelId: String(body.modelId || body.model || 'auto'),
+    routingMode: String(body.routingMode || 'auto').toLowerCase(),
     systemPrompt: String(body.profilePrompt || body.systemPrompt || '').slice(0, 6000),
     skillIds,
     knowledgeFocus: Array.isArray(body.knowledgeFocus) ? body.knowledgeFocus.map(String).slice(0, 12) : [],
@@ -240,7 +425,22 @@ function normalizeAgentSnapshot(body = {}) {
   };
 }
 
+function effectiveRoutingModeFromRequest(body = {}, agentSnapshot = {}, settings = {}) {
+  const requested = String(body.routingMode || '').toLowerCase();
+  const globalMode = String(settings.routingMode || 'auto').toLowerCase();
+  if (globalMode && globalMode !== 'auto') return globalMode;
+  if (requested) return requested;
+  return String(agentSnapshot.routingMode || globalMode || 'auto').toLowerCase();
+}
+
+function shouldAutoCaptureChatMarkdown() {
+  const settings = store.read('settings', {}) || {};
+  if (settings.autoCaptureChatMd !== undefined) return settings.autoCaptureChatMd === true || String(settings.autoCaptureChatMd).toLowerCase() === 'true';
+  return ENV_AUTO_CAPTURE_CHAT_MD;
+}
+
 function autoCaptureKnowledge(chat, userMsg, assistantContent) {
+  if (!shouldAutoCaptureChatMarkdown()) return;
   const question = String(userMsg && userMsg.content || '').trim();
   const answer = String(assistantContent || '').trim();
   if (!question || !answer || /^error[:?]/i.test(answer)) return;
@@ -460,12 +660,19 @@ router.get('/exports/folder', (req, res) => {
   res.ok({ path: historyDir });
 });
 
-router.get('/:id', (req, res) => {
-  const chat = loadAll().find(c => c.id === req.params.id);
+router.get('/:id', async (req, res) => {
+  const list = loadAll();
+  const chat = list.find(c => c.id === req.params.id);
   if (!chat) return res.fail('chat not found', 404, 404);
+  if (String(req.query.hydrateVideo || '') === '1') {
+    const hydrated = await hydrateVideoTasksForChat(chat, req);
+    if (hydrated.changed) {
+      chat.updatedAt = Date.now();
+      saveAll(list);
+    }
+  }
   res.ok(sanitizeChat(chat));
 });
-
 router.get('/:id/markdown', (req, res) => {
   const chat = loadAll().find(c => c.id === req.params.id);
   if (!chat) return res.fail('chat not found', 404, 404);
@@ -661,31 +868,457 @@ function webuiImageToolResultPayload(data = {}) {
   };
 }
 
+
+function parseWebuiVideoTextToolCall(text = '') {
+  const raw = String(text || '').trim();
+  const parseArgs = (args, sourceText) => {
+    const prompt = String(args?.prompt || '').trim();
+    if (!prompt) return null;
+    return {
+      prompt,
+      sourcePrompt: String(args.sourcePrompt || args.source_prompt || args.originalPrompt || prompt).trim(),
+      model: String(args.model || 'auto'),
+      size: String(args.size || '1024x1024'),
+      seconds: Number(args.seconds || args.duration || 5) || 5,
+      attachmentIds: Array.isArray(args.attachmentIds) ? args.attachmentIds.map(String).filter(Boolean) : [],
+      raw: sourceText,
+    };
+  };
+
+  const fnMatch = raw.match(/webui_video_generate\s*\(\s*({[\s\S]*?})\s*\)/m);
+  if (fnMatch) {
+    try {
+      const parsed = parseArgs(JSON.parse(fnMatch[1]), fnMatch[0]);
+      if (parsed) return parsed;
+    } catch (_) {}
+  }
+
+  const jsonCandidates = [];
+  const fenced = raw.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  if (fenced) jsonCandidates.push(fenced[1].trim());
+  if (raw.startsWith('{') && raw.endsWith('}')) jsonCandidates.push(raw);
+  const jsonMatch = raw.match(/({[\s\S]*"prompt"[\s\S]*})/m);
+  if (jsonMatch && /webui_video_generate|video|\u89c6\u9891|\u77ed\u7247|\u52a8\u753b|\u52a8\u6548/.test(raw)) jsonCandidates.push(jsonMatch[1]);
+
+  for (const candidate of jsonCandidates) {
+    try {
+      const parsed = parseArgs(JSON.parse(candidate), candidate);
+      if (parsed) return parsed;
+    } catch (_) {}
+  }
+  return null;
+}
+
+function parseVideoPendingTextResult(value = '') {
+  const raw = String(value || '');
+  const taskId = (raw.match(/task_[A-Za-z0-9]+/) || [])[0] || '';
+  if (!taskId) return null;
+  if (!/(queued|pending|video task submitted|\u6392\u961f|\u89c6\u9891\u4efb\u52a1\u5df2\u63d0\u4ea4|\u751f\u6210\u5b8c\u6210\u540e|\u751f\u6210\u4e2d)/i.test(raw)) return null;
+  const model = (raw.match(/(?:\u6a21\u578b|model)[:?]\s*([^\n]+)/i) || [])[1] || 'auto';
+  return { success: true, type: 'webui_video_generate_result', taskId, status: 'pending', taskStatus: 'queued', outputs: [], model: String(model).trim(), content: raw };
+}
+function webuiVideoToolResultPayload(data = {}) {
+  const outputs = Array.isArray(data.outputs) ? data.outputs : [];
+  const markdown = outputs.map((item, index) => {
+    const url = item.publicUrl || item.url || '';
+    return url ? '[Generated video ' + (index + 1) + '](' + url + ')' : '';
+  }).filter(Boolean).join('\n\n');
+  return {
+    success: true,
+    type: 'webui_video_generate_result',
+    markdown,
+    videoUrl: outputs[0]?.publicUrl || outputs[0]?.url || '',
+    taskId: data.taskId || '',
+    status: data.status || '',
+    taskStatus: data.taskStatus || data.status || '',
+    outputs,
+    inputs: Array.isArray(data.inputs) ? data.inputs : [],
+    prompt: data.prompt || '',
+    sourcePrompt: data.sourcePrompt || '',
+    mode: data.mode || 'text-to-video',
+    model: data.model || 'auto',
+    provider: data.provider || '',
+    content: data.content || markdown,
+  };
+}
+
+function imageRecordsForMarkdownTool() {
+  try {
+    const imageRoot = paths.imageRoot();
+    const indexPath = path.join(imageRoot, 'images-index.json');
+    const fromIndex = fs.existsSync(indexPath) ? JSON.parse(fs.readFileSync(indexPath, 'utf8')) : [];
+    const fromStore = store.read('images', []);
+    return [...(Array.isArray(fromIndex) ? fromIndex : []), ...(Array.isArray(fromStore) ? fromStore : [])]
+      .filter(Boolean);
+  } catch (_) {
+    return [];
+  }
+}
+
+function resolveWebuiImageForMarkdown(imageId = '') {
+  const value = String(imageId || '').trim();
+  if (!value) return null;
+  const decoded = (() => { try { return decodeURIComponent(value); } catch { return value; } })();
+  const records = imageRecordsForMarkdownTool();
+  const found = records.find(item => {
+    const ids = [item.id, item.filename, item.originalName, item.url, item.publicUrl, item.path, item.relativePath]
+      .map(v => String(v || '').trim())
+      .filter(Boolean);
+    return ids.some(id => id === decoded || id === value || decoded.includes(id) || value.includes(id));
+  });
+  if (!found) return null;
+  const candidates = [
+    found.path,
+    found.relativePath ? path.join(paths.imageRoot(), found.relativePath) : '',
+    found.kind === 'input' && found.filename ? path.join(paths.imageInputDir(), found.filename) : '',
+    found.kind === 'output' && found.filename ? path.join(paths.imageOutputDir(), found.filename) : '',
+  ].filter(Boolean);
+  const fullPath = candidates.find(item => fs.existsSync(item));
+  return fullPath ? { ...found, fullPath } : null;
+}
+
+function resolveMarkdownLibraryPath(inputPath = '', { mustExist = false } = {}) {
+  const mdRoot = path.resolve(paths.mdLibraryRoot());
+  const raw = String(inputPath || '').trim();
+  if (!raw) throw new Error('markdown path is required');
+  const normalizedRaw = raw.replace(/\\/g, '/');
+  let fullPath = path.isAbsolute(raw) ? path.resolve(raw) : path.resolve(mdRoot, normalizedRaw.replace(/^\/+/, ''));
+  const markers = ['/output-md/', 'output-md/'];
+  const lowerRaw = normalizedRaw.toLowerCase();
+  const remapFromOutputMdMarker = () => {
+    for (const marker of markers) {
+      const idx = lowerRaw.lastIndexOf(marker);
+      if (idx >= 0) {
+        const rel = normalizedRaw.slice(idx + marker.length);
+        fullPath = path.resolve(mdRoot, rel.replace(/^\/+/, ''));
+        return true;
+      }
+    }
+    return false;
+  };
+  if (!isInsidePath(mdRoot, fullPath)) remapFromOutputMdMarker();
+  else if (!fs.existsSync(fullPath) && lowerRaw.includes('output-md/')) remapFromOutputMdMarker();
+  if (!isInsidePath(mdRoot, fullPath)) throw new Error('invalid markdown path: ' + raw);
+  if (!/\.md$/i.test(fullPath)) fullPath += '.md';
+  if (!isInsidePath(mdRoot, fullPath)) throw new Error('invalid markdown path: ' + raw);
+  if (mustExist && !fs.existsSync(fullPath)) throw new Error('target markdown not found: ' + raw);
+  const relPath = path.relative(mdRoot, fullPath).replace(/\\/g, '/');
+  return { mdRoot, fullPath, relPath };
+}
+
+function insertMarkdownImageLine(content = '', markdownLine = '', position = 'append') {
+  const value = String(content || '');
+  const line = String(markdownLine || '').trim();
+  const mode = String(position || 'append').toLowerCase();
+  if (mode === 'top' || mode === 'start' || mode === 'prepend' || mode === 'before') {
+    return line + '\n\n' + value.replace(/^\uFEFF/, '');
+  }
+  return value.trimEnd() + '\n\n' + line + '\n';
+}
+
+function parseWebuiMarkdownInsertImageToolCall(text = '') {
+  const raw = String(text || '').trim();
+  const normalize = (args, sourceText) => {
+    const pathValue = String(args?.path || args?.documentPath || args?.targetPath || '').trim();
+    const imageId = String(args?.imageId || args?.imageID || args?.imageUrl || args?.url || args?.src || '').trim();
+    if (!pathValue || !imageId) return null;
+    const normalizedPath = pathValue.replace(/\\/g, '/');
+    const isWinAbsolute = /^[A-Za-z]:\//.test(normalizedPath);
+    const isAbsolute = isWinAbsolute || path.isAbsolute(pathValue);
+    let targetPath;
+    if (isAbsolute || normalizedPath.toLowerCase().includes('/output-md/')) {
+      targetPath = pathValue;
+    } else {
+      targetPath = normalizedPath.replace(/^\/+/, '');
+      if (!/\.md$/i.test(targetPath)) targetPath += '.md';
+      targetPath = targetPath.split('/').map(part => safeName(part) || 'document').join('/');
+    }
+    return {
+      path: targetPath,
+      imageId,
+      alt: String(args?.alt || args?.caption || args?.title || 'image').trim() || 'image',
+      position: String(args?.position || 'append').trim().toLowerCase(),
+      raw: sourceText || raw,
+    };
+  };
+  const fnMatch = raw.match(/webui_markdown_insert_image\s*\(\s*({[\s\S]*?})\s*\)/m);
+  if (fnMatch) {
+    try { const parsed = normalize(JSON.parse(fnMatch[1]), fnMatch[0]); if (parsed) return parsed; } catch (_) {}
+  }
+  const jsonMatch = raw.match(/({[\s\S]*"(?:imageId|imageUrl|documentPath|targetPath)"[\s\S]*})/m);
+  if (jsonMatch) {
+    try {
+      const data = JSON.parse(jsonMatch[1]);
+      const type = String(data?.type || data?.tool || data?.name || '').toLowerCase();
+      if (type.includes('webui_markdown_insert_image')) return normalize(data, jsonMatch[1]);
+    } catch (_) {}
+  }
+  return null;
+}
+
+async function runWebuiMarkdownInsertImageFallback({ call, res, toolCalls }) {
+  const startedAt = Date.now();
+  const toolName = 'webui_markdown_insert_image';
+  toolCalls.push({ type:'tool', event_type:'tool.started', name: toolName, args: call, preview: call.raw || '', done:false, startedAt });
+  sseWrite(res, 'tool', { event_type:'tool.started', name: toolName, preview: redactSecrets(call.raw || ''), args: sanitizeAny(call) });
+  try {
+    const { fullPath, relPath } = resolveMarkdownLibraryPath(call.path, { mustExist: true });
+    const image = resolveWebuiImageForMarkdown(call.imageId);
+    if (!image) throw new Error('image not found: ' + call.imageId);
+    const imageDir = path.join(path.dirname(fullPath), 'images');
+    fs.mkdirSync(imageDir, { recursive: true });
+    const ext = path.extname(image.fullPath) || '.png';
+    const base = safeName(path.basename(image.filename || image.originalName || image.id || 'image', ext)) || 'image';
+    const destName = base + '_' + Date.now().toString(36) + ext;
+    const destPath = path.join(imageDir, destName);
+    fs.copyFileSync(image.fullPath, destPath);
+    const relImage = path.relative(path.dirname(fullPath), destPath).replace(/\\/g, '/');
+    const markdownLine = `![${call.alt.replace(/[\]\n\r]/g, ' ')}](${relImage})`;
+    const current = fs.readFileSync(fullPath, 'utf8');
+    const next = insertMarkdownImageLine(current, markdownLine, call.position);
+    fs.writeFileSync(fullPath, next, 'utf8');
+    const payload = { success:true, type:'webui_markdown_insert_image_result', path: relPath, imagePath: relImage, fullImagePath: destPath, fullPath, markdown: markdownLine, position: call.position || 'append' };
+    const preview = JSON.stringify(payload);
+    for (let i = toolCalls.length - 1; i >= 0; i--) {
+      if (!toolCalls[i].done && toolCalls[i].name === toolName) { toolCalls[i].done = true; toolCalls[i].is_error = false; toolCalls[i].duration = Date.now() - startedAt; toolCalls[i].preview = preview; break; }
+    }
+    sseWrite(res, 'tool_complete', { event_type:'tool.completed', name: toolName, preview: redactSecrets(preview), is_error:false, duration: Date.now() - startedAt });
+    return { ok:true, content:`Inserted image into ${payload.path}\n\n${markdownLine}`, payload };
+  } catch (error) {
+    const preview = error.message || 'markdown insert image failed';
+    for (let i = toolCalls.length - 1; i >= 0; i--) {
+      if (!toolCalls[i].done && toolCalls[i].name === toolName) { toolCalls[i].done = true; toolCalls[i].is_error = true; toolCalls[i].duration = Date.now() - startedAt; toolCalls[i].preview = preview; break; }
+    }
+    sseWrite(res, 'tool_complete', { event_type:'tool.completed', name: toolName, preview: redactSecrets(preview), is_error:true, duration: Date.now() - startedAt });
+    return { ok:false, error: preview };
+  }
+}
+
+function parseWebuiMarkdownTextToolCall(text = '') {
+  const raw = String(text || '').trim();
+  const normalize = (args, sourceText) => {
+    const content = String(args?.content || args?.markdown || args?.body || '').trim();
+    if (!content) return null;
+    const title = String(args?.title || args?.name || '\u8f93\u51fa\u6587\u6863').trim().slice(0, 80) || '\u8f93\u51fa\u6587\u6863';
+    let relPath = String(args?.path || args?.relativePath || '').trim();
+    if (!relPath) relPath = safeName(title) + '.md';
+    relPath = relPath.replace(/\\/g, '/').replace(/^\/+/, '');
+    if (!/\.md$/i.test(relPath)) relPath += '.md';
+    relPath = relPath.split('/').map(part => safeName(part) || 'document').join('/');
+    return { title, path: relPath, content, raw: sourceText || raw };
+  };
+
+  const fnMatch = raw.match(/webui_(?:markdown_create|markdown_write|file_write)\s*\(\s*({[\s\S]*?})\s*\)/m);
+  if (fnMatch) {
+    try {
+      const parsed = normalize(JSON.parse(fnMatch[1]), fnMatch[0]);
+      if (parsed) return parsed;
+    } catch (_) {}
+  }
+  const fenced = raw.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  const candidates = [];
+  if (fenced) candidates.push(fenced[1].trim());
+  if (raw.startsWith('{') && raw.endsWith('}')) candidates.push(raw);
+  const jsonMatch = raw.match(/({[\s\S]*"(?:content|markdown|body)"[\s\S]*})/m);
+  if (jsonMatch) candidates.push(jsonMatch[1]);
+  for (const candidate of candidates) {
+    try {
+      const data = JSON.parse(candidate);
+      const type = String(data?.type || data?.tool || data?.name || '').toLowerCase();
+      if (!type || (!type.includes('webui_markdown') && !type.includes('webui_file_write'))) continue;
+      const parsed = normalize(data, candidate);
+      if (parsed) return parsed;
+    } catch (_) {}
+  }
+  return null;
+}
+
+
+function readableTextFileRoots() {
+  return [
+    paths.dataRoot(),
+    paths.memoryRoot(),
+    paths.mdLibraryRoot(),
+  ].map(item => path.resolve(item)).filter(Boolean);
+}
+
+function resolveReadableWebuiFilePath(inputPath = '') {
+  const raw = String(inputPath || '').trim();
+  if (!raw) throw new Error('file path is required');
+  let fullPath;
+  if (/\.md$/i.test(raw) || raw.replace(/\\/g, '/').toLowerCase().includes('output-md/')) {
+    try { fullPath = resolveMarkdownLibraryPath(raw, { mustExist: true }).fullPath; } catch (_) {}
+  }
+  if (!fullPath) {
+    const normalizedRaw = raw.replace(/\\/g, '/');
+    fullPath = path.isAbsolute(raw) ? path.resolve(raw) : path.resolve(paths.mdLibraryRoot(), normalizedRaw.replace(/^\/+/, ''));
+    if (!fs.existsSync(fullPath) && normalizedRaw.toLowerCase().includes('output-md/')) {
+      const idx = normalizedRaw.toLowerCase().lastIndexOf('output-md/');
+      if (idx >= 0) fullPath = path.resolve(paths.mdLibraryRoot(), normalizedRaw.slice(idx + 'output-md/'.length).replace(/^\/+/, ''));
+    }
+  }
+  const roots = readableTextFileRoots();
+  if (!roots.some(root => isInsidePath(root, fullPath))) throw new Error('file path not allowed: ' + raw);
+  if (!fs.existsSync(fullPath)) throw new Error('file not found: ' + raw);
+  const stat = fs.statSync(fullPath);
+  if (!stat.isFile()) throw new Error('not a file: ' + raw);
+  if (stat.size > 1024 * 1024) throw new Error('file too large (max 1MB): ' + raw);
+  const ext = path.extname(fullPath).toLowerCase();
+  if (!['.md','.txt','.json','.yaml','.yml','.log'].includes(ext)) throw new Error('unsupported file type: ' + ext);
+  return { fullPath, size: stat.size, mtime: stat.mtimeMs };
+}
+
+function parseWebuiFileReadToolCall(text = '') {
+  const raw = String(text || '').trim();
+  const normalize = (args, sourceText) => {
+    const pathValue = String(args?.path || args?.file || args?.filePath || args?.targetPath || '').trim();
+    if (!pathValue) return null;
+    return { path: pathValue, raw: sourceText || raw };
+  };
+  const fnMatch = raw.match(/webui_file_read\s*\(\s*({[\s\S]*?})\s*\)/m);
+  if (fnMatch) {
+    try { const parsed = normalize(JSON.parse(fnMatch[1]), fnMatch[0]); if (parsed) return parsed; } catch (_) {}
+  }
+  const codeMatch = raw.match(/<tool_code>\s*([\s\S]*?)\s*<\/tool_code>/i);
+  if (codeMatch) {
+    const parsed = parseWebuiFileReadToolCall(codeMatch[1]);
+    if (parsed) return parsed;
+  }
+  const jsonMatch = raw.match(/({[\s\S]*"(?:path|filePath|targetPath)"[\s\S]*})/m);
+  if (jsonMatch) {
+    try {
+      const data = JSON.parse(jsonMatch[1]);
+      const type = String(data?.type || data?.tool || data?.name || '').toLowerCase();
+      if (type.includes('webui_file_read')) return normalize(data, jsonMatch[1]);
+    } catch (_) {}
+  }
+  return null;
+}
+
+async function runWebuiFileReadFallback({ call, res, toolCalls }) {
+  const startedAt = Date.now();
+  const toolName = 'webui_file_read';
+  toolCalls.push({ type:'tool', event_type:'tool.started', name: toolName, args: call, preview: call.raw || '', done:false, startedAt });
+  sseWrite(res, 'tool', { event_type:'tool.started', name: toolName, preview: redactSecrets(call.raw || ''), args: sanitizeAny(call) });
+  try {
+    const { fullPath, size, mtime } = resolveReadableWebuiFilePath(call.path);
+    const content = fs.readFileSync(fullPath, 'utf8');
+    const payload = { success:true, type:'webui_file_read_result', path: fullPath, size, mtime, content };
+    const preview = JSON.stringify({ ...payload, content: content.slice(0, 2000) });
+    for (let i = toolCalls.length - 1; i >= 0; i--) {
+      if (!toolCalls[i].done && toolCalls[i].name === toolName) { toolCalls[i].done = true; toolCalls[i].is_error = false; toolCalls[i].duration = Date.now() - startedAt; toolCalls[i].preview = preview; break; }
+    }
+    sseWrite(res, 'tool_complete', { event_type:'tool.completed', name: toolName, preview: redactSecrets(preview), is_error:false, duration: Date.now() - startedAt });
+    return { ok:true, content, payload };
+  } catch (error) {
+    const preview = error.message || 'file read failed';
+    for (let i = toolCalls.length - 1; i >= 0; i--) {
+      if (!toolCalls[i].done && toolCalls[i].name === toolName) { toolCalls[i].done = true; toolCalls[i].is_error = true; toolCalls[i].duration = Date.now() - startedAt; toolCalls[i].preview = preview; break; }
+    }
+    sseWrite(res, 'tool_complete', { event_type:'tool.completed', name: toolName, preview: redactSecrets(preview), is_error:true, duration: Date.now() - startedAt });
+    return { ok:false, error: preview };
+  }
+}
+
+async function runWebuiMarkdownTextToolFallback({ call, res, toolCalls }) {
+  const startedAt = Date.now();
+  const toolEvent = { type: 'tool', event_type: 'tool.started', name: 'webui_markdown_create', args: call, preview: call.raw || '' };
+  if (!call.__skipToolStart) {
+    toolCalls.push({ ...sanitizeAny(toolEvent), done: false, startedAt });
+    sseWrite(res, 'tool', {
+      event_type: toolEvent.event_type,
+      name: toolEvent.name,
+      preview: redactSecrets(toolEvent.preview),
+      args: sanitizeAny(toolEvent.args),
+    });
+  }
+  try {
+    const { fullPath, relPath } = resolveMarkdownLibraryPath(call.path);
+    fs.mkdirSync(path.dirname(fullPath), { recursive: true });
+    fs.writeFileSync(fullPath, call.content, 'utf8');
+    const stats = fs.statSync(fullPath);
+    const payload = {
+      success: true,
+      type: 'webui_markdown_create_result',
+      title: call.title,
+      path: relPath,
+      fullPath,
+      size: stats.size,
+      mtime: stats.mtimeMs,
+      artifact: `<artifact type="markdown" title="${call.title.replace(/"/g, '&quot;')}">\n${call.content}\n</artifact>`,
+    };
+    const preview = JSON.stringify(payload);
+    for (let i = toolCalls.length - 1; i >= 0; i--) {
+      if (!toolCalls[i].done && (toolCalls[i].name === 'webui_markdown_create' || toolCalls[i].name === 'webui_markdown_write' || toolCalls[i].name === 'webui_file_write')) {
+        toolCalls[i].done = true;
+        toolCalls[i].is_error = false;
+        toolCalls[i].duration = Date.now() - startedAt;
+        toolCalls[i].preview = preview;
+        break;
+      }
+    }
+    sseWrite(res, 'tool_complete', {
+      event_type: 'tool.completed',
+      name: 'webui_markdown_create',
+      preview: redactSecrets(preview),
+      is_error: false,
+      duration: Date.now() - startedAt,
+    });
+    return { ok: true, content: payload.artifact, payload };
+  } catch (error) {
+    const preview = error.message || 'markdown create failed';
+    for (let i = toolCalls.length - 1; i >= 0; i--) {
+      if (!toolCalls[i].done && (toolCalls[i].name === 'webui_markdown_create' || toolCalls[i].name === 'webui_markdown_write' || toolCalls[i].name === 'webui_file_write')) {
+        toolCalls[i].done = true;
+        toolCalls[i].is_error = true;
+        toolCalls[i].duration = Date.now() - startedAt;
+        toolCalls[i].preview = preview;
+        break;
+      }
+    }
+    sseWrite(res, 'tool_complete', {
+      event_type: 'tool.completed',
+      name: 'webui_markdown_create',
+      preview: redactSecrets(preview),
+      is_error: true,
+      duration: Date.now() - startedAt,
+    });
+    return { ok: false, error: preview };
+  }
+}
+
 async function runWebuiImageTextToolFallback({ call, chatId, userMsgId, assistantMsgId, req, res, toolCalls }) {
   const startedAt = Date.now();
   const toolEvent = { type: 'tool', event_type: 'tool.started', name: 'webui_image_generate', args: call, preview: call.raw || '' };
-  toolCalls.push({ ...sanitizeAny(toolEvent), done: false });
-  sseWrite(res, 'tool', {
-    event_type: toolEvent.event_type,
-    name: toolEvent.name,
-    preview: redactSecrets(toolEvent.preview),
-    args: sanitizeAny(toolEvent.args),
-  });
+  if (!call.__skipToolStart) {
+    toolCalls.push({ ...sanitizeAny(toolEvent), done: false, startedAt });
+    sseWrite(res, 'tool', {
+      event_type: toolEvent.event_type,
+      name: toolEvent.name,
+      preview: redactSecrets(toolEvent.preview),
+      args: sanitizeAny(toolEvent.args),
+    });
+  }
   sseWrite(res, 'perf', { stage: 'webui-image-text-tool-fallback-start' });
   const progressTimer = setInterval(() => {
     try {
+      const elapsedMs = Date.now() - startedAt;
       sseWrite(res, 'perf', {
         stage: 'webui-image-text-tool-fallback-running',
-        elapsedMs: Date.now() - startedAt,
+        elapsedMs,
+      });
+      sseWrite(res, 'tool_running', {
+        event_type: 'tool.running',
+        name: 'webui_image_generate',
+        preview: call.raw || call.prompt || '',
+        elapsedMs,
       });
     } catch (_) {}
-  }, 15000);
+  }, 10000);
   try {
-    const requestAttachmentIds = Array.isArray(req?.body?.attachments)
-      ? req.body.attachments.map(item => item && item.id).filter(Boolean)
-      : [];
+    const requestAttachmentIds = pendingAttachmentIdsFromReq(req);
     const attachmentIds = Array.isArray(call.attachmentIds) && call.attachmentIds.length
-      ? call.attachmentIds
+      ? call.attachmentIds.map(String).filter(Boolean)
       : requestAttachmentIds;
     const data = await generateImageFromPrompt({
       prompt: call.prompt,
@@ -719,7 +1352,7 @@ async function runWebuiImageTextToolFallback({ call, chatId, userMsgId, assistan
       duration: Date.now() - startedAt,
     });
     sseWrite(res, 'perf', { stage: 'webui-image-text-tool-fallback-done', outputs: payload.outputs.length });
-    return { ok: true, content: data.content || payload.markdown || '??????', payload };
+    return { ok: true, content: data.content || payload.markdown || '视频已生成', payload };
   } catch (error) {
     clearInterval(progressTimer);
     const preview = error.message || 'image generation failed';
@@ -744,8 +1377,131 @@ async function runWebuiImageTextToolFallback({ call, chatId, userMsgId, assistan
   }
 }
 
+
+async function runWebuiVideoTextToolFallback({ call, chatId, userMsgId, assistantMsgId, req, res, toolCalls }) {
+  const startedAt = Date.now();
+  const toolEvent = { type: 'tool', event_type: 'tool.started', name: 'webui_video_generate', args: call, preview: call.raw || '' };
+  if (!call.__skipToolStart) {
+    toolCalls.push({ ...sanitizeAny(toolEvent), done: false, startedAt });
+    sseWrite(res, 'tool', { event_type: toolEvent.event_type, name: toolEvent.name, preview: redactSecrets(toolEvent.preview), args: sanitizeAny(toolEvent.args) });
+  }
+  const progressTimer = setInterval(() => {
+    try {
+      const elapsedMs = Date.now() - startedAt;
+      sseWrite(res, 'tool_running', { event_type: 'tool.running', name: 'webui_video_generate', preview: call.raw || call.prompt || '', elapsedMs });
+    } catch (_) {}
+  }, 10000);
+  try {
+    const requestAttachmentIds = pendingAttachmentIdsFromReq(req);
+    const attachmentIds = Array.isArray(call.attachmentIds) && call.attachmentIds.length
+      ? call.attachmentIds.map(String).filter(Boolean)
+      : requestAttachmentIds;
+    const data = await generateVideoFromPrompt({
+      prompt: call.prompt,
+      sourcePrompt: call.sourcePrompt || call.prompt,
+      attachmentIds,
+      model: call.model || 'auto',
+      size: call.size || '1024x1024',
+      seconds: videoSecondsFromText(call.__userText || call.sourcePrompt || call.raw || '') || call.seconds || 5,
+      chatId: '',
+      publicBase: '',
+      userMsgId,
+      assistantMsgId,
+    });
+    clearInterval(progressTimer);
+    const payload = webuiVideoToolResultPayload(data);
+    const preview = JSON.stringify(payload);
+    for (let i = toolCalls.length - 1; i >= 0; i--) {
+      if (!toolCalls[i].done && toolCalls[i].name === 'webui_video_generate') {
+        toolCalls[i].done = true; toolCalls[i].is_error = false; toolCalls[i].duration = Date.now() - startedAt; toolCalls[i].preview = preview; break;
+      }
+    }
+    sseWrite(res, 'tool_complete', { event_type: 'tool.completed', name: 'webui_video_generate', preview: redactSecrets(preview), is_error: false, duration: Date.now() - startedAt });
+    return { ok: true, content: data.content || payload.markdown || '视频已生成', payload };
+  } catch (error) {
+    clearInterval(progressTimer);
+    const preview = error.message || 'video generation failed';
+    for (let i = toolCalls.length - 1; i >= 0; i--) {
+      if (!toolCalls[i].done && toolCalls[i].name === 'webui_video_generate') {
+        toolCalls[i].done = true; toolCalls[i].is_error = true; toolCalls[i].duration = Date.now() - startedAt; toolCalls[i].preview = preview; break;
+      }
+    }
+    sseWrite(res, 'tool_complete', { event_type: 'tool.completed', name: 'webui_video_generate', preview: redactSecrets(preview), is_error: true, duration: Date.now() - startedAt });
+    return { ok: false, error: preview };
+  }
+}
+
 function sseWrite(res, event, data) {
   res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+}
+
+function makeTraceId(prefix = 'tr') {
+  return prefix + '_' + Date.now().toString(36) + '_' + Math.random().toString(16).slice(2, 8);
+}
+
+function requestTraceId(req, fallbackPrefix = 'tr') {
+  const raw = String(req?.body?.traceId || '').trim();
+  return raw || makeTraceId(fallbackPrefix);
+}
+
+function toolEventName(event = {}, fallback = '') {
+  return String(
+    event?.name ||
+    event?.tool ||
+    event?.tool_name ||
+    event?.toolName ||
+    event?.server ||
+    event?.id ||
+    fallback ||
+    ''
+  ).trim();
+}
+
+function agentSessionId(event = {}) {
+  return String(event?.hermesSessionId || event?.sessionId || event?.session_id || '').trim();
+}
+
+function hermesSessionPayload(sessionId = '') {
+  const sid = String(sessionId || '').trim();
+  return { sessionId: sid, session_id: sid, hermesSessionId: sid };
+}
+
+function normalizeToolEvent(event = {}, fallback = 'tool') {
+  const clean = sanitizeAny(event) || {};
+  const args = clean.args !== undefined ? clean.args : (clean.input !== undefined ? clean.input : (clean.params !== undefined ? clean.params : {}));
+  const preview = clean.preview !== undefined ? clean.preview : (clean.output || clean.result || clean.content || clean.text || '');
+  return { ...clean, name: toolEventName(clean, fallback) || 'tool', args, preview };
+}
+
+function completeToolEvent(toolCalls = [], event = {}) {
+  const toolEvent = normalizeToolEvent(event);
+  let matched = false;
+  for (let i = toolCalls.length - 1; i >= 0; i--) {
+    const existingName = toolEventName(toolCalls[i], 'tool') || 'tool';
+    if (!toolCalls[i].done && (existingName === toolEvent.name || existingName === 'tool' || toolEvent.name === 'tool')) {
+      toolCalls[i].done = true;
+      toolCalls[i].is_error = toolEvent.is_error;
+      toolCalls[i].duration = toolEvent.duration;
+      toolCalls[i].preview = toolEvent.preview || toolCalls[i].preview || '';
+      if (existingName === 'tool' && toolEvent.name !== 'tool') toolCalls[i].name = toolEvent.name;
+      matched = true;
+      break;
+    }
+  }
+  if (!matched) toolCalls.push({ ...toolEvent, done: true, startedAt: Date.now() });
+  return toolEvent;
+}
+
+function runningToolSnapshots(toolCalls = []) {
+  const now = Date.now();
+  return toolCalls
+    .filter(tool => tool && !tool.done)
+    .map(tool => ({
+      event_type: 'tool.running',
+      name: toolEventName(tool, 'tool') || 'tool',
+      preview: redactSecrets(tool.preview || ''),
+      elapsedMs: tool.startedAt ? now - tool.startedAt : 0,
+    }));
 }
 
 function appendSystemLog(entry = {}) {
@@ -762,18 +1518,54 @@ function perfMark(res, start, stage, extra = {}) {
   sseWrite(res, 'perf', { stage, ms: Date.now() - start, ...extra });
 }
 
+
+router.post('/tools/markdown/insert-image', async (req, res) => {
+  const call = {
+    path: String(req.body?.path || req.body?.documentPath || '').trim(),
+    imageId: String(req.body?.imageId || req.body?.imageUrl || req.body?.url || '').trim(),
+    alt: String(req.body?.alt || req.body?.caption || 'image').trim() || 'image',
+    position: String(req.body?.position || 'append').trim() || 'append',
+    raw: 'api:/tools/markdown/insert-image',
+  };
+  if (!call.path || !call.imageId) return res.fail('path and imageId are required', 400, 400);
+  const toolCalls = [];
+  const nullRes = { write() {} };
+  const result = await runWebuiMarkdownInsertImageFallback({ call, res: nullRes, toolCalls });
+  if (!result.ok) return res.fail(result.error || 'markdown insert image failed', 500, 500);
+  res.ok(result.payload);
+})
+
+router.post('/tools/markdown/create', async (req, res) => {
+  const call = {
+    title: String(req.body?.title || req.body?.name || '输出文档').trim().slice(0, 80),
+    path: String(req.body?.path || req.body?.relativePath || '').trim(),
+    content: String(req.body?.content || req.body?.markdown || req.body?.body || '').trim(),
+    raw: 'api:/tools/markdown/create',
+  };
+  if (!call.content) return res.fail('content is required', 400, 400);
+  const toolCalls = [];
+  const nullRes = { write() {} };
+  const result = await runWebuiMarkdownTextToolFallback({ call, res: nullRes, toolCalls });
+  if (!result.ok) return res.fail(result.error || 'markdown create failed', 500, 500);
+  res.ok(result.payload);
+});;
+
 router.post('/:id/messages', async (req, res) => {
   const perfStart = Date.now();
   const list = loadAll();
   const chat = list.find(c => c.id === req.params.id);
   if (!chat) return res.fail('chat not found', 404, 404);
+  const traceId = requestTraceId(req, 'chat');
+  const userMsgId = req.body.userMsgId ? String(req.body.userMsgId) : '';
+  const assistantMsgId = req.body.assistantMsgId ? String(req.body.assistantMsgId) : '';
 
   const userMsg = {
     role: 'user',
     content: redactSecrets(String(req.body.displayContent ?? req.body.content ?? '')),
     ts: Date.now(),
   };
-  if (req.body.userMsgId) userMsg._msgId = String(req.body.userMsgId);
+  if (userMsgId) userMsg._msgId = userMsgId;
+  userMsg.traceId = traceId;
   if (req.body.localEditContext) userMsg.localEditContext = sanitizeAny(req.body.localEditContext);
   if (Array.isArray(req.body.attachments) && req.body.attachments.length) {
     userMsg.attachments = req.body.attachments.map(item => ({
@@ -861,10 +1653,12 @@ router.post('/:id/messages', async (req, res) => {
   if (toggles.webuiRules) addSystemPart('WebUI 反问弹窗协议', WEBUI_ASK_BRIDGE_PROMPT, { source: 'builtin' });
   const memoryPrompt = readCoreMemoryPrompt();
   if (toggles.coreMemory) addSystemPart('核心记忆', memoryPrompt, { source: 'memory' });
+  const activeAgentSnapshot = chat.agentSnapshot || normalizeAgentSnapshot(req.body || {});
+  const agentMemoryPrompt = readAgentMemoryPrompt(activeAgentSnapshot.id);
+  if (toggles.coreMemory) addSystemPart('Agent 独立记忆', agentMemoryPrompt, { source: 'agent-memory', agentId: activeAgentSnapshot.id });
   const agentRulesPrompt = readAgentRulesPrompt({ includeKnowledgeBase: needsKnowledgeBaseRules(userMsg.content) });
   if (toggles.agentRules) addSystemPart('Agent 规则', agentRulesPrompt, { source: 'rules', knowledgeBase: needsKnowledgeBaseRules(userMsg.content) });
   if (toggles.userSystemPrompt) addSystemPart('用户系统提示', settings.systemPrompt, { source: 'settings' });
-  const activeAgentSnapshot = chat.agentSnapshot || normalizeAgentSnapshot(req.body || {});
   if (toggles.profilePrompt && (activeAgentSnapshot.systemPrompt || activeAgentSnapshot.name)) {
     const agentLabel = String(activeAgentSnapshot.name || activeAgentSnapshot.id || 'agent').slice(0, 80);
     const agentPrompt = [
@@ -902,7 +1696,19 @@ router.post('/:id/messages', async (req, res) => {
       '1. Analyze and refine the user prompt for better image quality',
       '2. Immediately call the webui_image_generate tool with the refined prompt',
       '3. Do NOT just output text prompts without calling the tool',
+      '3a. For follow-up image requests such as regenerate, redraw, change style, another one, or this is not good, still call webui_image_generate again; never fabricate a Markdown image URL.',
+      '4. IMPORTANT: do not call webui_image_generate in video mode; webui_video_generate is the required tool',
     ].join('\n'), { source: 'image-scene' });
+  }
+  if (requestedScene === 'video') {
+    addSystemPart('Video Generation', [
+      'You are in VIDEO GENERATION mode. When the user asks for a video, animation, short clip, or motion visual:',
+      '1. Analyze and refine the user prompt with subject, motion, camera, style, and duration',
+      '2. Immediately call the webui_video_generate tool with the refined prompt',
+      '3. Do NOT just output text prompts without calling the tool',
+      '4. If the user uploaded reference images, pass their attachmentIds to webui_video_generate. Never omit attachmentIds for image-to-video/reference-video tasks.',
+      '5. Preserve the reference image identity, character, composition, color palette, and visual style; only add requested motion/camera movement.',
+    ].join('\n'), { source: 'video-scene' });
   }
   const systemPrompt = systemParts.join('\n\n');
   const historyLimit = Math.max(4, Math.min(Number(settings.history) || 16, CONTEXT_KEEP_MESSAGES));
@@ -921,10 +1727,15 @@ router.post('/:id/messages', async (req, res) => {
   });
   res.flushHeaders();
   const abortController = new AbortController();
-  // Heartbeat: send comment every 15s to keep connection alive
   const heartbeat = setInterval(() => {
-    try { res.write(':heartbeat\n\n'); } catch (_) { clearInterval(heartbeat); }
-  }, 15000);
+    try {
+      const runningTools = runningToolSnapshots(toolCalls);
+      sseWrite(res, 'heartbeat', { ts: Date.now(), runningTools: runningTools.length });
+      runningTools.forEach(tool => sseWrite(res, 'tool_running', tool));
+    } catch (_) {
+      clearInterval(heartbeat);
+    }
+  }, 10000);
   res.on('close', () => {
     if (!res.writableEnded) abortController.abort();
     clearInterval(heartbeat);
@@ -953,9 +1764,23 @@ router.post('/:id/messages', async (req, res) => {
       cfg.scenarios = { ...(cfg.scenarios || {}), vision: altVisionModel.id };
     }
   }
+  const requestedRoutingMode = effectiveRoutingModeFromRequest(req.body, chat.agentSnapshot, settingsForMode);
+  if (['auto','direct','hermes','agent','fast'].includes(requestedRoutingMode)) cfg.routingMode = requestedRoutingMode;
+  if (requestedRoutingMode === 'hermes' || requestedRoutingMode === 'agent') cfg.forceHermes = true;
+  if (requestedRoutingMode === 'direct' || requestedRoutingMode === 'fast') cfg.forceDirect = true;
+  if (isDocumentOutputIntent(userMsg.content) || requestedScene === 'video' || isVideoOutputIntent(userMsg.content) || requestedScene === 'image' || isImageOutputIntent(userMsg.content)) {
+    cfg.routingMode = 'hermes';
+    cfg.forceHermes = true;
+    cfg.forceDirect = false;
+  }
+  const requestedAgentRuntime = String(req.body.agentRuntime || 'cli').toLowerCase();
+  if (['auto','api','api-server','server','cli','cli-only','hermes-cli'].includes(requestedAgentRuntime)) cfg.agentRuntime = requestedAgentRuntime;
   cfg._scene = requestedScene;
   cfg._webuiRequestedScene = requestedScene;
   cfg._abortSignal = abortController.signal;
+  cfg._traceId = traceId;
+  cfg._runId = traceId;
+  console.log('[AgentRun ' + cfg._runId + '] USER ' + String(userMsg.content || '').replace(/\s+/g, ' ').slice(0, 500));
 
   const lastAssistant = [...chat.messages].reverse().find(m => m && m.role === 'assistant' && String(m.hermesSessionId || '').trim());
   if (lastAssistant?.hermesSessionId) cfg._resumeSessionId = String(lastAssistant.hermesSessionId).trim();
@@ -969,6 +1794,99 @@ router.post('/:id/messages', async (req, res) => {
   let selectedRouteReason = '';
   let suppressAskJsonStream = false;
 
+  // ===== Python Bridge mode =====
+  console.log('[chat.js] useBridge=' + req.body.useBridge + ' agentRuntime=' + cfg.agentRuntime);
+  if (req.body.useBridge || cfg.agentRuntime === 'python-bridge') {
+    try {
+      await bridge.ensureBridge();
+    } catch (e) {
+      sseWrite(res, 'error', { msg: 'Bridge start failed: ' + e.message, traceId, userMsgId, assistantMsgId });
+      clearInterval(heartbeat);
+      res.end();
+      return;
+    }
+    try {
+      await bridge.sendChat({
+        message: userMsg.content,
+        session_id: chat.id,
+        onToolStart: (e) => {
+          toolCalls.push({ name: e.name, args: e.args, done: false, startedAt: Date.now() });
+          sseWrite(res, 'tool', {
+            event_type: 'tool.started',
+            name: e.name,
+            args: sanitizeAny(e.args || {}),
+            preview: redactSecrets(JSON.stringify(e.args || {})),
+          });
+        },
+        onToolOutput: (e) => {
+          sseWrite(res, 'tool_running', {
+            event_type: 'tool.running',
+            name: e.name,
+            preview: redactSecrets(e.content || ''),
+            elapsedMs: Date.now() - (toolCalls.find(tc => tc.name === e.name && !tc.done)?.startedAt || Date.now()),
+          });
+        },
+        onToolComplete: (e) => {
+          const tc = toolCalls.find(tc => tc.name === e.name && !tc.done);
+          if (tc) { tc.done = true; tc.result = e.result; tc.duration = e.duration; }
+          sseWrite(res, 'tool_complete', {
+            event_type: 'tool.completed',
+            name: e.name,
+            preview: redactSecrets(e.result || ''),
+            is_error: false,
+            duration: parseFloat(e.duration) * 1000 || 0,
+          });
+        },
+        onText: (e) => {
+          full += e.content;
+          sseWrite(res, 'token', { text: redactSecrets(e.content) });
+        },
+        onThinking: (e) => {
+          if (e.content) {
+            reasoningFull += e.content;
+            sseWrite(res, 'reasoning', { text: redactSecrets(e.content) });
+          }
+        },
+        onError: (e) => {
+          errorFull += (errorFull ? '\n' : '') + e.content;
+          sseWrite(res, 'error', { msg: redactSecrets(e.content) });
+        },
+      });
+    } catch (e) {
+      if (!abortController.signal.aborted) {
+        sseWrite(res, 'error', { msg: e.message, traceId, userMsgId, assistantMsgId });
+      }
+    } finally {
+      // Save assistant message
+      if (full || reasoningFull || toolCalls.length) {
+        const doneEvent = { type: 'done', sessionId: sessionIdFromDone };
+        if (agentSessionId && typeof agentSessionId === 'function') sessionIdFromDone = agentSessionId(doneEvent) || sessionIdFromDone;
+        if (sessionIdFromDone) {
+          markWebuiHermesSession(sessionIdFromDone, chat.id);
+        }
+        chat.messages.push({
+          role: 'assistant',
+          content: full,
+          reasoning: reasoningFull || undefined,
+          thinking: reasoningFull || undefined,
+          toolCalls: toolCalls.length ? toolCalls : undefined,
+          ts: Date.now(),
+          hermesSessionId: sessionIdFromDone || undefined,
+        });
+        const chatList = loadAll();
+        const chatIdx = chatList.findIndex(c => c.id === chat.id);
+        if (chatIdx >= 0) chatList[chatIdx] = chat;
+        else chatList.push(chat);
+        saveAll(chatList);
+        autoCaptureKnowledge(chat, userMsg, full);
+      }
+      sseWrite(res, 'done', {});
+      clearInterval(heartbeat);
+      res.end();
+    }
+    return;
+  }
+
   try {
     for await (const event of chatStream(cfg, contextMessages)) {
       if (abortController.signal.aborted) break;
@@ -977,7 +1895,7 @@ router.post('/:id/messages', async (req, res) => {
           selectedRoute = event.route || '';
           selectedRouteReason = event.reason || '';
         }
-        sseWrite(res, 'perf', event);
+        sseWrite(res, 'perf', { traceId, userMsgId, assistantMsgId, ...event });
         continue;
       }
       if (!firstContentEventSeen) {
@@ -1003,31 +1921,80 @@ router.post('/:id/messages', async (req, res) => {
           break;
 
         case 'tool':
-          toolCalls.push({ ...sanitizeAny(event), done: false });
-          sseWrite(res, 'tool', {
-            event_type: event.event_type,
-            name: event.name,
-            preview: redactSecrets(event.preview),
-            args: sanitizeAny(event.args),
-          });
+          {
+            const toolEvent = normalizeToolEvent(event);
+            toolCalls.push({ ...toolEvent, done: false, startedAt: Date.now() });
+            sseWrite(res, 'tool', {
+              event_type: toolEvent.event_type,
+              name: toolEvent.name,
+              preview: redactSecrets(toolEvent.preview),
+              args: sanitizeAny(toolEvent.args),
+            });
+          }
           break;
 
         case 'tool_complete':
-          for (let i = toolCalls.length - 1; i >= 0; i--) {
-            if (!toolCalls[i].done && (!event.name || toolCalls[i].name === event.name)) {
-              toolCalls[i].done = true;
-              toolCalls[i].is_error = event.is_error;
-              toolCalls[i].duration = event.duration;
-              break;
-            }
+          {
+            const toolEvent = completeToolEvent(toolCalls, event);
+            sseWrite(res, 'tool_complete', {
+              event_type: toolEvent.event_type,
+              name: toolEvent.name,
+              preview: redactSecrets(toolEvent.preview),
+              is_error: toolEvent.is_error,
+              duration: toolEvent.duration,
+            });
           }
-          sseWrite(res, 'tool_complete', {
-            event_type: event.event_type,
-            name: event.name,
-            preview: redactSecrets(event.preview),
-            is_error: event.is_error,
-            duration: event.duration,
+          break;
+
+        case 'tool_running':
+          {
+            const toolEvent = normalizeToolEvent(event);
+            sseWrite(res, 'tool_running', {
+              event_type: toolEvent.event_type,
+              name: toolEvent.name,
+              preview: redactSecrets(toolEvent.preview || ''),
+              elapsedMs: toolEvent.elapsedMs || 0,
+            });
+          }
+          break;
+
+        case 'heartbeat':
+          sseWrite(res, 'heartbeat', { ts: event.ts || Date.now(), runningTools: runningToolSnapshots(toolCalls).length });
+          break;
+
+        case 'raw_line':
+          if (process.env.HERMES_EXPOSE_RAW_STDOUT === '1') {
+            sseWrite(res, 'agent_raw', {
+              runId: event.runId || cfg._runId || '',
+              stream: 'stdout',
+              text: redactSecrets(event.text || ''),
+              ts: event.ts || Date.now(),
+              rawType: event.type || 'raw_line',
+            });
+          }
+          break;
+        case 'raw_stderr':
+        case 'agent_raw':
+          sseWrite(res, 'agent_raw', {
+            runId: event.runId || cfg._runId || '',
+            stream: event.stream || (event.type === 'raw_stderr' ? 'stderr' : 'stdout'),
+            text: redactSecrets(event.text || ''),
+            ts: event.ts || Date.now(),
+            rawType: event.type || 'agent_raw',
           });
+          break;
+
+        case 'agent_exit':
+          sseWrite(res, 'agent_exit', {
+            runId: event.runId || cfg._runId || '',
+            code: event.code,
+            meaningfulStdout: !!event.meaningfulStdout,
+            stderrTail: redactSecrets(event.stderrTail || ''),
+            ms: event.ms || 0,
+          });
+          if (!event.meaningfulStdout) {
+            appendSystemLog({ type: 'task', level: 'warn', msg: 'Hermes process exited without meaningful stdout', chatId: chat.id, runId: event.runId || cfg._runId || '', exitCode: event.code, stderrTail: redactSecrets(event.stderrTail || '') });
+          }
           break;
 
         case 'title':
@@ -1036,20 +2003,20 @@ router.post('/:id/messages', async (req, res) => {
           break;
 
         case 'session':
-          if (event.sessionId) sessionIdFromDone = String(event.sessionId);
-          sseWrite(res, 'perf', { stage: 'hermes-session', sessionId: sessionIdFromDone });
+          if (agentSessionId(event)) sessionIdFromDone = agentSessionId(event);
+          sseWrite(res, 'perf', { traceId, userMsgId, assistantMsgId, stage: 'hermes-session', ...hermesSessionPayload(sessionIdFromDone) });
           break;
 
         case 'error':
           {
             const safeText = redactSecrets(event.text || '未知错误');
             errorFull += (errorFull ? '\n' : '') + safeText;
-            sseWrite(res, 'error', { msg: safeText });
+            sseWrite(res, 'error', { msg: safeText, traceId, userMsgId, assistantMsgId });
           }
           break;
 
         case 'done':
-          if (event.session_id || event.sessionId) sessionIdFromDone = String(event.session_id || event.sessionId);
+          if (agentSessionId(event)) sessionIdFromDone = agentSessionId(event);
           break;
       }
     }
@@ -1083,18 +2050,133 @@ router.post('/:id/messages', async (req, res) => {
           reasoningFull += safeText;
           sseWrite(res, 'reasoning', { text: safeText });
         } else if (followEvent.type === 'tool') {
-          toolCalls.push({ ...sanitizeAny(followEvent), done: false });
-          sseWrite(res, 'tool', { event_type: followEvent.event_type, name: followEvent.name, preview: redactSecrets(followEvent.preview), args: sanitizeAny(followEvent.args) });
+          const toolEvent = normalizeToolEvent(followEvent);
+          toolCalls.push({ ...toolEvent, done: false, startedAt: Date.now() });
+          sseWrite(res, 'tool', { event_type: toolEvent.event_type, name: toolEvent.name, preview: redactSecrets(toolEvent.preview), args: sanitizeAny(toolEvent.args) });
         } else if (followEvent.type === 'tool_complete') {
-          sseWrite(res, 'tool_complete', { event_type: followEvent.event_type, name: followEvent.name, preview: redactSecrets(followEvent.preview), is_error: followEvent.is_error, duration: followEvent.duration });
+          const toolEvent = completeToolEvent(toolCalls, followEvent);
+          sseWrite(res, 'tool_complete', { event_type: toolEvent.event_type, name: toolEvent.name, preview: redactSecrets(toolEvent.preview), is_error: toolEvent.is_error, duration: toolEvent.duration });
+        } else if (followEvent.type === 'tool_running') {
+          const toolEvent = normalizeToolEvent(followEvent);
+          sseWrite(res, 'tool_running', { event_type: toolEvent.event_type, name: toolEvent.name, preview: redactSecrets(toolEvent.preview || ''), elapsedMs: toolEvent.elapsedMs || 0 });
         } else if (followEvent.type === 'session') {
-          if (followEvent.sessionId) sessionIdFromDone = String(followEvent.sessionId);
+          if (agentSessionId(followEvent)) sessionIdFromDone = agentSessionId(followEvent);
+          sseWrite(res, 'perf', { traceId, userMsgId, assistantMsgId, stage: 'hermes-session', ...hermesSessionPayload(sessionIdFromDone) });
         } else if (followEvent.type === 'error') {
           const safeText = redactSecrets(followEvent.text || '未知错误');
           errorFull += (errorFull ? '\n' : '') + safeText;
-          sseWrite(res, 'error', { msg: safeText });
+          sseWrite(res, 'error', { msg: safeText, traceId, userMsgId, assistantMsgId });
         } else if (followEvent.type === 'done') {
-          if (followEvent.session_id || followEvent.sessionId) sessionIdFromDone = String(followEvent.session_id || followEvent.sessionId);
+          if (agentSessionId(followEvent)) sessionIdFromDone = agentSessionId(followEvent);
+        }
+      }
+    }
+
+    const fileReadCall = parseWebuiFileReadToolCall(full);
+    if (fileReadCall && !toolCalls.some(item => item.name === 'webui_file_read')) {
+      const readResult = await runWebuiFileReadFallback({ call: fileReadCall, res, toolCalls });
+      if (readResult.ok) {
+        full = '';
+        errorFull = '';
+        const readFollowupMessages = [
+          ...contextMessages,
+          { role: 'assistant', content: '[WebUI ?????????]' },
+          { role: 'user', content: [
+            'webui_file_read ?????',
+            'path: ' + readResult.payload.path,
+            'content:',
+            readResult.content,
+            '',
+            '????????????????????????????????????? WebUI ???????????????'
+          ].join('\n') },
+        ];
+        for await (const followEvent of chatStream(cfg, readFollowupMessages)) {
+          if (abortController.signal.aborted) break;
+          if (followEvent.type === 'token') {
+            const safeText = redactSecrets(followEvent.text);
+            full += safeText;
+            sseWrite(res, 'token', { text: safeText });
+          } else if (followEvent.type === 'reasoning') {
+            const safeText = redactSecrets(followEvent.text);
+            reasoningFull += safeText;
+            sseWrite(res, 'reasoning', { text: safeText });
+          } else if (followEvent.type === 'tool') {
+            const toolEvent = normalizeToolEvent(followEvent);
+            toolCalls.push({ ...toolEvent, done: false, startedAt: Date.now() });
+            sseWrite(res, 'tool', { event_type: toolEvent.event_type, name: toolEvent.name, preview: redactSecrets(toolEvent.preview), args: sanitizeAny(toolEvent.args) });
+          } else if (followEvent.type === 'tool_complete') {
+            const toolEvent = completeToolEvent(toolCalls, followEvent);
+            sseWrite(res, 'tool_complete', { event_type: toolEvent.event_type, name: toolEvent.name, preview: redactSecrets(toolEvent.preview), is_error: toolEvent.is_error, duration: toolEvent.duration });
+          } else if (followEvent.type === 'tool_running') {
+            const toolEvent = normalizeToolEvent(followEvent);
+            sseWrite(res, 'tool_running', { event_type: toolEvent.event_type, name: toolEvent.name, preview: redactSecrets(toolEvent.preview || ''), elapsedMs: toolEvent.elapsedMs || 0 });
+          } else if (followEvent.type === 'session') {
+            if (agentSessionId(followEvent)) sessionIdFromDone = agentSessionId(followEvent);
+            sseWrite(res, 'perf', { traceId, userMsgId, assistantMsgId, stage: 'hermes-session', ...hermesSessionPayload(sessionIdFromDone) });
+          } else if (followEvent.type === 'error') {
+            const safeText = redactSecrets(followEvent.text || '????');
+            errorFull += (errorFull ? '\n' : '') + safeText;
+            sseWrite(res, 'error', { msg: safeText, traceId, userMsgId, assistantMsgId });
+          } else if (followEvent.type === 'done') {
+            if (agentSessionId(followEvent)) sessionIdFromDone = agentSessionId(followEvent);
+          }
+        }
+      } else {
+        errorFull = readResult.error || 'file read failed';
+      }
+    }
+
+    const insertImageCall = parseWebuiMarkdownInsertImageToolCall(full);
+    if (insertImageCall && !toolCalls.some(item => item.name === 'webui_markdown_insert_image')) {
+      const fallback = await runWebuiMarkdownInsertImageFallback({ call: insertImageCall, res, toolCalls });
+      if (fallback.ok) { full = fallback.content || full.replace(insertImageCall.raw, '').trim(); errorFull = ''; }
+      else { errorFull = fallback.error || 'markdown insert image failed'; }
+    }
+
+    const pendingMarkdownTool = toolCalls.find(item => ['webui_markdown_create', 'webui_markdown_write', 'webui_file_write'].includes(item.name) && !item.done);
+    if (pendingMarkdownTool) {
+      let pendingArgs = pendingMarkdownTool.args || pendingMarkdownTool.preview || {};
+      if (typeof pendingArgs === 'string') {
+        try { pendingArgs = JSON.parse(pendingArgs); } catch (_) { pendingArgs = parseWebuiMarkdownTextToolCall(pendingArgs) || {}; }
+      }
+      const pendingCall = parseWebuiMarkdownTextToolCall(JSON.stringify({ ...(pendingArgs || {}), type: pendingMarkdownTool.name })) || pendingArgs;
+      if (pendingCall && pendingCall.content) {
+        const fallback = await runWebuiMarkdownTextToolFallback({
+          call: { ...pendingCall, __skipToolStart: true },
+          res,
+          toolCalls,
+        });
+        if (fallback.ok) {
+          full = fallback.content || full;
+          errorFull = '';
+        } else {
+          errorFull = fallback.error || 'markdown create failed';
+        }
+      }
+    }
+
+    const pendingImageTool = toolCalls.find(item => item.name === 'webui_image_generate' && !item.done);
+    if (pendingImageTool) {
+      let pendingArgs = pendingImageTool.args || pendingImageTool.preview || {};
+      if (typeof pendingArgs === 'string') {
+        try { pendingArgs = JSON.parse(pendingArgs); } catch (_) { pendingArgs = parseWebuiImageTextToolCall(pendingArgs) || { prompt: pendingArgs }; }
+      }
+      const pendingCall = parseWebuiImageTextToolCall(JSON.stringify(pendingArgs || {})) || pendingArgs;
+      if (pendingCall && pendingCall.prompt) {
+        const fallback = await runWebuiImageTextToolFallback({
+          call: { ...pendingCall, __skipToolStart: true },
+          chatId: chat.id,
+          userMsgId: req.body.userMsgId ? String(req.body.userMsgId) : '',
+          assistantMsgId: req.body.assistantMsgId ? String(req.body.assistantMsgId) : '',
+          req,
+          res,
+          toolCalls,
+        });
+        if (fallback.ok) {
+          full = fallback.content || full;
+          errorFull = '';
+        } else {
+          errorFull = fallback.error || 'image generation failed';
         }
       }
     }
@@ -1115,6 +2197,68 @@ router.post('/:id/messages', async (req, res) => {
         errorFull = '';
       } else {
         errorFull = fallback.error || 'image generation failed';
+      }
+    }
+
+    const inferredImageFallbackCall = (!toolCalls.some(item => item.name === 'webui_image_generate' && item.done && !item.is_error) && (requestedScene === 'image' || isImageOutputIntent(userMsg.content) || hasFakeMarkdownImageOutput(full)))
+      ? imageFallbackCallFromText(userMsg.content, chat)
+      : null;
+    if (inferredImageFallbackCall) {
+      const fallback = await runWebuiImageTextToolFallback({
+        call: inferredImageFallbackCall,
+        chatId: chat.id,
+        userMsgId: req.body.userMsgId ? String(req.body.userMsgId) : '',
+        assistantMsgId: req.body.assistantMsgId ? String(req.body.assistantMsgId) : '',
+        req,
+        res,
+        toolCalls,
+      });
+      if (fallback.ok) {
+        full = fallback.content || '';
+        errorFull = '';
+      } else {
+        errorFull = fallback.error || 'image generation failed';
+      }
+    }
+
+
+    const pendingVideoTool = toolCalls.find(item => item.name === 'webui_video_generate' && !item.done);
+    if (pendingVideoTool) {
+      let pendingArgs = pendingVideoTool.args || pendingVideoTool.preview || {};
+      if (typeof pendingArgs === 'string') {
+        try { pendingArgs = JSON.parse(pendingArgs); } catch (_) { pendingArgs = parseWebuiVideoTextToolCall(pendingArgs) || { prompt: pendingArgs }; }
+      }
+      const pendingCall = parseWebuiVideoTextToolCall(JSON.stringify(pendingArgs || {})) || pendingArgs;
+      if (pendingCall && pendingCall.prompt) {
+        const fallback = await runWebuiVideoTextToolFallback({ call: { ...pendingCall, __skipToolStart: true, __userText: userMsg.content }, chatId: chat.id, userMsgId: req.body.userMsgId ? String(req.body.userMsgId) : '', assistantMsgId: req.body.assistantMsgId ? String(req.body.assistantMsgId) : '', req, res, toolCalls });
+        if (fallback.ok) { full = fallback.content || full; errorFull = ''; } else { errorFull = fallback.error || 'video generation failed'; }
+      }
+    }
+
+    const visibleVideoPendingBeforeFallback = parseVideoPendingTextResult(full);
+    const videoFallbackCall = visibleVideoPendingBeforeFallback
+      ? null
+      : (parseWebuiVideoTextToolCall(full) || ((requestedScene === 'video' || isVideoOutputIntent(userMsg.content)) && !toolCalls.some(item => item.name === 'webui_video_generate') ? videoFallbackCallFromText(userMsg.content) : null));
+    if (visibleVideoPendingBeforeFallback) {
+      errorFull = '';
+    }
+    if (videoFallbackCall && !toolCalls.some(item => item.name === 'webui_video_generate' && item.done && !item.is_error)) {
+      const fallback = await runWebuiVideoTextToolFallback({ call: { ...videoFallbackCall, __userText: userMsg.content }, chatId: chat.id, userMsgId: req.body.userMsgId ? String(req.body.userMsgId) : '', assistantMsgId: req.body.assistantMsgId ? String(req.body.assistantMsgId) : '', req, res, toolCalls });
+      if (fallback.ok) { full = fallback.content || full.replace(videoFallbackCall.raw, '').trim(); errorFull = ''; } else { errorFull = fallback.error || 'video generation failed'; }
+    }
+
+    const markdownFallbackCall = parseWebuiMarkdownTextToolCall(full);
+    if (markdownFallbackCall && !toolCalls.some(item => ['webui_markdown_create', 'webui_markdown_write', 'webui_file_write'].includes(item.name))) {
+      const fallback = await runWebuiMarkdownTextToolFallback({
+        call: markdownFallbackCall,
+        res,
+        toolCalls,
+      });
+      if (fallback.ok) {
+        full = fallback.content || full.replace(markdownFallbackCall.raw, '').trim();
+        errorFull = '';
+      } else {
+        errorFull = fallback.error || 'markdown create failed';
       }
     }
 
@@ -1147,7 +2291,54 @@ router.post('/:id/messages', async (req, res) => {
         }
       } catch (_) {}
     }
-    if (req.body.assistantMsgId) assistantMsg._msgId = String(req.body.assistantMsgId);
+
+    const visibleVideoPending = parseVideoPendingTextResult(assistantContent);
+    const videoToolCall = toolCalls.find(item => item.name === 'webui_video_generate' && item.preview);
+    if (videoToolCall) {
+      try {
+        const videoPayload = JSON.parse(String(videoToolCall.preview || ''));
+        if (videoPayload?.type === 'webui_video_generate_result' && Array.isArray(videoPayload.outputs)) {
+          const videoOutputs = Array.isArray(videoPayload.outputs) ? videoPayload.outputs : [];
+          assistantMsg.imageGeneration = {
+            status: videoOutputs.length ? 'done' : 'loading',
+            mediaType: 'video',
+            model: videoPayload.model || '',
+            provider: videoPayload.provider || '',
+            outputs: videoOutputs,
+            inputs: videoPayload.inputs || [],
+            prompt: videoPayload.prompt || '',
+            sourcePrompt: videoPayload.sourcePrompt || '',
+            optimizedPrompt: videoPayload.prompt || '',
+            mode: videoPayload.mode || 'text-to-video',
+            taskId: videoPayload.taskId || '',
+            taskStatus: videoPayload.taskStatus || videoPayload.status || '',
+            loadingText: videoOutputs.length ? '' : '\u89c6\u9891\u4efb\u52a1\u5df2\u63d0\u4ea4\uff0c\u6b63\u5728\u7b49\u5f85\u751f\u6210\u7ed3\u679c',
+            directMode: false,
+          };
+        }
+      } catch (_) {}
+    }
+    if (!assistantMsg.imageGeneration && visibleVideoPending) {
+      assistantMsg.imageGeneration = {
+        status: 'loading',
+        mediaType: 'video',
+        model: visibleVideoPending.model || '',
+        provider: '',
+        outputs: [],
+        inputs: [],
+        prompt: '',
+        sourcePrompt: '',
+        optimizedPrompt: '',
+        mode: 'text-to-video',
+        taskId: visibleVideoPending.taskId || '',
+        taskStatus: visibleVideoPending.taskStatus || visibleVideoPending.status || '',
+        loadingText: '\u89c6\u9891\u4efb\u52a1\u5df2\u63d0\u4ea4\uff0c\u6b63\u5728\u7b49\u5f85\u751f\u6210\u7ed3\u679c',
+        directMode: false,
+      };
+    }
+    if (assistantMsgId) assistantMsg._msgId = assistantMsgId;
+    assistantMsg.traceId = traceId;
+    assistantMsg.userMsgId = userMsgId;
     if (req.body.localEditContext?.id) assistantMsg.localEditContextId = String(req.body.localEditContext.id);
     chat.messages.push(assistantMsg);
     if (reasoningFull) chat.messages[chat.messages.length - 1].reasoning = redactSecrets(reasoningFull);
@@ -1161,10 +2352,11 @@ router.post('/:id/messages', async (req, res) => {
       }));
     }
     if (sessionIdFromDone) chat.messages[chat.messages.length - 1].hermesSessionId = sessionIdFromDone;
+    if (sessionIdFromDone) markWebuiHermesSession(sessionIdFromDone, chat.id);
     chat.updatedAt = Date.now();
     if ((chat.title === '新对话' || chat.title === '未命名对话') && userMsg.content) chat.title = userMsg.content.slice(0, 24);
     saveAll(list);
-    try { writeMarkdown(chat); } catch {}
+    // Ordinary chats stay in chats.json. Markdown files are written only by explicit export or document tools.
     try { autoCaptureKnowledge(chat, userMsg, assistantContent); } catch {}
     appendSystemLog({
       type: 'task',
@@ -1177,28 +2369,43 @@ router.post('/:id/messages', async (req, res) => {
       durationMs: Date.now() - perfStart,
       outputChars: full.length,
       error: errorFull || '',
+      traceId,
+      userMsgId,
+      assistantMsgId,
+      runId: cfg._runId || traceId,
     });
 
+    console.log('[AgentRun ' + (cfg._runId || '') + '] DONE chars=' + full.length + ' tools=' + toolCalls.length);
     sseWrite(res, 'done', {
-      session_id: chat.id,
+      chat_session_id: chat.id,
+      session_id: sessionIdFromDone || '',
+      sessionId: sessionIdFromDone || '',
+      hermesSessionId: sessionIdFromDone || '',
       usage: { input_tokens: 0, output_tokens: 0 },
+      traceId,
+      userMsgId,
+      assistantMsgId,
+      runId: cfg._runId || traceId,
       perf: { total_ms: Date.now() - perfStart, output_chars: full.length },
     });
   } catch (e) {
     if (abortController.signal.aborted) return;
     const safeText = redactSecrets(e.message || '未知错误');
-    sseWrite(res, 'error', { msg: safeText });
+    sseWrite(res, 'error', { msg: safeText, traceId, userMsgId, assistantMsgId });
     try {
       const errorMsg = { role: 'assistant', content: '错误：' + safeText, ts: Date.now(), error: true };
-      if (req.body.assistantMsgId) errorMsg._msgId = String(req.body.assistantMsgId);
+      if (assistantMsgId) errorMsg._msgId = assistantMsgId;
+      errorMsg.traceId = traceId;
+      errorMsg.userMsgId = userMsgId;
       if (req.body.localEditContext?.id) errorMsg.localEditContextId = String(req.body.localEditContext.id);
       chat.messages.push(errorMsg);
       chat.updatedAt = Date.now();
-      appendSystemLog({ type: 'task', level: 'error', msg: (chat.title || 'chat') + ' · error · ' + (Date.now() - perfStart) + 'ms', chatId: chat.id, title: chat.title || '', route: selectedRoute || '', reason: selectedRouteReason || '', durationMs: Date.now() - perfStart, outputChars: full.length, error: safeText });
+      appendSystemLog({ type: 'task', level: 'error', msg: (chat.title || 'chat') + ' · error · ' + (Date.now() - perfStart) + 'ms', chatId: chat.id, title: chat.title || '', route: selectedRoute || '', reason: selectedRouteReason || '', durationMs: Date.now() - perfStart, outputChars: full.length, error: safeText, traceId, userMsgId, assistantMsgId, runId: cfg._runId || traceId });
       saveAll(list);
-      writeMarkdown(chat);
+      // Do not auto-export error messages to chat history Markdown.
     } catch {}
   } finally {
+    clearInterval(heartbeat);
     res.end();
   }
 });
@@ -1216,8 +2423,8 @@ router.post('/gc-stream', async (req, res) => {
   res.flushHeaders();
   const abortController = new AbortController();
   const heartbeat = setInterval(() => {
-    try { res.write(':heartbeat\n\n'); } catch (_) { clearInterval(heartbeat); }
-  }, 15000);
+    try { sseWrite(res, 'heartbeat', { ts: Date.now(), runningTools: 0 }); } catch (_) { clearInterval(heartbeat); }
+  }, 10000);
   res.on('close', () => {
     if (!res.writableEnded) abortController.abort();
     clearInterval(heartbeat);
@@ -1228,13 +2435,35 @@ router.post('/gc-stream', async (req, res) => {
   const modelScope = settingsForMode.quickMode ? 'webui' : 'agent';
   const cfg = (modelRoot && (modelRoot.webui || modelRoot.agent)) ? (modelRoot[modelScope] || modelRoot.webui || modelRoot.agent || {}) : modelRoot;
   const requestedScene = scene || 'chat';
+  const requestedRoutingMode = effectiveRoutingModeFromRequest(req.body, {}, settingsForMode);
+  if (['auto','direct','hermes','agent','fast'].includes(requestedRoutingMode)) cfg.routingMode = requestedRoutingMode;
+  if (requestedRoutingMode === 'hermes' || requestedRoutingMode === 'agent') cfg.forceHermes = true;
+  if (requestedRoutingMode === 'direct' || requestedRoutingMode === 'fast') cfg.forceDirect = true;
+  const routeLastMessage = [...messages].reverse().find(m => m && m.role === 'user')?.content || '';
+  if (isDocumentOutputIntent(routeLastMessage) || requestedScene === 'video' || isVideoOutputIntent(routeLastMessage)) {
+    cfg.routingMode = 'hermes';
+    cfg.forceHermes = true;
+    cfg.forceDirect = false;
+  }
+  const requestedAgentRuntime = String(req.body.agentRuntime || 'cli').toLowerCase();
+  if (['auto','api','api-server','server','cli','cli-only','hermes-cli'].includes(requestedAgentRuntime)) cfg.agentRuntime = requestedAgentRuntime;
   cfg._scene = requestedScene;
   cfg._webuiRequestedScene = requestedScene;
   cfg._abortSignal = abortController.signal;
-
+  cfg._runId = 'gc_' + Date.now().toString(36) + '_' + Math.random().toString(16).slice(2, 8);
+  console.log('[AgentRun ' + cfg._runId + '] GC_STREAM messages=' + messages.length);
+  const gcAgentSnapshot = normalizeAgentSnapshot(req.body || {});
+  const gcAgentMemoryPrompt = readAgentMemoryPrompt(gcAgentSnapshot.id);
+  const contextMessages = gcAgentMemoryPrompt
+    ? [
+        ...messages.slice(0, 1),
+        { role: 'system', content: gcAgentMemoryPrompt },
+        ...messages.slice(1),
+      ]
+    : messages;
 
   try {
-    for await (const event of chatStream(cfg, messages)) {
+    for await (const event of chatStream(cfg, contextMessages)) {
       if (abortController.signal.aborted) break;
       switch (event.type) {
         case 'token':
@@ -1253,8 +2482,8 @@ router.post('/gc-stream', async (req, res) => {
     if (abortController.signal.aborted) return;
     sseWrite(res, 'error', { msg: e.message });
   } finally {
+    clearInterval(heartbeat);
     res.end();
   }
 });
 module.exports = router;
-

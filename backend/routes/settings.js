@@ -18,6 +18,7 @@ const DEFAULTS = {
   hermesPath: '',
   quickMode: false,
   routingMode: 'auto',
+  agentRuntime: 'cli',
   hermesApiServerUrl: '',
   hermesApiServerKey: '',
   dataRootDir: '',
@@ -47,6 +48,7 @@ function withDefaults(value = {}) {
   const merged = {
     ...DEFAULTS,
     ...value,
+    agentRuntime: 'cli',
     toolPermissions: {
       ...DEFAULTS.toolPermissions,
       ...(value.toolPermissions || {}),

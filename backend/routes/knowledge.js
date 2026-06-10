@@ -16,6 +16,11 @@ const questionCluster = require('../services/questionCluster');
 
 // --- Junk message filtering ---
 
+function isInsidePath(root, target) {
+  const rel = path.relative(path.resolve(root), path.resolve(target));
+  return rel === '' || (!!rel && !rel.startsWith('..') && !path.isAbsolute(rel));
+}
+
 const JUNK_PATTERNS = [
   /^(你好|hello|hi|hey|哈喽|嗨)$/i,
   /^(你是谁|你是什么|what\s*(are|is)\s*(you|your)|who\s*are\s*you)$/i,
@@ -580,20 +585,15 @@ function isSystemCommand(text) {
   return SYSTEM_CMD_PATTERNS.some(pattern => pattern.test(trimmed));
 }
 
-function shQuote(value) {
-  return `'${String(value || '').replace(/'/g, `'\''`)}'`;
-}
-
 function runHermes(args, timeout = 30000) {
   const hermes = detectHermesCommand();
-  if (!hermes) throw new Error('Hermes CLI 未找到');
-  const result = hermes.type === 'wsl'
-    ? spawnSync('wsl', ['-e', 'bash', '-lc', `export PATH="$HOME/.local/bin:$HOME/bin:/usr/local/bin:/usr/bin:/bin:$PATH"; hermes ${args.map(shQuote).join(' ')}`], {
-        encoding: 'utf8', timeout, maxBuffer: 40 * 1024 * 1024, windowsHide: true,
-      })
-    : spawnSync('hermes', args, {
-        encoding: 'utf8', timeout, maxBuffer: 40 * 1024 * 1024, windowsHide: true, shell: true,
-      });
+  if (!hermes) throw new Error('Hermes CLI not found. Install native Hermes on Windows and ensure hermes is on PATH.');
+  const result = spawnSync(hermes.cmd || 'hermes', args, {
+    encoding: 'utf8',
+    timeout,
+    maxBuffer: 40 * 1024 * 1024,
+    windowsHide: true,
+  });
   if (result.error) throw result.error;
   if (result.status !== 0) throw new Error((result.stderr || result.stdout || '').slice(0, 500));
   return result.stdout || '';
@@ -881,11 +881,11 @@ router.get('/markdown', (req, res) => {
     const { path: relPath } = req.query;
     if (!relPath) return res.fail('path is required');
 
-    const mdRoot = paths.mdLibraryRoot();
+    const mdRoot = path.resolve(paths.mdLibraryRoot());
     const fullPath = path.resolve(mdRoot, relPath);
 
     // 闃叉璺緞绌胯秺
-    if (!fullPath.startsWith(mdRoot)) {
+    if (!isInsidePath(mdRoot, fullPath)) {
       return res.fail('invalid path: outside markdown library', 1, 403);
     }
 
@@ -921,11 +921,11 @@ router.put('/markdown', (req, res) => {
     if (!relPath) return res.fail('path is required');
     if (content === undefined) return res.fail('content is required');
 
-    const mdRoot = paths.mdLibraryRoot();
+    const mdRoot = path.resolve(paths.mdLibraryRoot());
     const fullPath = path.resolve(mdRoot, relPath);
 
     // 闃叉璺緞绌胯秺
-    if (!fullPath.startsWith(mdRoot)) {
+    if (!isInsidePath(mdRoot, fullPath)) {
       return res.fail('invalid path: outside markdown library', 1, 403);
     }
 
@@ -960,11 +960,11 @@ router.post('/markdown/replace', (req, res) => {
     if (!oldText) return res.fail('oldText is required');
     if (newText === undefined) return res.fail('newText is required');
 
-    const mdRoot = paths.mdLibraryRoot();
+    const mdRoot = path.resolve(paths.mdLibraryRoot());
     const fullPath = path.resolve(mdRoot, relPath);
 
     // 闃叉璺緞绌胯秺
-    if (!fullPath.startsWith(mdRoot)) {
+    if (!isInsidePath(mdRoot, fullPath)) {
       return res.fail('invalid path: outside markdown library', 1, 403);
     }
 
@@ -1033,11 +1033,11 @@ router.get('/markdown/status', (req, res) => {
     const { path: relPath } = req.query;
     if (!relPath) return res.fail('path is required');
 
-    const mdRoot = paths.mdLibraryRoot();
+    const mdRoot = path.resolve(paths.mdLibraryRoot());
     const fullPath = path.resolve(mdRoot, relPath);
 
     // 闃叉璺緞绌胯秺
-    if (!fullPath.startsWith(mdRoot)) {
+    if (!isInsidePath(mdRoot, fullPath)) {
       return res.fail('invalid path: outside markdown library', 1, 403);
     }
 

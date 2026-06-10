@@ -13,10 +13,11 @@ http://127.0.0.1:3381/
 Windows 用户推荐：
 
 1. 安装 Node.js 18+。
-2. 双击 `start.bat`。
-3. 打开 `http://127.0.0.1:3381/`。
+2. 第一次使用双击 `install.bat`，它会检查环境、安装依赖，并询问是否直接启动。
+3. 日常使用双击 `start.bat`。
+4. 打开 `http://127.0.0.1:3381/`。
 
-首次启动会自动安装后端依赖。如果需要手动启动：
+如果需要手动启动：
 
 ```powershell
 npm install
@@ -64,7 +65,11 @@ output-md
 - 优化说明：`docs/OPTIMIZATION_NOTES.md`
 - Skill 逻辑：`docs/技能中心逻辑说明.md`
 
-如果项目来自 GitHub，可以双击 `update.bat` 或手动执行：
+如果项目来自 GitHub，可以在设置页的“更新中心”点击“检查远端 / 安全更新”，也可以关闭 WebUI 后双击 `update.bat`。
+
+`update.bat` 会先检查 Git、Node.js、npm、本地改动和远端连接；如果公司电脑拦截 GitHub 或 npm，会在窗口里显示更明确的失败原因。
+
+也可以手动执行：
 
 ```powershell
 git pull --ff-only

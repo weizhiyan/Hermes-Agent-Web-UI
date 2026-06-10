@@ -1,5 +1,5 @@
 @echo off
 setlocal
 cd /d "%~dp0"
-call "%~dp0launch.bat"
+call "%~dp0start.bat"
 exit /b %ERRORLEVEL%

@@ -15,4 +15,9 @@ Thumbs.db
 docs/output-md/
 .codegraph/
 .codex-screenshots/
+.mcp.json
+.tmp_*/
+tmp-*
+__pycache__/
+*.pyc
 

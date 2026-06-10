@@ -1,11 +1,13 @@
 ﻿/**
  * Hermes CLI bridge.
- * 优先直接连接本机/WSL 中的 Hermes CLI，避免依赖额外的 8642 gateway 进程。
+ * Windows-first native Hermes CLI bridge.
  */
 const { spawn, spawnSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const store = require('./store');
+const { collectTerminalChatModels } = require('./terminalModels');
 
 const TOOL_START_RE = /^\[TOOL:START\]\s*(.*)/;
 const TOOL_END_RE = /^\[TOOL:END\]\s*(.*)/;
@@ -14,9 +16,10 @@ const THINKING_RE = /^\[THINKING\]\s*(.*)/;
 const ERROR_RE = /^\[ERROR\]\s*(.*)/;
 const TITLE_RE = /^\[TITLE\]\s*(.*)/;
 const AGENT_TAG_RE = /^\[AGENT:\w+\]\s*/;
-const SESSION_RE = /^Session:\s*([A-Za-z0-9_-]+)/;
-const SESSION_ID_RE = /^(?:[??\s]*)?session_id:\s*([A-Za-z0-9_-]+)/i;
-const RESUMED_SESSION_RE = /^↻\s*Resumed session\s+([A-Za-z0-9_-]+)\s*\((\d+)\s+user message[s]?,\s*(\d+)\s+total message[s]?\)/i;
+const ANSI_CONTROL_RE = /(?:\x1B\[[0-?]*[ -/]*[@-~]|\x1B\][\s\S]*?(?:\x07|\x1B\\)|[\x00-\x08\x0B\x0C\x0E-\x1F\x7F])/g;
+const SESSION_RE = /\bsession:\s*([A-Za-z0-9_-]+)/i;
+const SESSION_ID_RE = /\bsession_id:\s*([A-Za-z0-9_-]+)/i;
+const RESUMED_SESSION_RE = /(?:^|[^\w])↻?\s*Resumed session\s+([A-Za-z0-9_-]+)\s*\((\d+)\s+user message[s]?,\s*(\d+)\s+total message[s]?\)/i;
 let cachedHermesCommand = null;
 let cachedHermesCommandAt = 0;
 let lastGoodHermesCommand = null;
@@ -25,6 +28,80 @@ const HERMES_COMMAND_CACHE_MS = 5 * 60 * 1000;
 const HERMES_COMMAND_MISS_CACHE_MS = 10 * 1000;
 const HERMES_COMMAND_STALE_OK_MS = 30 * 60 * 1000;
 const MAX_CONTEXT_MESSAGE_CHARS = 6000;
+const activeHermesChildren = new Map();
+const HERMES_CLI_TIMEOUT_MS = Math.max(60000, Number(process.env.HERMES_CLI_TIMEOUT_MS || 30 * 60 * 1000));
+const HERMES_IDLE_TIMEOUT_MS = Math.max(30000, Number(process.env.HERMES_IDLE_TIMEOUT_MS || 5 * 60 * 1000));
+const CONFIG_LOCK_TIMEOUT_MS = Math.max(1000, Number(process.env.HERMES_CONFIG_LOCK_TIMEOUT_MS || 10000));
+const WEBUI_RELAY_PROVIDER = 'webui_relay';
+const HERMES_CONFIG_PATH_CACHE_MS = 60 * 1000;
+let hermesConfigWriteLock = Promise.resolve();
+let cachedHermesConfigPath = '';
+let cachedHermesConfigPathAt = 0;
+
+function logCritical(scope, error, extra = {}) {
+  const message = error && error.stack ? error.stack : (error && error.message ? error.message : String(error || 'unknown'));
+  console.error('[hermes:' + scope + ']', message, extra && Object.keys(extra).length ? extra : '');
+}
+
+function cleanupTempFile(filePath, scope = 'temp') {
+  if (!filePath) return;
+  try {
+    if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+  } catch (e) {
+    logCritical('cleanup-' + scope, e, { filePath });
+  }
+}
+
+function writeFileAtomic(target, content) {
+  const dir = path.dirname(target);
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  const tmp = path.join(dir, '.' + path.basename(target) + '.' + process.pid + '.' + Date.now() + '.tmp');
+  fs.writeFileSync(tmp, content, 'utf8');
+  try {
+    fs.renameSync(tmp, target);
+  } catch (e) {
+    cleanupTempFile(tmp, 'atomic-write');
+    throw e;
+  }
+}
+
+function withHermesConfigWriteLock(task) {
+  const previous = hermesConfigWriteLock;
+  let release;
+  const next = new Promise(resolve => { release = resolve; });
+  hermesConfigWriteLock = previous.then(() => next, () => next);
+  return previous
+    .then(() => Promise.race([
+      Promise.resolve().then(task),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('Hermes config write lock timeout')), CONFIG_LOCK_TIMEOUT_MS)),
+    ]))
+    .finally(() => release());
+}
+
+
+function registerHermesChild(child, meta = {}) {
+  if (!child || !child.pid) return child;
+  activeHermesChildren.set(child.pid, { child, meta: { ...meta, pid: child.pid, startedAt: Date.now() } });
+  child.once('close', () => activeHermesChildren.delete(child.pid));
+  return child;
+}
+
+function stopActiveHermesChildren(reason = 'manual-stop') {
+  const items = [...activeHermesChildren.values()];
+  items.forEach(({ child }) => {
+    try { if (child && !child.killed) child.kill('SIGTERM'); } catch (_) {}
+  });
+  setTimeout(() => {
+    items.forEach(({ child }) => {
+      try { if (child && !child.killed) child.kill('SIGKILL'); } catch (_) {}
+    });
+  }, 1500).unref?.();
+  return { stopped: items.length, reason, pids: items.map(item => item.meta.pid).filter(Boolean) };
+}
+
+function activeHermesChildStats() {
+  return [...activeHermesChildren.values()].map(item => item.meta);
+}
 
 function compactHistoryContent(content = '') {
   const text = String(content || '')
@@ -33,10 +110,6 @@ function compactHistoryContent(content = '') {
     .trim();
   if (text.length <= MAX_CONTEXT_MESSAGE_CHARS) return text;
   return text.slice(0, 2400) + '\n…\n' + text.slice(-2400);
-}
-
-function shQuote(value) {
-  return `'${String(value || '').replace(/'/g, `'\\''`)}'`;
 }
 
 function providerArg(provider = '') {
@@ -108,93 +181,129 @@ function cleanUrl(value = '') {
 }
 
 function relayBaseUrl() {
-  return cleanUrl(process.env.WEBUI_RELAY_BASE_URL || `http://127.0.0.1:${process.env.PORT || 3381}/v1`);
-}
-
-function wslRelayBaseUrl() {
-  if (process.env.WEBUI_WSL_RELAY_BASE_URL) return cleanUrl(process.env.WEBUI_WSL_RELAY_BASE_URL);
-  try {
-    const result = spawnSync('wsl', ['-e', 'bash', '-lc', 'ip route | awk \'/default/ {print $3; exit}\''], {
-      encoding: 'utf8',
-      windowsHide: true,
-      timeout: 3000,
-    });
-    const host = String(result.stdout || '').replace(/\s+/g, '');
-    if (host) return cleanUrl(`http://${host}:${process.env.PORT || 3381}/v1`);
-  } catch (_) {}
-  return relayBaseUrl();
-}
-
-function wslWebUiBaseUrl() {
-  return wslRelayBaseUrl().replace(/\/v1$/i, '');
+  const port = process.env.WEBUI_PORT || process.env.HERMES_WEBUI_PORT || 3381;
+  return cleanUrl(process.env.WEBUI_RELAY_BASE_URL || `http://127.0.0.1:${port}/v1`);
 }
 
 function sanitizeHermesConfigText(text = '') {
   return String(text || '').replace(/http:\/\/([^\s"']+):(\d+)\s+\/v1/g, 'http://$1:$2/v1');
 }
 
-function sanitizeWslHermesAuth() {
-  try {
-    spawnSync('wsl', ['-e', 'bash', '-lc', `python3 - <<'PY'
-import json
-from pathlib import Path
-p=Path.home()/'.hermes'/'auth.json'
-if p.exists():
-    try:
-        data=json.loads(p.read_text())
-        def walk(x):
-            if isinstance(x, dict):
-                for k,v in list(x.items()):
-                    if k == 'base_url' and isinstance(v, str):
-                        x[k]=v.replace(' ', '')
-                    else:
-                        walk(v)
-            elif isinstance(x, list):
-                for item in x:
-                    walk(item)
-        walk(data)
-        p.write_text(json.dumps(data, ensure_ascii=False, indent=2))
-    except Exception:
-        pass
-PY`], { encoding: 'utf8', windowsHide: true, timeout: 5000 });
-  } catch (_) {}
-}
-
 function hermesProviderBaseUrl(selectedModel = {}, options = {}) {
+  if ((options.providerName || '') === WEBUI_RELAY_PROVIDER) {
+    return relayBaseUrl();
+  }
   if (!NATIVE_HERMES_PROVIDERS.has(options.providerName || '') && selectedModel?.base && selectedModel?.key) {
-    return options.wsl ? wslRelayBaseUrl() : relayBaseUrl();
+    return relayBaseUrl();
   }
   return hermesBaseUrl(selectedModel);
 }
 
+function hermesConfigPathCandidates() {
+  const home = process.env.USERPROFILE || process.env.HOME || '';
+  const localAppData = process.env.LOCALAPPDATA || (home ? path.join(home, 'AppData', 'Local') : '');
+  const appData = process.env.APPDATA || '';
+  return [
+    process.env.HERMES_CONFIG_PATH || '',
+    localAppData ? path.join(localAppData, 'hermes', 'config.yaml') : '',
+    appData ? path.join(appData, 'hermes', 'config.yaml') : '',
+    home ? path.join(home, '.hermes', 'config.yaml') : '',
+  ].filter(Boolean);
+}
+
+function hermesConfigFilePath() {
+  const now = Date.now();
+  if (cachedHermesConfigPath && now - cachedHermesConfigPathAt < HERMES_CONFIG_PATH_CACHE_MS) return cachedHermesConfigPath;
+
+  const envPath = String(process.env.HERMES_CONFIG_PATH || '').trim();
+  if (envPath) {
+    cachedHermesConfigPath = envPath;
+    cachedHermesConfigPathAt = now;
+    return cachedHermesConfigPath;
+  }
+
+  try {
+    const result = spawnSync('hermes', ['config', 'path'], {
+      encoding: 'utf8',
+      timeout: 3000,
+      windowsHide: true,
+    });
+    const cliPath = String(result.stdout || result.stderr || '').split(/\r?\n/).map(line => line.trim()).find(Boolean) || '';
+    if (!result.error && result.status === 0 && cliPath) {
+      cachedHermesConfigPath = cliPath;
+      cachedHermesConfigPathAt = now;
+      return cachedHermesConfigPath;
+    }
+  } catch (_) {}
+
+  const candidates = hermesConfigPathCandidates();
+  cachedHermesConfigPath = candidates.find(file => {
+    try { return fs.existsSync(file); } catch (_) { return false; }
+  }) || candidates[0] || '';
+  cachedHermesConfigPathAt = now;
+  return cachedHermesConfigPath;
+}
+
 function readHermesConfigFile() {
-  const dir = path.join(process.env.USERPROFILE || process.env.HOME || '', '.hermes');
-  if (!dir) return '';
-  const file = path.join(dir, 'config.yaml');
+  const file = hermesConfigFilePath();
   if (!fs.existsSync(file)) return '';
   return fs.readFileSync(file, 'utf8');
 }
 
-function readWslHermesConfigFile() {
-  try {
-    const result = spawnSync('wsl', ['-e', 'bash', '-lc', 'cat ~/.hermes/config.yaml 2>/dev/null'], {
-      encoding: 'utf8',
-      windowsHide: true,
-      timeout: 5000,
-    });
-    if (result.status === 0 && result.stdout) return result.stdout;
-  } catch (_) {
-    // Ignore: callers fall back to the local config or a minimal config.
+function normalizeHermesModelList(models = []) {
+  const seen = new Set();
+  const next = [];
+  for (const item of models || []) {
+    const value = String(item || '').trim();
+    const key = value.toLowerCase();
+    if (!value || seen.has(key)) continue;
+    seen.add(key);
+    next.push(value);
   }
-  return '';
+  return next;
+}
+
+function collectWebuiRelayModelItems(extraModel = null) {
+  return collectTerminalChatModels({ extraModel });
+}
+
+function collectWebuiRelayModelNames(extraModel = null) {
+  return normalizeHermesModelList(collectWebuiRelayModelItems(extraModel).map(item => item.name));
+}
+
+function defaultWebuiRelayModel(extraModel = null) {
+  const root = store.read('models', {});
+  const items = collectWebuiRelayModelItems(extraModel);
+  const ids = [
+    root?.webui?.current,
+    root?.webui?.scenarios?.chat,
+    root?.agent?.current,
+    root?.agent?.scenarios?.chat,
+    requestModelName(extraModel),
+  ].map(value => String(value || '').trim()).filter(Boolean);
+  for (const id of ids) {
+    const found = items.find(item => item.id === id || item.name === id);
+    if (found) return found;
+  }
+  return items[0] || null;
+}
+
+function modelListLines(models = [], indent = '') {
+  const names = normalizeHermesModelList(models);
+  if (!names.length) return [];
+  return [
+    indent + 'discover_models: false',
+    indent + 'models:',
+    ...names.map(name => indent + '  - ' + yamlScalar(name)),
+  ];
 }
 
 function sectionBounds(lines, sectionName) {
-  const start = lines.findIndex(line => new RegExp('^' + sectionName + ':\\s*$').test(String(line).trim()));
+  const start = lines.findIndex(line => new RegExp('^' + sectionName + ':\\s*(?:\\{\\}|\\[\\])?\\s*$').test(String(line).trim()));
   if (start < 0) return null;
   let end = lines.length;
   for (let i = start + 1; i < lines.length; i++) {
-    if (/^[A-Za-z_][A-Za-z0-9_-]*:\s*(?:#.*)?$/.test(lines[i]) && !/^\s/.test(lines[i])) {
+    if (/^[A-Za-z_][A-Za-z0-9_-]*:\s*(?:.*)?$/.test(lines[i]) && !/^\s/.test(lines[i])) {
       end = i;
       break;
     }
@@ -216,6 +325,7 @@ function upsertProvider(text, providerName, selectedModel, options = {}) {
   const base = hermesProviderBaseUrl(selectedModel, { ...options, providerName });
   const apiMode = hermesApiMode(selectedModel);
   const modelName = requestModelName(selectedModel);
+  const models = normalizeHermesModelList(options.models || []);
   const providerBlock = [
     providerName + ':',
     '  name: ' + yamlScalar(providerName),
@@ -223,6 +333,7 @@ function upsertProvider(text, providerName, selectedModel, options = {}) {
     '  api_key: ' + yamlScalar(selectedModel.key),
     '  transport: ' + yamlScalar(apiMode),
     ...(modelName ? ['  default_model: ' + yamlScalar(modelName)] : []),
+    ...modelListLines(models, '  '),
   ];
 
   const lines = String(text || '').replace(/\r\n/g, '\n').split('\n');
@@ -267,12 +378,14 @@ function upsertCustomProvider(text, providerName, selectedModel, options = {}) {
   const base = hermesProviderBaseUrl(selectedModel, { ...options, providerName });
   const apiMode = hermesApiMode(selectedModel);
   const modelName = requestModelName(selectedModel);
+  const models = normalizeHermesModelList(options.models || []);
   const providerBlock = [
     '- name: ' + providerName,
     '  base_url: ' + base,
     '  api_key: ' + selectedModel.key,
     '  api_mode: ' + apiMode,
     ...(modelName ? ['  model: ' + JSON.stringify(modelName)] : []),
+    ...modelListLines(models, '  '),
   ];
 
   const lines = String(text || '').replace(/\r\n/g, '\n').split('\n');
@@ -364,7 +477,7 @@ function upsertMcpServer(text = '', serverName = '', serverBlock = []) {
 
 function webuiImageMcpServerBlock(options = {}) {
   const scriptPath = path.join(process.cwd(), 'backend', 'mcp', 'webui-image-server.js');
-  const command = options.wsl ? '/mnt/c/Progra~1/nodejs/node.exe' : (process.execPath || 'node');
+  const command = process.execPath || 'node';
   return [
     '  webui_image:',
     '    command: ' + yamlScalar(command),
@@ -376,6 +489,9 @@ function webuiImageMcpServerBlock(options = {}) {
     '    tools:',
     '      include:',
     '      - webui_image_generate',
+    '      - webui_video_generate',
+    '      - webui_markdown_insert_image',
+    '      - webui_markdown_create',
   ];
 }
 
@@ -437,62 +553,31 @@ function mergedHermesConfigText(providerName, selectedModel, existing = '', opti
   return sanitizeHermesConfigText(upsertWebuiImageMcpServer(withModel, options));
 }
 
-function syncHermesProviderConfig(providerName, selectedModel) {
-  if (!providerName || !selectedModel?.base || !selectedModel?.key) return;
+async function syncHermesProviderConfig(providerName, selectedModel) {
+  if (!providerName || !selectedModel?.base) return;
+  if (providerName !== WEBUI_RELAY_PROVIDER && !selectedModel?.key) return;
   try {
-    const dir = path.join(process.env.USERPROFILE || process.env.HOME || '', '.hermes');
-    if (!dir) return;
-    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-    const file = path.join(dir, 'config.yaml');
-    fs.writeFileSync(file, mergedHermesConfigText(providerName, selectedModel, readHermesConfigFile(), { wsl: false }), 'utf8');
-  } catch (_) {
-    // Best effort only; env vars still carry the selected model for the running process.
+    await withHermesConfigWriteLock(() => {
+      const file = hermesConfigFilePath();
+      if (!file) return;
+      const options = providerName === WEBUI_RELAY_PROVIDER
+        ? { models: collectWebuiRelayModelNames(selectedModel) }
+        : {};
+      const relayDefault = providerName === WEBUI_RELAY_PROVIDER
+        ? defaultWebuiRelayModel(selectedModel) || selectedModel
+        : selectedModel;
+      writeFileAtomic(file, mergedHermesConfigText(providerName, relayDefault, readHermesConfigFile(), options));
+    });
+  } catch (e) {
+    logCritical('config-write', e, { providerName });
   }
 }
 
-
-function wslExportEnv(env = {}) {
-  const keys = [
-    'OPENAI_API_KEY',
-    'OPENAI_BASE_URL',
-    'ANTHROPIC_API_KEY',
-    'ANTHROPIC_TOKEN',
-    'ANTHROPIC_BASE_URL',
-    'ANTHROPIC_API_BASE',
-    'DEEPSEEK_API_KEY',
-    'DEEPSEEK_BASE_URL',
-  ];
-  return keys
-    .filter(key => env[key])
-    .map(key => 'export ' + key + '=' + shQuote(env[key]) + '; ')
-    .join('');
-}
-
-function wslPathForWindowsFile(filePath) {
-  const resolved = path.resolve(filePath).replace(/\\/g, '/');
-  const drive = resolved.match(/^([A-Za-z]):\/(.*)$/);
-  if (!drive) return resolved;
-  return '/mnt/' + drive[1].toLowerCase() + '/' + drive[2];
-}
-
-function syncWslHermesProviderConfig(providerName, selectedModel) {
-  if (!providerName || !selectedModel?.base || !selectedModel?.key) {
-    const existingOnly = readWslHermesConfigFile() || readHermesConfigFile();
-    if (!existingOnly) return '';
-    const tmpDir = path.join(process.cwd(), '.claude');
-    if (!fs.existsSync(tmpDir)) fs.mkdirSync(tmpDir, { recursive: true });
-    const tmpFile = path.join(tmpDir, 'hermes_config_' + crypto.randomBytes(8).toString('hex') + '.yaml');
-    fs.writeFileSync(tmpFile, ensureWebuiImageMcpConfig(existingOnly, { wsl: true }), 'utf8');
-    return tmpFile;
-  }
-  sanitizeWslHermesAuth();
-  const tmpDir = path.join(process.cwd(), '.claude');
-  if (!fs.existsSync(tmpDir)) fs.mkdirSync(tmpDir, { recursive: true });
-  const tmpName = 'hermes_config_' + crypto.randomBytes(8).toString('hex') + '.yaml';
-  const tmpFile = path.join(tmpDir, tmpName);
-  const existingConfig = readWslHermesConfigFile() || readHermesConfigFile();
-  fs.writeFileSync(tmpFile, mergedHermesConfigText(providerName, selectedModel, existingConfig, { wsl: true }), 'utf8');
-  return tmpFile;
+async function syncWebuiRelayProviderConfig() {
+  const selectedModel = defaultWebuiRelayModel();
+  if (!selectedModel?.base) return false;
+  await syncHermesProviderConfig(WEBUI_RELAY_PROVIDER, selectedModel);
+  return true;
 }
 
 function detectHermesCommand() {
@@ -505,33 +590,26 @@ function detectHermesCommand() {
   try {
     const nativeCheck = spawnSync('hermes', ['--version'], {
       encoding: 'utf8',
-      timeout: 2000,
+      timeout: 3000,
       windowsHide: true,
-      shell: true,
     });
     if (!nativeCheck.error && nativeCheck.status === 0) {
-      cachedHermesCommand = { type: 'native', cmd: 'hermes' };
+      const output = String(nativeCheck.stdout || nativeCheck.stderr || '').trim();
+      const ver = output.match(/(\d+\.\d+\.\d+)/);
+      let resolvedPath = '';
+      try {
+        const where = spawnSync(process.platform === 'win32' ? 'where' : 'which', ['hermes'], { encoding: 'utf8', timeout: 1500, windowsHide: true });
+        resolvedPath = String(where.stdout || '').split(/\r?\n/).map(line => line.trim()).filter(Boolean)[0] || '';
+      } catch (_) {}
+      cachedHermesCommand = { type: 'native', cmd: 'hermes', version: ver ? ver[1] : 'unknown', status: 0, path: resolvedPath, output: output.split(/\r?\n/)[0] || '' };
       cachedHermesCommandAt = now;
       lastGoodHermesCommand = cachedHermesCommand;
       lastGoodHermesCommandAt = now;
       return cachedHermesCommand;
     }
-  } catch (_) {}
-
-  try {
-    const wslCheck = spawnSync('wsl', ['-e', 'bash', '-lc', 'export PATH="$HOME/.local/bin:$HOME/bin:/usr/local/bin:/usr/bin:/bin:$PATH"; command -v hermes >/dev/null 2>&1'], {
-      encoding: 'utf8',
-      timeout: 8000,
-      windowsHide: true,
-    });
-    if (wslCheck.status === 0) {
-      cachedHermesCommand = { type: 'wsl', cmd: 'wsl' };
-      cachedHermesCommandAt = now;
-      lastGoodHermesCommand = cachedHermesCommand;
-      lastGoodHermesCommandAt = now;
-      return cachedHermesCommand;
-    }
-  } catch (_) {}
+  } catch (e) {
+    logCritical('detect-command', e);
+  }
 
   cachedHermesCommand = null;
   cachedHermesCommandAt = now;
@@ -541,17 +619,23 @@ function detectHermesCommand() {
   return null;
 }
 
+function cleanAgentLine(line) {
+  return String(line || '').replace(/\r$/, '').replace(ANSI_CONTROL_RE, '');
+}
+
 function parseAgentLine(line) {
-  const trimmed = String(line || '').replace(/\r$/, '');
+  const clean = cleanAgentLine(line);
+  const trimmed = clean.trim();
   if (!trimmed) return null;
   let m;
   if ((m = trimmed.match(RESUMED_SESSION_RE))) return { type: 'session', sessionId: m[1] };
   if ((m = trimmed.match(SESSION_RE))) return { type: 'session', sessionId: m[1] };
   if ((m = trimmed.match(SESSION_ID_RE))) return { type: 'session', sessionId: m[1] };
+  const toolNameFrom = d => String(d?.name || d?.tool || d?.tool_name || d?.toolName || d?.server || d?.id || '').trim();
   if ((m = trimmed.match(TOOL_START_RE))) {
     try {
       const d = JSON.parse(m[1]);
-      return { type: 'tool', event_type: 'tool.started', name: d.name || '', preview: d.preview || '', args: d.args || {} };
+      return { type: 'tool', event_type: 'tool.started', name: toolNameFrom(d), preview: d.preview || '', args: d.args || d.input || d.params || {} };
     } catch {
       return { type: 'tool', event_type: 'tool.started', name: m[1].trim(), preview: '', args: {} };
     }
@@ -560,7 +644,7 @@ function parseAgentLine(line) {
     try {
       const d = JSON.parse(m[1]);
       const preview = d.preview || d.output || d.result || d.content || d.text || '';
-      return { type: 'tool_complete', event_type: 'tool.completed', name: d.name || '', preview, is_error: !!d.is_error, duration: d.duration };
+      return { type: 'tool_complete', event_type: 'tool.completed', name: toolNameFrom(d), preview, is_error: !!d.is_error, duration: d.duration };
     } catch {
       return { type: 'tool_complete', event_type: 'tool.completed', name: m[1].trim(), preview: '', is_error: false };
     }
@@ -570,17 +654,25 @@ function parseAgentLine(line) {
   if ((m = trimmed.match(ERROR_RE))) return { type: 'error', text: m[1] };
   if ((m = trimmed.match(TITLE_RE))) return { type: 'title', title: m[1] };
   if (trimmed.match(AGENT_TAG_RE)) return null;
-  return { type: 'token', text: trimmed + '\n' };
+  return { type: 'token', text: clean + '\n' };
 }
 
 async function* hermesStream(prompt, history, modelCfg, fullCfg = {}) {
   const perfStart = Date.now();
+  const runId = String(fullCfg._runId || ('run_' + Date.now().toString(36) + '_' + crypto.randomBytes(3).toString('hex')));
+  const mirror = (type, text = '', extra = {}) => {
+    const line = String(text || '').replace(/\s+/g, ' ').trim();
+    const preview = line.length > 800 ? line.slice(0, 800) + '?' : line;
+    if (preview || type === 'exit') console.log('[AgentRun ' + runId + '] ' + type.toUpperCase() + (preview ? ' ' + preview : ''), extra && Object.keys(extra).length ? extra : '');
+  };
+  yield { type: 'perf', stage: 'run-start', runId, ms: 0 };
+  mirror('start', 'Hermes stream started');
   const hermesCmd = detectHermesCommand();
-  yield { type: 'perf', stage: 'detect-hermes-command', ms: Date.now() - perfStart, command: hermesCmd?.type || 'missing' };
+  yield { type: 'perf', stage: 'detect-hermes-command', runId, ms: Date.now() - perfStart, command: hermesCmd?.type || 'missing' };
   if (!hermesCmd) {
     yield {
       type: 'error',
-      text: 'Hermes Agent CLI 未找到。请先在 WSL 或本机安装 hermes，并确保命令可用。',
+      text: 'Hermes Agent CLI not found. Install native Hermes on Windows and ensure hermes is on PATH.',
     };
     return;
   }
@@ -601,18 +693,17 @@ async function* hermesStream(prompt, history, modelCfg, fullCfg = {}) {
   if (contextLines.length > 0) {
     fullPrompt = `[对话历史]\n${contextLines.join('\n---\n')}\n\n[当前问题]\n${fullPrompt}`;
   }
-  yield { type: 'perf', stage: 'prompt-built', ms: Date.now() - perfStart, chars: fullPrompt.length, contextMessages: contextLines.length, resumed: !!resumeSessionId };
+  yield { type: 'perf', stage: 'prompt-built', runId, ms: Date.now() - perfStart, chars: fullPrompt.length, contextMessages: contextLines.length, resumed: !!resumeSessionId };
 
   const modelName = modelCfg?.model ? String(modelCfg.model) : '';
   const selectedModel = fullCfg._selectedLibraryModel || null;
   const providerName = selectedModel
     ? hermesProviderName(selectedModel, fullCfg._activeProvider)
     : providerArg(fullCfg._activeProvider || '');
-  syncHermesProviderConfig(providerName, selectedModel);
-  yield { type: 'perf', stage: 'provider-config-ready', ms: Date.now() - perfStart, provider: providerName || '', model: modelName || '', selected: !!selectedModel, apiFormat: selectedModel?.apiFormat || '', hasKey: !!selectedModel?.key, hasBase: !!selectedModel?.base };
+  await syncHermesProviderConfig(providerName, selectedModel);
+  yield { type: 'perf', stage: 'provider-config-ready', runId, ms: Date.now() - perfStart, provider: providerName || '', model: modelName || '', selected: !!selectedModel, apiFormat: selectedModel?.apiFormat || '', hasKey: !!selectedModel?.key, hasBase: !!selectedModel?.base };
   let child;
   let tmpFile = null;
-  let wslConfigFile = null;
 
   // Inject environment variables from WebUI config
   const customEnv = { ...process.env, PYTHONUNBUFFERED: '1' };
@@ -663,45 +754,41 @@ async function* hermesStream(prompt, history, modelCfg, fullCfg = {}) {
   }
 
   const runHermesAttempt = async function* (resumeId = '') {
-    if (hermesCmd.type === 'wsl' || fullPrompt.length > 8000) {
+    if (fullPrompt.length > 8000) {
       const tmpDir = path.join(process.cwd(), '.claude');
       if (!fs.existsSync(tmpDir)) fs.mkdirSync(tmpDir, { recursive: true });
-      const tmpName = 'prompt_' + crypto.randomBytes(8).toString('hex') + '.txt';
-      tmpFile = path.join(tmpDir, tmpName);
-      fs.writeFileSync(tmpFile, fullPrompt, 'utf8');
+      tmpFile = path.join(tmpDir, 'prompt_' + crypto.randomBytes(8).toString('hex') + '.txt');
+      writeFileAtomic(tmpFile, fullPrompt);
     }
 
-    if (hermesCmd.type === 'wsl') {
-      wslConfigFile = syncWslHermesProviderConfig(providerName, selectedModel);
-      let cmd;
-      const envExportCmd = wslExportEnv(customEnv);
-      const relayExport = "export WEBUI_RELAY_BASE_URL=\"http://$(ip route 2>/dev/null | awk '/default/ {print $3; exit}'):${PORT:-3381}/v1\"; ";
-      const promptExport = '';
-      const wslPromptCmd = tmpFile ? 'cat ' + shQuote(wslPathForWindowsFile(tmpFile)) : '';
-      const lockCmd = 'mkdir -p ~/.hermes && while ! mkdir ~/.hermes/webui.lock.d 2>/dev/null; do sleep 0.1; done; trap "rmdir ~/.hermes/webui.lock.d" EXIT; ';
-      const syncConfigCmd = wslConfigFile
-        ? `export PATH="$HOME/.local/bin:$HOME/bin:/usr/local/bin:/usr/bin:/bin:$PATH"; ${envExportCmd}${relayExport}${promptExport}${lockCmd}cp ${shQuote(wslPathForWindowsFile(wslConfigFile))} ~/.hermes/config.yaml && `
-        : `export PATH="$HOME/.local/bin:$HOME/bin:/usr/local/bin:/usr/bin:/bin:$PATH"; ${envExportCmd}${relayExport}${promptExport}`;
-      if (tmpFile) {
-        cmd = `${syncConfigCmd}hermes chat -q "$(${wslPromptCmd})" -Q`;
-      } else {
-        cmd = `${syncConfigCmd}hermes chat -q ${shQuote(fullPrompt)} -Q`;
-      }
-      cmd += ' --toolsets hermes-cli,webui_image --accept-hooks --yolo';
-      if (providerName) cmd += ` --provider ${shQuote(providerName)}`;
-      if (modelName) cmd += ` -m ${shQuote(modelName)}`;
-      if (resumeId) cmd += ` --resume ${shQuote(resumeId)}`;
-      child = spawn('wsl', ['-e', 'bash', '-lc', cmd], { stdio: ['ignore', 'pipe', 'pipe'], timeout: 600000, windowsHide: true, env: customEnv });
-      yield { type: 'perf', stage: 'cli-spawned', ms: Date.now() - perfStart, command: 'wsl', promptFile: !!tmpFile, resumed: !!resumeId };
-    } else {
-      const args = ['chat', '-q', fullPrompt, '-Q'];
-      args.push('--toolsets', 'hermes-cli,webui_image', '--accept-hooks', '--yolo');
-      if (providerName) args.push('--provider', providerName);
-      if (modelName) args.push('-m', modelName);
-      if (resumeId) args.push('--resume', resumeId);
-      child = spawn('hermes', args, { stdio: ['ignore', 'pipe', 'pipe'], timeout: 600000, windowsHide: true, env: customEnv, shell: true });
-      yield { type: 'perf', stage: 'cli-spawned', ms: Date.now() - perfStart, command: 'native', promptFile: !!tmpFile, resumed: !!resumeId };
-    }
+    const args = ['chat', '-q', tmpFile ? fs.readFileSync(tmpFile, 'utf8') : fullPrompt, '-Q'];
+    args.push('--toolsets', 'hermes-cli,webui_image', '--accept-hooks', '--yolo');
+    if (providerName) args.push('--provider', providerName);
+    if (modelName) args.push('-m', modelName);
+    if (resumeId) args.push('--resume', resumeId);
+
+    let idleTimer = null;
+    const armIdleTimer = () => {
+      if (idleTimer) clearTimeout(idleTimer);
+      idleTimer = setTimeout(() => {
+        const err = new Error('Hermes idle timeout');
+        logCritical('idle-timeout', err, { runId, idleMs: HERMES_IDLE_TIMEOUT_MS });
+        try { if (child && !child.killed) child.kill('SIGTERM'); } catch (e) { logCritical('idle-kill', e, { runId }); }
+      }, HERMES_IDLE_TIMEOUT_MS);
+      idleTimer.unref?.();
+    };
+
+    child = registerHermesChild(spawn(hermesCmd.cmd || 'hermes', args, {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      timeout: HERMES_CLI_TIMEOUT_MS,
+      windowsHide: true,
+      env: customEnv,
+    }), { command: 'native', resumed: !!resumeId, promptFile: !!tmpFile, timeoutMs: HERMES_CLI_TIMEOUT_MS, idleTimeoutMs: HERMES_IDLE_TIMEOUT_MS });
+    child.once('error', e => logCritical('child-error', e, { runId }));
+    const closePromise = new Promise(resolve => child.once('close', resolve));
+    armIdleTimer();
+    yield { type: 'perf', stage: 'cli-spawned', runId, ms: Date.now() - perfStart, command: 'native', promptFile: !!tmpFile, resumed: !!resumeId, timeoutMs: HERMES_CLI_TIMEOUT_MS, idleTimeoutMs: HERMES_IDLE_TIMEOUT_MS };
+    mirror('spawn', 'native' + (resumeId ? ' resume=' + resumeId : ''));
 
     let stdoutBuffer = '';
     let stderr = '';
@@ -709,30 +796,44 @@ async function* hermesStream(prompt, history, modelCfg, fullCfg = {}) {
     let meaningfulStdout = false;
     let stderrBuffer = '';
     const stderrEvents = [];
+    const yieldQueue = [];
+    const queueStderrLine = line => {
+      const cleanLine = cleanAgentLine(line);
+      if (cleanLine.trim()) yieldQueue.push({ type: 'raw_stderr', stream: 'stderr', runId, text: cleanLine.trim().slice(0, 4000), ts: Date.now() });
+      const event = parseAgentLine(line);
+      if (event && event.type === 'session') stderrEvents.push(event);
+    };
     child.stderr.on('data', chunk => {
+      armIdleTimer();
       const text = chunk.toString('utf8');
       stderr += text;
+      mirror('stderr', text);
       stderrBuffer += text;
       let idx;
       while ((idx = stderrBuffer.indexOf('\n')) >= 0) {
         const line = stderrBuffer.slice(0, idx);
         stderrBuffer = stderrBuffer.slice(idx + 1);
-        const event = parseAgentLine(line);
-        if (event && event.type === 'session') stderrEvents.push(event);
+        queueStderrLine(line);
       }
     });
 
     for await (const chunk of child.stdout) {
+      armIdleTimer();
       while (stderrEvents.length) yield stderrEvents.shift();
+      while (yieldQueue.length) yield yieldQueue.shift();
       if (!firstStdout) {
         firstStdout = true;
-        yield { type: 'perf', stage: 'first-cli-stdout', ms: Date.now() - perfStart, bytes: chunk.length || 0, resumed: !!resumeId };
+        yield { type: 'perf', stage: 'first-cli-stdout', runId, ms: Date.now() - perfStart, bytes: chunk.length || 0, resumed: !!resumeId };
       }
-      stdoutBuffer += chunk.toString('utf8');
+      const stdoutText = chunk.toString('utf8');
+      mirror('stdout', stdoutText);
+      stdoutBuffer += stdoutText;
       let idx;
       while ((idx = stdoutBuffer.indexOf('\n')) >= 0) {
         const line = stdoutBuffer.slice(0, idx);
         stdoutBuffer = stdoutBuffer.slice(idx + 1);
+        const cleanLine = line.replace(/\r$/, '');
+        if (cleanLine.trim()) yield { type: 'raw_line', stream: 'stdout', runId, text: cleanLine.slice(0, 4000), ts: Date.now() };
         const event = parseAgentLine(line);
         if (event && event.type !== 'session') meaningfulStdout = true;
         if (event) yield event;
@@ -740,15 +841,23 @@ async function* hermesStream(prompt, history, modelCfg, fullCfg = {}) {
     }
 
     if (stdoutBuffer.trim()) {
+      yield { type: 'raw_line', stream: 'stdout', runId, text: stdoutBuffer.trim().slice(0, 4000), ts: Date.now() };
       const event = parseAgentLine(stdoutBuffer);
       if (event && event.type !== 'session') meaningfulStdout = true;
       if (event) yield event;
     }
+    const exitCode = await closePromise;
+    if (idleTimer) clearTimeout(idleTimer);
+    if (stderrBuffer.trim()) {
+      queueStderrLine(stderrBuffer);
+      stderrBuffer = '';
+    }
     while (stderrEvents.length) yield stderrEvents.shift();
-
-    const exitCode = await new Promise(resolve => child.on('close', resolve));
+    while (yieldQueue.length) yield yieldQueue.shift();
+    mirror('exit', 'code=' + exitCode, { meaningfulStdout, stderr: !!stderr.trim() });
+    yield { type: 'agent_exit', runId, code: exitCode, meaningfulStdout, stderrTail: stderr.trim().slice(-1000), ms: Date.now() - perfStart };
     if (resumeId && !meaningfulStdout) {
-      yield { type: 'perf', stage: 'resume-empty-retry', ms: Date.now() - perfStart, sessionId: resumeId, exitCode, reason: firstStdout ? 'session-only' : 'empty' };
+      yield { type: 'perf', stage: 'resume-empty-retry', runId, ms: Date.now() - perfStart, sessionId: resumeId, exitCode, reason: firstStdout ? 'session-only' : 'empty' };
       yield* runHermesAttempt('');
       return;
     }
@@ -765,19 +874,22 @@ async function* hermesStream(prompt, history, modelCfg, fullCfg = {}) {
   try {
     yield* runHermesAttempt(resumeSessionId);
   } catch (e) {
+    logCritical('stream-error', e, { runId });
     if (e.killed || e.signal === 'SIGTERM') {
       yield { type: 'error', text: 'Hermes 请求超时或被中断' };
       return;
     }
     yield { type: 'error', text: e.message || 'Hermes 调用失败' };
   } finally {
-    if (tmpFile && fs.existsSync(tmpFile)) {
-      try { fs.unlinkSync(tmpFile); } catch (_) {}
-    }
-    if (wslConfigFile && fs.existsSync(wslConfigFile)) {
-      try { fs.unlinkSync(wslConfigFile); } catch (_) {}
-    }
+    cleanupTempFile(tmpFile, 'prompt');
   }
 }
 
-module.exports = { hermesStream, parseAgentLine, detectHermesCommand };
+module.exports = {
+  hermesStream,
+  parseAgentLine,
+  detectHermesCommand,
+  stopActiveHermesChildren,
+  activeHermesChildStats,
+  syncWebuiRelayProviderConfig,
+};

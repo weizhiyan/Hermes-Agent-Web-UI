@@ -1,6 +1,7 @@
 ﻿const Lark = require('@larksuiteoapi/node-sdk');
 const store = require('./store');
 const { spawnSync } = require('child_process');
+const { detectHermesCommand } = require('./hermes');
 const iconv = require('iconv-lite');
 
 let channel = null;
@@ -59,32 +60,19 @@ function pushHistory(chatId, role, content) {
   return chatHistories.get(id);
 }
 
-function shQuote(value) {
-  return `'${String(value || '').replace(/'/g, `'\\''`)}'`;
-}
-
 function runHermesOneshot(prompt) {
-  const args = ['-z', String(prompt || ''), '--accept-hooks'];
-  const native = spawnSync('hermes', args, {
-    encoding: 'utf8',
-    timeout: 10 * 60 * 1000,
-    maxBuffer: 20 * 1024 * 1024,
-    windowsHide: true,
-    shell: true,
-  });
-  if (!native.error && native.status === 0 && String(native.stdout || '').trim()) return String(native.stdout || '').trim();
-
-  const command = `export PATH=\"$HOME/.local/bin:$HOME/bin:/usr/local/bin:/usr/bin:/bin:$PATH\"; hermes -z ${shQuote(prompt)} --accept-hooks`;
-  const wsl = spawnSync('wsl', ['-e', 'bash', '-lc', command], {
+  const hermes = detectHermesCommand();
+  if (!hermes) throw new Error('Hermes Agent CLI not found. Install native Hermes on Windows and ensure hermes is on PATH.');
+  const result = spawnSync(hermes.cmd || 'hermes', ['-z', String(prompt || ''), '--accept-hooks'], {
     encoding: 'utf8',
     timeout: 10 * 60 * 1000,
     maxBuffer: 20 * 1024 * 1024,
     windowsHide: true,
   });
-  if (wsl.error) throw new Error('Hermes Agent CLI \u8c03\u7528\u5931\u8d25\uff1a' + wsl.error.message);
-  if (wsl.status !== 0) throw new Error('Hermes Agent CLI \u8fd4\u56de\u9519\u8bef\uff1a' + (wsl.stderr || wsl.stdout || '').slice(0, 500));
-  const text = String(wsl.stdout || '').trim();
-  if (!text) throw new Error('Hermes Agent \u6ca1\u6709\u8fd4\u56de\u5185\u5bb9');
+  if (result.error) throw new Error('Hermes Agent CLI failed: ' + result.error.message);
+  if (result.status !== 0) throw new Error('Hermes Agent CLI exited ' + result.status + ': ' + (result.stderr || result.stdout || '').slice(0, 500));
+  const text = String(result.stdout || '').trim();
+  if (!text) throw new Error('Hermes Agent returned empty output');
   return text;
 }
 

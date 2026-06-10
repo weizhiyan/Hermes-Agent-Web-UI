@@ -184,6 +184,14 @@ async function apiGet(path) {
     return j.code === 0 ? j.data : null;
   } catch { return null; }
 }
+async function apiGetRaw(path) {
+  try {
+    const r = await fetch(apiBase() + path, { cache:'no-store', headers: { 'Accept': 'application/json', 'Cache-Control':'no-cache' } });
+    return await r.json();
+  } catch (error) {
+    return { code: 1, data: null, msg: error.message || '请求失败' };
+  }
+}
 async function apiPost(path, body) {
   try {
     const r = await fetch(apiBase() + path, {
@@ -191,8 +199,14 @@ async function apiPost(path, body) {
       body: JSON.stringify(body),
     });
     const j = await r.json();
+    if (j.code !== 0 && path !== '/api/issues' && typeof autoReportWebuiIssue === 'function') {
+      autoReportWebuiIssue('api_error', j.msg || ('POST '+path+' failed'), { severity:'medium', context:{ path, status:r.status } });
+    }
     return j.code === 0 ? j.data : null;
-  } catch { return null; }
+  } catch (error) {
+    if (path !== '/api/issues' && typeof autoReportWebuiIssue === 'function') autoReportWebuiIssue('api_error', error.message || ('POST '+path+' failed'), { severity:'medium', context:{ path } });
+    return null;
+  }
 }
 
 async function apiPostRaw(path, body) {
@@ -334,11 +348,15 @@ async function apiStream(path, body, callbacks) {
           case 'token': callbacks.onToken?.(data.text); break;
           case 'reasoning': callbacks.onReasoning?.(data.text); break;
           case 'tool': callbacks.onTool?.(data); break;
+          case 'tool_running': callbacks.onToolRunning?.(data); break;
           case 'tool_complete': callbacks.onToolComplete?.(data); break;
+          case 'heartbeat': callbacks.onHeartbeat?.(data); break;
+          case 'agent_raw': callbacks.onAgentRaw?.(data); break;
+          case 'agent_exit': callbacks.onAgentExit?.(data); break;
           case 'title': callbacks.onTitle?.(data); break;
           case 'perf': callbacks.onPerf?.(data); break;
           case 'done': await callbacks.onDone?.(data); break;
-          case 'error': callbacks.onError?.(data.msg); break;
+          case 'error': callbacks.onError?.(data.msg, data); if(typeof autoReportWebuiIssue==='function') autoReportWebuiIssue('sse_error', data.msg || 'SSE error', { severity:'high', context:{ path } }); break;
         }
       }
     }
@@ -358,13 +376,16 @@ const state={
   modelsConfig: null,
   modelsConfigRoot: null,
   modelConfigScope: LS.get('hermes.modelConfigScope','webui'),
+  _editorFetchedModels: null,
+  _modelEditorContext: null,
   chatModelOverride: LS.get('hermes.chatModelOverride','auto'),
   forceImageGeneration: LS.get('hermes.forceImageGeneration',false),
+  imagePromptMode: LS.get('hermes.imagePromptMode',false),
   pendingImageAttachments: LS.get('hermes.pendingImageAttachments',[]),
   imageEditReference: LS.get('hermes.imageEditReference',null),
   cliSessionLimit: LS.get('hermes.cliSessionLimit',500),
   cliStatusCache: LS.get('hermes.cliStatusCache', null),
-  settings: LS.get('hermes.settings',{lang:'zh',stream:true,quickMode:false,history:16,systemPrompt:'',api:'',dataRootDir:'',memoryDir:'',imageDir:'',historyDir:'',mdLibraryDir:'',debugPerf:false,toolPermissions:{commandPolicy:'safe',logApprovals:true,requireApprovalForRisky:true},promptToggles:{webuiRules:true,coreMemory:true,agentRules:true,userSystemPrompt:true,profilePrompt:true,skills:true,knowledgeSearch:true},knowledgeSearchLimit:3}),
+  settings: LS.get('hermes.settings',{lang:'zh',stream:true,quickMode:false,routingMode:'auto',agentRuntime:'cli',hermesApiServerUrl:'',hermesApiServerKey:'',history:16,systemPrompt:'',api:'',dataRootDir:'',memoryDir:'',imageDir:'',historyDir:'',mdLibraryDir:'',debugPerf:false,toolPermissions:{commandPolicy:'safe',logApprovals:true,requireApprovalForRisky:true},promptToggles:{webuiRules:true,coreMemory:true,agentRules:true,userSystemPrompt:true,profilePrompt:true,skills:true,knowledgeSearch:true},knowledgeSearchLimit:3}),
   skills: [],
   skillFilter: {source:null,search:'',category:null},
   selectedSkill: null,
@@ -393,7 +414,7 @@ if (typeof window !== 'undefined') window.scheduleAppRender = scheduleAppRender;
 if (typeof window !== 'undefined') window.syncArtifactContextChip = syncArtifactContextChip;
 
 function blankModelsConfigClient(){
-  return { params:{temperature:0.7,maxTokens:4096,topP:1}, current:'', library:[], scenarios:{chat:'',reasoning:'',vision:'',image:'',fallback:''} };
+  return { params:{temperature:0.7,maxTokens:4096,topP:1}, current:'', library:[], scenarios:{chat:'',reasoning:'',vision:'',image:'',video:'',fallback:''} };
 }
 function isScopedModelsRoot(data){
   return !!(data && typeof data==='object' && (data.webui || data.agent));
@@ -598,6 +619,7 @@ function save(){
   LS.set('hermes.model',state.model);
   LS.set('hermes.chatModelOverride',state.chatModelOverride);
   LS.set('hermes.forceImageGeneration',state.forceImageGeneration);
+  LS.set('hermes.imagePromptMode',!!state.imagePromptMode);
   LS.set('hermes.pendingImageAttachments',state.pendingImageAttachments||[]);
   LS.set('hermes.imageEditReference',state.imageEditReference||null);
   LS.set('hermes.cliSessionLimit',state.cliSessionLimit||500);
@@ -611,7 +633,7 @@ function save(){
 
 function navigate(page){
   hideNavTooltip();
-  if(['settings','models','logs','files','gateways','usage'].includes(page)){
+  if(['settings','models','logs','files','gateways','usage','diagnostics'].includes(page)){
     settingsTab=page;
     state.page='settingsPage';
   }else if(['skills','channels','memory','jobs','profiles'].includes(page)){
@@ -645,7 +667,7 @@ function renderSidebar(){
   const nav=$('#sidebarNav');
   if(!nav) return;
   const activePage = state.page === 'skill' || ['skills','channels','memory','jobs','profiles'].includes(state.page) ? 'skill'
-    : state.page === 'settingsPage' || ['settings','models','logs','files','gateways','usage'].includes(state.page) ? 'settingsPage'
+    : state.page === 'settingsPage' || ['settings','models','logs','files','gateways','usage','diagnostics'].includes(state.page) ? 'settingsPage'
     : state.page === 'groupChat' ? 'groupChat'
     : 'chat';
   nav.innerHTML=NAV.map(it=>`
@@ -675,6 +697,168 @@ function hideNavTooltip(){
   const tip=document.getElementById('globalNavTooltip');
   if(tip) tip.classList.remove('show');
 }
+
+function recentIssueEvents(limit=12){
+  const c=currentChat?.();
+  const msgs=(c&&c.messages)||[];
+  const lastAssistant=[...msgs].reverse().find(m=>m&&m.role==='assistant'&&Array.isArray(m.processEvents));
+  return (lastAssistant?.processEvents||[]).slice(-limit);
+}
+
+function buildIssueContext(extra={}){
+  const c=currentChat?.();
+  const profile=(typeof currentProfile==='function'?currentProfile():null) || (typeof profileForChat==='function'&&c?profileForChat(c):null) || null;
+  return {
+    page:state.page,
+    chatId:c?.id||c?._id||'',
+    chatTitle:c?.title||'',
+    messageId:state.currentAssistantMsgId||'',
+    agentId:profile?.id||state.activeProfile||'',
+    agentName:profile?.name||'',
+    model:state.chatModelOverride||state.model?.model||'',
+    runtime:'cli',
+    routingMode:state.settings?.routingMode||'auto',
+    url:location.href,
+    ...extra,
+  };
+}
+
+async function submitWebuiIssue(payload){
+  const data=await apiPost('/api/issues',payload);
+  if(data){ toast('\u95ee\u9898\u5df2\u8bb0\u5f55','success'); return data; }
+  toast('\u95ee\u9898\u8bb0\u5f55\u5931\u8d25','error');
+  return null;
+}
+
+function openIssueReporter(preset={}){
+  const ctx=buildIssueContext(preset.context||{});
+  const recent=recentIssueEvents();
+  openModal(`<div class="issue-report-modal" style="padding:24px;min-width:min(620px,92vw);max-width:92vw">
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:14px">
+      <div><h3 style="margin:0 0 4px">\u8bb0\u5f55 WebUI \u95ee\u9898</h3><p style="margin:0;color:var(--c-ink-muted);font-size:var(--fs-sm)">\u4f1a\u81ea\u52a8\u9644\u5e26\u5f53\u524d\u9875\u9762\u3001\u4f1a\u8bdd\u3001Agent\u3001\u6a21\u578b\u548c\u6700\u8fd1\u6267\u884c\u4e8b\u4ef6\u3002</p></div>
+      <button class="modal-close" onclick="closeModal()" aria-label="\u5173\u95ed">\u00d7</button>
+    </div>
+    <label class="settings-label">\u95ee\u9898\u63cf\u8ff0</label>
+    <textarea id="issueDesc" style="width:100%;min-height:110px;margin:6px 0 12px;padding:10px 12px;border-radius:var(--r-md);border:1px solid var(--c-hairline);background:var(--c-canvas);color:var(--c-ink);resize:vertical" placeholder="\u6bd4\u5982\uff1a\u5207\u6362\u6a21\u578b\u540e\u8f93\u5165\u6846\u5185\u5bb9\u88ab\u6e05\u7a7a\u4e86">${esc(preset.description||'')}</textarea>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px">
+      <div><label class="settings-label">\u89e6\u53d1\u6761\u4ef6</label><input id="issueTrigger" value="${esc(preset.trigger||'')}" style="width:100%;height:36px;margin-top:6px;padding:0 10px;border-radius:var(--r-md);border:1px solid var(--c-hairline);background:var(--c-canvas);color:var(--c-ink)"></div>
+      <div><label class="settings-label">\u4f18\u5148\u7ea7</label><select id="issueSeverity" style="width:100%;height:36px;margin-top:6px"><option value="medium">\u4e2d</option><option value="high">\u9ad8</option><option value="low">\u4f4e</option><option value="critical">\u4e25\u91cd</option></select></div>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px">
+      <div><label class="settings-label">\u9884\u671f\u8868\u73b0</label><input id="issueExpected" value="${esc(preset.expected||'')}" style="width:100%;height:36px;margin-top:6px;padding:0 10px;border-radius:var(--r-md);border:1px solid var(--c-hairline);background:var(--c-canvas);color:var(--c-ink)"></div>
+      <div><label class="settings-label">\u5b9e\u9645\u8868\u73b0</label><input id="issueActual" value="${esc(preset.actual||'')}" style="width:100%;height:36px;margin-top:6px;padding:0 10px;border-radius:var(--r-md);border:1px solid var(--c-hairline);background:var(--c-canvas);color:var(--c-ink)"></div>
+    </div>
+    <details style="margin:10px 0;color:var(--c-ink-muted)"><summary>\u9644\u5e26\u4e0a\u4e0b\u6587</summary><pre style="white-space:pre-wrap;max-height:180px;overflow:auto;background:var(--c-surface2);padding:10px;border-radius:var(--r-md)">${esc(JSON.stringify({context:ctx,recentEvents:recent},null,2))}</pre></details>
+    <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:16px"><button class="btn btn-secondary" onclick="closeModal()">\u53d6\u6d88</button><button class="btn btn-primary" onclick="submitIssueFromModal()">\u4fdd\u5b58\u95ee\u9898</button></div>
+  </div>`);
+}
+
+async function submitIssueFromModal(){
+  const description=$('#issueDesc')?.value?.trim()||'';
+  if(!description){toast('\u8bf7\u586b\u5199\u95ee\u9898\u63cf\u8ff0','warning');return}
+  await submitWebuiIssue({
+    source:'user',
+    type:'user_reported',
+    description,
+    title:description.slice(0,80),
+    trigger:$('#issueTrigger')?.value?.trim()||'',
+    expected:$('#issueExpected')?.value?.trim()||'',
+    actual:$('#issueActual')?.value?.trim()||'',
+    severity:$('#issueSeverity')?.value||'medium',
+    context:buildIssueContext(),
+    recentEvents:recentIssueEvents(),
+  });
+  closeModal();
+}
+
+function autoReportWebuiIssue(kind,message,extra={}){
+  const key=kind+'|'+String(message||'').slice(0,160);
+  const now=Date.now();
+  window.__hermesIssueDedup=window.__hermesIssueDedup||{};
+  if(window.__hermesIssueDedup[key]&&now-window.__hermesIssueDedup[key]<30000) return;
+  window.__hermesIssueDedup[key]=now;
+  apiPost('/api/issues',{
+    source:'auto',
+    type:kind,
+    title:String(message||kind).slice(0,100),
+    description:String(message||''),
+    severity:extra.severity||'medium',
+    context:buildIssueContext(extra.context||{}),
+    recentEvents:recentIssueEvents(),
+    ...extra,
+  }).catch(()=>{});
+}
+
+window.openIssueReporter=openIssueReporter;
+window.submitIssueFromModal=submitIssueFromModal;
+
+let _agentConsoleOpen=false;
+let _agentConsoleMode='events';
+
+function agentConsoleLineHtml(item){
+  const ts=Number(item.ts||item.createdAt||Date.now());
+  const time=new Date(ts).toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit',second:'2-digit'});
+  const type=String(item.type||item.level||item.source||'log').slice(0,16);
+  const text=item.msg||item.message||item.title||item.description||item.error||'';
+  const cls=type.includes('error')||item.level==='error'?' error':(type.includes('stderr')?' raw_stderr':'');
+  return `<div class="agent-console-line${cls}"><span class="agent-console-time">${esc(time)}</span><span class="agent-console-type">${esc(type)}</span><span class="agent-console-text">${esc(String(text||'').slice(0,600))}</span></div>`;
+}
+
+function currentProcessConsoleLines(){
+  const c=currentChat?.();
+  const msgs=(c&&c.messages)||[];
+  const rows=[];
+  msgs.slice(-8).forEach(msg=>{
+    (msg.processEvents||[]).forEach(event=>rows.push({ts:msg.ts||Date.now(),type:event.type||event.stage||'event',message:processEventText(event)}));
+  });
+  return rows.slice(-120);
+}
+
+async function renderAgentConsole(){
+  const panel=$('#agentConsolePanel');
+  if(!panel) return;
+  const health=`<div class="agent-console-health">
+    <span class="agent-console-health-item ${state.connected!==false?'ok':'bad'}"><i></i>WebUI ${state.connected!==false?'\u6b63\u5e38':'\u65ad\u5f00'}</span>
+    <span class="agent-console-health-item ${state.currentStreamController?'busy':'ok'}"><i></i>Agent ${state.currentStreamController?'\u8fd0\u884c\u4e2d':'\u7a7a\u95f2'}</span>
+    <span class="agent-console-health-item ok"><i></i>CLI</span>
+  </div>`;
+  panel.innerHTML=`<div class="agent-console-head">
+    <div class="agent-console-title"><span class="conn-dot ${state.currentStreamController?'running':(state.connected!==false?'online':'offline')}"></span><span>\u8fd0\u884c\u65e5\u5fd7</span></div>
+    <div class="agent-console-actions">
+      <button class="agent-console-action ${_agentConsoleMode==='events'?'active':''}" onclick="setAgentConsoleMode('events')">\u8fc7\u7a0b</button>
+      <button class="agent-console-action ${_agentConsoleMode==='logs'?'active':''}" onclick="setAgentConsoleMode('logs')">\u65e5\u5fd7</button>
+      <button class="agent-console-action ${_agentConsoleMode==='issues'?'active':''}" onclick="setAgentConsoleMode('issues')">\u95ee\u9898</button>
+      <button class="agent-console-action" onclick="openIssueReporter()">\u8bb0\u5f55\u95ee\u9898</button>
+      <button class="agent-console-close" onclick="closeAgentConsole()">\u00d7</button>
+    </div>
+  </div><div class="agent-console-body" id="agentConsoleBody"><div class="agent-console-empty">\u52a0\u8f7d\u4e2d\u2026</div></div>${health}`;
+  const body=$('#agentConsoleBody');
+  let rows=[];
+  if(_agentConsoleMode==='logs') rows=(await apiGet('/api/system/logs?limit=120'))||[];
+  else if(_agentConsoleMode==='issues') rows=(await apiGet('/api/issues?limit=120'))||[];
+  else rows=currentProcessConsoleLines();
+  if(body) body.innerHTML=rows.length?rows.map(agentConsoleLineHtml).join(''):'<div class="agent-console-empty">\u6682\u65e0\u8bb0\u5f55</div>';
+}
+
+function toggleAgentConsole(){
+  _agentConsoleOpen=!_agentConsoleOpen;
+  const panel=$('#agentConsolePanel');
+  if(panel) panel.classList.toggle('open',_agentConsoleOpen);
+  if(_agentConsoleOpen) renderAgentConsole();
+}
+function closeAgentConsole(){
+  _agentConsoleOpen=false;
+  const panel=$('#agentConsolePanel');
+  if(panel) panel.classList.remove('open');
+}
+function setAgentConsoleMode(mode){
+  _agentConsoleMode=mode||'events';
+  renderAgentConsole();
+}
+
+window.toggleAgentConsole=toggleAgentConsole;
+window.closeAgentConsole=closeAgentConsole;
+window.setAgentConsoleMode=setAgentConsoleMode;
 
 function renderPage(){
   const main=$('#mainContent');
@@ -799,12 +983,15 @@ function renderChat(){
                 <button type="button" onclick="removePendingImage('${esc(img.id)}')" title="移除">${SVG.x}</button>
               </div>`).join('')}
             </div>`:''}
-            <textarea id="chatInput" rows="1" placeholder="输入消息…" onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendMessage()}" oninput="autoResizeInput(this)"></textarea>
+            <div class="chat-input-main-row">
+              ${renderImagePromptModeTag()}
+              <textarea id="chatInput" rows="1" placeholder="\u8f93\u5165\u6d88\u606f\u2026" onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendMessage()}" oninput="autoResizeInput(this)"></textarea>
+            </div>
             <div class="chat-input-toolbar">
               <div class="chat-input-left">
                 <button class="input-action-btn toolbar-icon-btn" onclick="document.getElementById('fileInput').click()" title="上传文件" aria-label="上传文件">${SVG.attach}</button>
                 <div class="image-tool-wrap" onmouseenter="scheduleShowImageToolSwitch()" onmouseleave="scheduleHideImageToolSwitch()">
-                  <button class="input-action-btn toolbar-icon-btn image-gen-toggle${state.forceImageGeneration?' active':''}" onclick="insertImagePrompt()" title="${state.forceImageGeneration?'\u76f4\u8fde\u751f\u56fe\u5df2\u5f00\u542f\uff1a\u8df3\u8fc7\u4e3b Agent':'\u63d2\u5165\u751f\u6210\u56fe\u50cf\u63d0\u793a\u8bcd\uff0c\u7531 HermesAgent \u8bc6\u522b\u5e76\u8c03\u7528\u751f\u56fe\u5de5\u5177'}" aria-label="\u56fe\u50cf">${SVG.image}</button>
+                  <button class="input-action-btn toolbar-icon-btn image-gen-toggle" onclick="insertImagePrompt()" title="\u7531 HermesAgent \u8bc6\u522b\u5e76\u8c03\u7528\u751f\u56fe\u5de5\u5177" aria-label="\u56fe\u50cf">${SVG.image}</button>
                   <div class="image-tool-pop" id="imageToolPop" onmouseenter="showImageToolSwitch()" onmouseleave="scheduleHideImageToolSwitch()">
                     <div>
                       <strong>\u8df3\u8fc7\u4e3b Agent \u76f4\u8fde\u751f\u56fe</strong>
@@ -894,11 +1081,12 @@ function renderSettingsPage(){
     {id:'settings',label:'设置',icon:'settings'},
     {id:'models',label:'模型配置',icon:'models'},
     {id:'logs',label:'日志',icon:'logs'},
+    {id:'diagnostics',label:'Diagnostics',icon:'usage'},
     {id:'files',label:'文件',icon:'files'},
     {id:'usage',label:'用量统计',icon:'usage'},
   ];
   const active=settingsTab;
-  const renderers={settings:renderSettings,models:renderModels,logs:renderLogs,files:renderFiles,usage:renderUsage};
+  const renderers={settings:renderSettings,models:renderModels,logs:renderLogs,diagnostics:renderDiagnostics,files:renderFiles,usage:renderUsage};
   return `
     <div style="display:flex;flex-direction:column;height:100%">
       <div class="tabs" style="padding:0 24px">
@@ -914,8 +1102,6 @@ function setDirectImageMode(on){
   state.forceImageGeneration=!!on;
   save();
   toast(state.forceImageGeneration?'已开启直连生图：跳过主 Agent，使用当前提示词直接生成':'已关闭直连生图：普通描述由 HermesAgent 识别并调用生图工具','info');
-  const btn=document.querySelector('.image-gen-toggle');
-  if(btn) btn.classList.toggle('active',state.forceImageGeneration);
 }
 
 let imageToolShowTimer=null;
@@ -943,21 +1129,30 @@ function hideImageToolSwitch(){
   if(pop) pop.classList.remove('show');
 }
 
-function insertImagePrompt(){
-  const ta=$('#chatInput');
-  if(!ta) return;
-  const prefix=IMAGE_PROMPT_PREFIX;
-  const value=ta.value||'';
-  if(!value.trim()){
-    ta.value=prefix;
-  }else if(!value.includes(prefix)){
-    const start=ta.selectionStart ?? value.length;
-    const end=ta.selectionEnd ?? start;
-    ta.value=value.slice(0,start)+prefix+value.slice(end);
-    ta.selectionStart=ta.selectionEnd=start+prefix.length;
+function renderImagePromptModeTag(){
+  return state.imagePromptMode?'<span class="input-mode-tag image-mode-tag"><span>\u56fe\u50cf\u751f\u6210</span><button type="button" onclick="clearImagePromptMode()" title="\u79fb\u9664\u56fe\u50cf\u751f\u6210\u6807\u7b7e">'+SVG.x+'</button></span>':'';
+}
+
+function syncImagePromptModeTag(){
+  const row=document.querySelector('.chat-input-main-row');
+  if(!row) return;
+  const old=row.querySelector('.input-mode-tag');
+  const html=renderImagePromptModeTag();
+  if(state.imagePromptMode){
+    if(old) old.outerHTML=html;
+    else row.insertAdjacentHTML('afterbegin', html);
+  }else if(old){
+    old.remove();
   }
-  ta.focus();
-  autoResizeInput(ta);
+}
+
+function insertImagePrompt(){
+  state.imagePromptMode=true;
+  save();
+  syncImagePromptModeTag();
+  const ta=$('#chatInput');
+  if(ta) ta.focus();
+  toast(state.forceImageGeneration?'\u5f53\u524d\u5df2\u5f00\u542f\u76f4\u8fde\u751f\u56fe\uff0c\u53d1\u9001\u540e\u4f1a\u8df3\u8fc7 Agent\u3002':'\u5df2\u6dfb\u52a0\u56fe\u50cf\u751f\u6210\u6807\u7b7e\uff0c\u53d1\u9001\u540e Agent \u4f1a\u77e5\u9053\u8fd9\u662f\u751f\u56fe\u4efb\u52a1\u3002','info');
 }
 
 function insertCommandPrompt(){
@@ -984,6 +1179,12 @@ function fileToDataUrl(file){
     reader.onerror=()=>reject(reader.error||new Error('读取文件失败'));
     reader.readAsDataURL(file);
   });
+}
+
+function clearImagePromptMode(){
+  state.imagePromptMode=false;
+  save();
+  syncImagePromptModeTag();
 }
 
 function renderPendingImageStrip(){
@@ -1252,9 +1453,8 @@ function handleLocalHermesCommand(text){
     return true;
   }
   if(normalized==='/status'){
-    const profile=profileForChat(currentChat())||getActiveProfile();
     const model=state.chatModelOverride==='auto'?'自动 · '+effectiveChatModelName():(getModelById(state.chatModelOverride)?.name||state.chatModelOverride);
-    openModal(`<div style="padding:24px;min-width:min(560px,92vw)">
+    openModal(`<div style="padding:24px;min-width:min(620px,92vw)">
       <h3 style="margin:0 0 12px">当前状态</h3>
       <div style="line-height:1.9">
         <div><strong>模型：</strong>${esc(model)}</div>
@@ -1264,8 +1464,15 @@ function handleLocalHermesCommand(text){
         <div><strong>记忆目录：</strong>${esc(state.settings.memoryDir||'自动匹配')}</div>
         <div><strong>图片目录：</strong>${esc(state.settings.imageDir||'自动匹配')}</div>
       </div>
+      <div id="agentStatusToolsets" style="margin-top:14px;color:var(--c-ink-muted)">正在读取 Agent 工具列表…</div>
       <div style="display:flex;justify-content:flex-end;margin-top:18px"><button class="btn btn-primary" onclick="closeModal()">关闭</button></div>
     </div>`);
+    apiGet('/api/agent').then(data=>{
+      const el=$('#agentStatusToolsets');
+      if(!el) return;
+      const list=Array.isArray(data?.toolsets)?data.toolsets:[];
+      el.innerHTML='<div style="font-weight:700;color:var(--c-ink);margin-bottom:8px">Agent 工具列表</div>'+list.map(t=>`<div style="display:flex;gap:8px;align-items:flex-start;margin:6px 0"><span class="conn-dot ${t.enabled?'online':'offline'}" style="margin-top:6px"></span><div><strong style="color:var(--c-ink)">${esc(t.name||'工具')}</strong><div>${esc(t.desc||'')}</div>${Array.isArray(t.tools)&&t.tools.length?`<code>${esc(t.tools.join(', '))}</code>`:''}</div></div>`).join('');
+    });
     return true;
   }
   if(normalized==='/clear'){
@@ -1285,10 +1492,10 @@ function toggleModelPopup(){
   if(!isVisible){
     const body=$('#modelPopupBody');
     if(body){
-      const models=getEnabledModels();
+      const models=getEnabledModels().filter(isChatSelectableModel);
       body.innerHTML=`<div class="model-popup-item${state.chatModelOverride==='auto'?' active':''}" onclick="selectModel('auto')">自动（按场景）</div>`+
         (models.length
-          ? models.map(m=>`<div class="model-popup-item${state.chatModelOverride===m.id?' active':''}" onclick="selectModel('${esc(m.id)}')">${esc(m.name)} <span style="margin-left:auto;color:var(--c-ink-muted);font-size:var(--fs-xs)">${esc(m.provider)}</span></div>`).join('')
+          ? models.map(m=>`<div class="model-popup-item${state.chatModelOverride===m.id?' active':''}" onclick="selectModel('${esc(m.id)}')">${esc(m.name)} <span style="margin-left:auto;color:var(--c-ink-muted);font-size:var(--fs-xs)">${isVisionChatModel(m)?'?? ? ':''}${esc(m.provider)}</span></div>`).join('')
           : '<div class="empty-text" style="padding:12px">还没有可用模型，请先到设置 > 模型配置添加真实 Provider。</div>');
     }
     placeInputPopup(popup,$('#modelPopupBtn'),'right');
@@ -1406,14 +1613,19 @@ function closeAllInputPopups(){
 }
 
 function selectModel(m){
+  const item=m==='auto'?null:getModelById(m);
+  if(item && !isChatSelectableModel(item)){
+    toast('\u8f93\u5165\u6846\u53ea\u80fd\u9009\u62e9\u5bf9\u8bdd\u6a21\u578b\uff1b\u56fe\u50cf/\u89c6\u9891\u6a21\u578b\u8bf7\u5728\u6a21\u578b\u914d\u7f6e\u7684\u5e94\u7528\u573a\u666f\u4e2d\u8bbe\u7f6e\u3002','warning');
+    return;
+  }
   state.chatModelOverride=m;
   if(m!=='auto'){
-    const item=getModelById(m);
     state.model={...state.model,provider:item?.provider||state.model.provider,model:item?.name||m,base:item?.base||state.model.base,key:item?.key||state.model.key};
   }
   save();
   closeAllInputPopups();
-  renderPage();
+  const btn=$('#modelPopupBtn');
+  if(btn) btn.textContent=state.chatModelOverride==='auto'?'??':(item?.name||m);
 }
 
 async function newChatWithProfile(id){
@@ -1442,9 +1654,55 @@ function getEnabledModels(){
   const lib=Array.isArray(cfg.library)?cfg.library:[];
   return lib.filter(m=>m.enabled!==false);
 }
+function modelTags(model){
+  return [...new Set([...(model?.tags||[]), model?.kind||'', model?.apiFormat||''].map(v=>String(v||'').toLowerCase()).filter(Boolean))];
+}
+function isVideoGenerationModel(model){
+  const tags=modelTags(model);
+  return model?.apiFormat==='openai-video' || tags.includes('video') || tags.includes('openai-video') || /video|sora|runway|kling|pika|veo/i.test(model?.name||'');
+}
+function isImageGenerationModel(model){
+  const tags=modelTags(model);
+  if(isVideoGenerationModel(model)) return false;
+  return model?.apiFormat==='openai-image' || tags.includes('image') || tags.includes('openai-image') || tags.includes('openai_image');
+}
+function isVisionChatModel(model){
+  const tags=modelTags(model);
+  return !isImageGenerationModel(model) && !isVideoGenerationModel(model) && (tags.includes('vision') || tags.includes('multimodal') || /vision|vl|gpt-4o|gemini|qwen.*vl/i.test(model?.name||''));
+}
+function isChatSelectableModel(model){
+  return model && model.enabled!==false && !isImageGenerationModel(model) && !isVideoGenerationModel(model);
+}
+function modelIdentityKey(model){
+  return [model?.id||'',model?.name||'',model?.provider||'',model?.base||''].join('::').toLowerCase();
+}
+function stripModelRuntimeMeta(model){
+  const copy={...(model||{})};
+  delete copy._scope;
+  delete copy._sharedScope;
+  return copy;
+}
+function allScopedModels(){
+  const root=state.modelsConfigRoot || normalizeModelsRootForClient(state.modelsConfig);
+  return ['webui','agent'].flatMap(scope=>{
+    const list=Array.isArray(root?.[scope]?.library)?root[scope].library:[];
+    return list.map(m=>({...m,_scope:scope}));
+  });
+}
+function dedupeModels(list){
+  const seen=new Set();
+  return (list||[]).filter(m=>{
+    const key=modelIdentityKey(m);
+    if(!key || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
 function getModelById(id){
+  const value=String(id||'');
+  if(!value) return null;
   const cfg=activeModelsConfig();
-  return (cfg.library||[]).find(m=>m.id===id||m.name===id);
+  return (cfg.library||[]).find(m=>m.id===value||m.name===value) || allScopedModels().find(m=>m.id===value||m.name===value) || null;
 }
 function scenarioModel(scene){
   const cfg=activeModelsConfig();
@@ -1459,8 +1717,16 @@ function scenarioModelName(scene){
 async function setScenarioModel(scene,id){
   const cfg=activeModelsConfig();
   cfg.scenarios={...(cfg.scenarios||{})};
-  if(id) cfg.scenarios[scene]=id;
-  else delete cfg.scenarios[scene];
+  if(id){
+    const selected=getModelById(id);
+    const lib=Array.isArray(cfg.library)?cfg.library:(cfg.library=[]);
+    if(selected && !lib.some(m=>m.id===selected.id||m.name===selected.name)){
+      lib.push(stripModelRuntimeMeta(selected));
+    }
+    cfg.scenarios[scene]=selected?.id || id;
+  }else{
+    delete cfg.scenarios[scene];
+  }
   await persistModelsConfig(cfg);
   toast('应用场景模型已更新','success');
   renderPage();
@@ -1838,42 +2104,135 @@ function buildPreviewActionHtml(rawContent){
   return '';
 }
 
+function toolDisplayName(tc){
+  return String(tc?.name || tc?.tool || tc?.tool_name || tc?.toolName || tc?.server || tc?.id || tc?.event_type || 'tool').trim() || 'tool';
+}
+
 function processEventText(event){
   const type=String(event?.type||event?.stage||'');
-  const name=String(event?.name||'');
-  const ms=Number(event?.ms||event?.elapsed||0);
-  const suffix=ms?` · ${ms}ms`:'';
-  if(type==='queued') return '已发送请求，等待后端接收';
-  if(type==='sse-flushed') return `后端已建立流式连接${suffix}`;
-  if(type==='route-selected') return event?.route==='direct' ? '已选择直连模型通道' : '已选择 Hermes Agent 通道';
-  if(type==='model-fallback') return `主模型失败，切换备用模型${event?.to?`：${event.to}`:''}`;
-  if(type==='hermes-api-connect') return '正在连接 Hermes API Server';
-  if(type==='hermes-api-failed') return `Hermes API Server 不可用，准备回退 CLI${event?.reason?`：${event.reason}`:''}`;
-  if(type==='route-fallback') return event?.route==='hermes-cli' ? '已回退 Hermes CLI 通道' : '直连不可用，已回退 Hermes Agent';
-  if(type==='agent-ask') return `Agent 需要用户确认${event?.title?`：${event.title}`:''}`;
-  if(type==='agent-ask-result') return event?.status==='answered' ? '已收到用户确认，继续执行' : `用户确认未完成：${event?.status||'unknown'}`;
-  if(type==='skill-match') return event?.items?.length ? `命中 Skill：${event.items.map(item=>item.trigger?`${item.name}（${item.trigger}）`:item.name).join('、')}` : (event?.names?.length ? `命中 Skill：${event.names.join('、')}` : '本次未命中专用 Skill');
-  if(type==='first-hermes-event') return `收到模型/Agent 首个事件${event?.eventType?`：${event.eventType}`:''}${suffix}`;
-  if(type==='first-cli-stdout') return `Hermes CLI 开始输出${suffix}`;
-  if(type==='first-token') return `收到首个回复 token${suffix}`;
-  if(type==='tool-start') return `调用工具：${name||'未命名工具'}`;
-  if(type==='tool-done') return `${event?.error?'工具失败':'工具完成'}：${name||'未命名工具'}`;
-  if(type==='done') return `回复完成${suffix}`;
-  if(type==='error') return `发生错误：${event?.message||'请求失败'}`;
-  if(type==='aborted') return '任务已终止';
-  if(type) return `执行事件：${type}${suffix}`;
+  const name=toolDisplayName(event);
+  const ms=Number(event?.ms||event?.elapsed||event?.elapsedMs||0);
+  const suffix=ms?` ? ${ms}ms`:'';
+  if(type==='queued') return 'Queued request';
+  if(type==='sse-flushed') return `Stream connected${suffix}`;
+  if(type==='route-selected') {
+    if(event?.route==='direct') return `Using direct model route${event?.reason?`: ${event.reason}`:''}`;
+    const runtime=event?.runtime&&event.runtime!=='auto' ? ` (${event.runtime})` : '';
+    return `Using Hermes Agent route${runtime}${event?.reason?`: ${event.reason}`:''}`;
+  }
+  if(type==='model-fallback') return `Model fallback${event?.to?`: ${event.to}`:''}`;
+  if(type==='hermes-api-connect') return 'Connecting to Hermes API Server';
+  if(type==='hermes-api-failed') return `Hermes API unavailable, falling back to native CLI${event?.reason?`: ${event.reason}`:''}`;
+  if(type==='hermes-session') {
+    const sid=event?.sessionId||event?.hermesSessionId||event?.session_id||'';
+    return `Hermes session${sid?`: ${sid}`:''}`;
+  }
+  if(type==='runtime-selected') return event?.runtime==='cli' ? 'Using native Hermes CLI runtime' : `Using Hermes runtime${event?.runtime?`: ${event.runtime}`:''}`;
+  if(type==='route-fallback') return event?.route==='hermes-cli' ? 'Fallback to native Hermes CLI' : 'Fallback to Hermes Agent';
+  if(type==='agent-ask') return `Waiting for user confirmation${event?.title?`: ${event.title}`:''}`;
+  if(type==='agent-ask-result') return event?.status==='answered' ? 'User confirmation received' : `User confirmation: ${event?.status||'unknown'}`;
+  if(type==='skill-match') return event?.items?.length ? `Skills matched: ${event.items.map(item=>item.trigger?`${item.name} (${item.trigger})`:item.name).join(', ')}` : (event?.names?.length ? `Skills matched: ${event.names.join(', ')}` : 'No dedicated skill matched');
+  if(type==='first-hermes-event') return `First Hermes event${event?.eventType?`: ${event.eventType}`:''}${suffix}`;
+  if(type==='cli-spawned') return `Native Hermes process started${suffix}`;
+  if(type==='first-cli-stdout') return `Native Hermes started output${suffix}`;
+  if(type==='first-token') return `First response token${suffix}`;
+  if(type==='tool-start') return `Tool started: ${name||'tool'}`;
+  if(type==='tool-running') return `Tool running: ${name||'tool'}${suffix}`;
+  if(type==='agent-raw') return `${event?.stream==='stderr'?'stderr':'stdout'}: ${String(event?.text||'').slice(0,160)}`;
+  if(type==='agent-exit') return `Native Hermes exited: code=${event?.code ?? 'unknown'}${event?.stderrTail?', stderr: '+String(event.stderrTail).slice(0,120):''}`;
+  if(type==='tool-done') return `${event?.error?'Tool failed':'Tool completed'}: ${name||'tool'}`;
+  if(type==='done') return `Completed${suffix}`;
+  if(type==='error') return `Error: ${event?.message||'request failed'}`;
+  if(type==='aborted') return 'Aborted';
+  if(type) return `Event: ${type}${suffix}`;
   return '';
 }
 
+function parseToolPreviewJson(value){
+  const text=String(value||'').trim();
+  if(!text) return null;
+  try{return JSON.parse(text)}catch(_){return null}
+}
+
+function dirnameFromPath(filePath){
+  const text=String(filePath||'').replace(/\\/g,'/');
+  const idx=text.lastIndexOf('/');
+  return idx>=0?text.slice(0,idx):'';
+}
+
+function joinLocalPath(base, rel){
+  const raw=String(rel||'').replace(/\\/g,'/');
+  if(/^[A-Za-z]:[\\/]/.test(raw)) return raw.replace(/\//g,'\\');
+  const parts=[];
+  [String(base||'').replace(/\\/g,'/'), raw].filter(Boolean).join('/').split('/').forEach(part=>{
+    if(!part||part==='.') return;
+    if(part==='..') parts.pop(); else parts.push(part);
+  });
+  if(/^[A-Za-z]:$/.test(parts[0]||'')) return parts.shift()+'\\'+parts.join('\\');
+  return parts.join('\\');
+}
+
+function fileRawUrl(localPath){
+  const value=String(localPath||'').trim();
+  return value?mediaUrl('/api/system/file-raw?path='+encodeURIComponent(value)):'';
+}
+
+function insertedMarkdownImageResult(tc){
+  const data=parseToolPreviewJson(tc?.output||tc?.preview);
+  if(!data||data.type!=='webui_markdown_insert_image_result'||!data.success) return null;
+  const fullImagePath=data.fullImagePath || (data.fullPath&&data.imagePath?joinLocalPath(dirnameFromPath(data.fullPath),data.imagePath):'');
+  return {...data, fullImagePath};
+}
+
+function renderInsertedImageToolCard(tc){
+  const data=insertedMarkdownImageResult(tc);
+  if(!data) return '';
+  const src=fileRawUrl(data.fullImagePath);
+  const title=data.imagePath||data.fullImagePath||'inserted image';
+  const doc=data.path||data.fullPath||'';
+  const imgHtml=src?'<button type="button" class="tool-image-card-preview" onclick="event.stopPropagation();openImagePreview(\''+esc(src)+'\',\''+esc(title)+'\')"><img src="'+esc(src)+'" alt="'+esc(title)+'"></button>':'';
+  const copyBtn=data.fullImagePath?'<button type="button" onclick="event.stopPropagation();copyText(\''+esc(data.fullImagePath)+'\',\'\u56fe\u7247\u8def\u5f84\u5df2\u590d\u5236\')">\u590d\u5236\u8def\u5f84</button>':'';
+  const openBtn=data.fullPath?'<button type="button" onclick="event.stopPropagation();HermesArtifact&&HermesArtifact.openHistoryFile(\''+encodeURIComponent(data.fullPath)+'\',\''+encodeURIComponent((data.path||'\u6587\u6863').split('/').pop())+'\')">\u6253\u5f00\u6587\u6863</button>':'';
+  return '<div class="tool-image-card">'+imgHtml+'<div class="tool-image-card-main"><div class="tool-image-card-title">\u5df2\u63d2\u5165\u56fe\u7247\u6587\u4ef6</div><div class="tool-image-card-path" title="'+esc(data.fullImagePath||'')+'">'+esc(title)+'</div><div class="tool-image-card-doc" title="'+esc(doc)+'">\u76ee\u6807\u6587\u6863\uff1a'+esc(doc)+'</div><div class="tool-image-card-actions">'+copyBtn+openBtn+'</div></div></div>';
+}
+
+function renderToolArtifactCardsHtml(toolCalls){
+  if(!Array.isArray(toolCalls)||!toolCalls.length) return '';
+  const cards=toolCalls.map(tc=>renderInsertedImageToolCard(tc)).filter(Boolean);
+  return cards.length?'<div class="tool-artifact-cards">'+cards.join('')+'</div>':'';
+}
+
+function processEventTone(event){
+  const type=String(event?.type||event?.stage||'');
+  if(type==='error'||event?.error) return 'error';
+  if(type==='tool-done') return event?.error?'error':'success';
+  if(type==='done') return 'success';
+  if(type==='tool-start'||type==='tool-running') return 'active';
+  return 'info';
+}
+
+function renderProcessTimelineHtml(events=[]){
+  const rows=(Array.isArray(events)?events:[]).map((event,i)=>{
+    const label=processEventText(event);
+    if(!label) return '';
+    const tone=processEventTone(event);
+    const ms=Number(event?.ms||event?.elapsed||event?.elapsedMs||0);
+    const time=event?.at?formatChatDate({ts:event.at},'short'):(ms?('+'+ms+'ms'):('#'+(i+1)));
+    const name=event?.name?'<span>'+esc(event.name)+'</span>':'';
+    const route=event?.route?'<span>'+esc(event.route)+'</span>':'';
+    return '<div class="process-timeline-row '+tone+'"><span class="process-timeline-dot"></span><span class="process-timeline-time">'+esc(time)+'</span><span class="process-timeline-text">'+esc(label)+'</span><span class="process-timeline-meta">'+name+route+'</span></div>';
+  }).filter(Boolean).join('');
+  return rows?'<div class="process-timeline">'+rows+'</div>':'';
+}
 function renderThinkingPanel(m,idPrefix){
   if(!m||m.role!=='assistant') return '';
   const tagThink=typeof HermesArtifact!=='undefined'?HermesArtifact.parseHermesStream(m.content||'').think:'';
   const rawThink=cleanThinkingContent([m.thinking||m.reasoning||'',tagThink].filter(Boolean).join('\n---\n'));
   const cleanContent=(m.content||'').replace(/<(?:redacted_thinking|think)>[\s\S]*?<\/(?:redacted_thinking|think)>/gi,'').trim();
   const skipThink=rawThink&&cleanContent&&rawThink.trim().length>20&&cleanContent.includes(rawThink.trim().slice(0,40));
-  const processLines=(Array.isArray(m.processEvents)?m.processEvents:[]).map(processEventText).filter(Boolean);
+  const processHtml=renderProcessTimelineHtml(m.processEvents||[]);
   const hasRealThink=Boolean(rawThink&&!skipThink);
-  const body=hasRealThink?rawThink:processLines.map((line,i)=>`${i+1}. ${line}`).join('\n');
+  const body=hasRealThink?rawThink:processHtml;
   if(!body) return '';
   const id='th_'+(idPrefix||m._msgId||(m.ts||Date.now()))+'_'+(m.ts||0);
   const duration=m.thinkingDuration?` · ${m.thinkingDuration}ms`:'';
@@ -1886,7 +2245,7 @@ function renderThinkingPanel(m,idPrefix){
         <span class="thinking-duration">${duration}</span>
         <span class="thinking-toggle collapsed" id="toggle_${id}">▶</span>
       </div>
-      <div class="msg-thinking-body collapsed" id="body_${id}">${esc(body)}</div>
+      <div class="msg-thinking-body collapsed${hasRealThink?' is-raw':' is-timeline'}" id="body_${id}">${hasRealThink?esc(body):body}</div>
     </div>`;
 }
 
@@ -2000,7 +2359,8 @@ function renderToolCallBodyHtml(tc){
 }
 
 function renderToolPreviewButton(tc){
-  if(!(tc?.status==='success' && (tc.name==='Write' || tc.name==='Edit'))) return '';
+  const name=toolDisplayName(tc);
+  if(!(tc?.status==='success' && (name==='Write' || name==='Edit'))) return '';
   const filePath=getToolCallFilePath(tc);
   if(!filePath || !filePath.endsWith('.md')) return '';
   const safePath=encodeURIComponent(filePath);
@@ -2012,14 +2372,15 @@ function renderToolCallsHtml(toolCalls, msg){
   if(!toolCalls||!toolCalls.length) return '';
   return '<div class="msg-tool-calls">'+toolCalls.map((tc,i)=>{
     const id='tc_'+(msg?.ts||msg?.id||Date.now())+'_'+i;
+    const toolName=toolDisplayName(tc);
     const statusCls=tc.status==='success'?'success':tc.status==='error'?'error':'running';
     const statusText=tc.status==='success'?'完成':tc.status==='error'?'失败':'运行中';
     const bodyHtml=renderToolCallBodyHtml(tc);
     const previewBtn=renderToolPreviewButton(tc);
     return `<div class="msg-tool-call">
-        <div class="msg-tool-call-header" data-tool="${esc(tc.name)}" onclick="toggleCollapse('${id}')">
+        <div class="msg-tool-call-header" data-tool="${esc(toolName)}" onclick="toggleCollapse('${id}')">
           <svg class="tool-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M4 7.5h16"/><path d="M7.5 4v7"/><path d="m4 16 4-4 4 4"/><path d="m12 16 4-4 4 4"/></svg>
-          <span class="tool-name">${esc(tc.name)}</span>
+          <span class="tool-name">${esc(toolName)}</span>
           <span class="tool-status ${statusCls}">${statusText}</span>
           ${previewBtn}
           <span class="tool-toggle collapsed" id="toggle_${id}">▼</span>
@@ -2029,17 +2390,31 @@ function renderToolCallsHtml(toolCalls, msg){
   }).join('')+'</div>';
 }
 
+function previousUserPromptForMessage(msg){
+  try{
+    const c=currentChat();
+    const messages=c?.messages||[];
+    const idx=messages.findIndex(item=>item===msg || (msg?._msgId && item?._msgId===msg._msgId));
+    for(let i=(idx>=0?idx-1:messages.length-1);i>=0;i--){
+      if(messages[i]?.role==='user' && String(messages[i].content||'').trim()) return String(messages[i].content||'').trim();
+    }
+  }catch(_){}
+  return '';
+}
+
 function renderMsg(m){
   let thinkingHtml=renderThinkingPanel(m);
   let toolCallsHtml=renderToolCallsHtml(m.toolCalls, m);
+  let toolArtifactCardsHtml=m.role==='assistant'?renderToolArtifactCardsHtml(m.toolCalls):'';
   let stepHtml='';
   if(m.step) stepHtml=`<div class="msg-step-indicator">Step ${m.step}</div>`;
   const msgId = m._msgId || String(m.ts || m.id || Date.now());
   if (!m._msgId) m._msgId = msgId;
+  maybeResumeVideoPolling(m);
   // Clean content: remove model normalization warnings
   let content = cleanMessageContent(m.content || '');
   if(m.role==='assistant' && m.imageGeneration?.outputs?.length){
-    content=generatedImageMarkdown(m.imageGeneration.outputs);
+    content=m.imageGeneration.mediaType==='video'?generatedVideoMarkdown(m.imageGeneration.outputs, previousUserPromptForMessage(m)):generatedImageMarkdown(m.imageGeneration.outputs);
   }
   content = content.replace(/⚠️\s*Normalized model.*?for deepseek\.?\n?/g, '');
   content = content.replace(/⚠\s*Normalized model.*?for deepseek\.?\n?/g, '');
@@ -2112,7 +2487,7 @@ function renderMsg(m){
     <div class="msg-main">
       ${thinkingHtml}
       ${toolCallsHtml}
-      <div class="msg-bubble markdown-body${longClass}">${localEditCardHtml}${stepHtml}${imageLoadingHtml}${imagePromptHtml}${localEditCompletionHtml}${content?formatMsg(content):''}${renderMessageAttachments(m.attachments)}${fileCardsHtml}${artifactRefsHtml}${previewActionHtml}${localEditActionHtml}${modelBadge}${streamDots}${expandBtn}</div>
+      <div class="msg-bubble markdown-body${longClass}">${localEditCardHtml}${stepHtml}${imageLoadingHtml}${imagePromptHtml}${localEditCompletionHtml}${content?formatMsg(content):''}${renderMessageAttachments(m.attachments)}${toolArtifactCardsHtml}${fileCardsHtml}${artifactRefsHtml}${previewActionHtml}${localEditActionHtml}${modelBadge}${streamDots}${expandBtn}</div>
       ${renderMessageActions(m)}
     </div>
   </div>`;
@@ -2145,6 +2520,8 @@ function toggleAllThinking(id){
 function cleanMessageContent(raw){
   let content = redactSecrets(raw || '');
   content = content.replace(/(?:^|\n)\s*↻\s*Resumed session\s+[A-Za-z0-9_-]+\s*\(\d+\s+user messages?,\s*\d+\s+total messages?\)\s*(?=\n|$)/gi, '\n');
+  content = content.replace(/(?:^|\n)\s*[^\w\n]{0,8}\s*Resumed session\s+[A-Za-z0-9_-]+\s*\(\d+\s+user messages?,\s*\d+\s+total messages?\)\s*(?=\n|$)/gi, '\n');
+  content = content.replace(/(?:^|\n)\s*[^\w\n]{0,8}\s*(?:session_id|Session):\s*[A-Za-z0-9_-]+\s*(?=\n|$)/gi, '\n');
   content = content.replace(/⚠️\s*Normalized model.*?for deepseek\.?\n?/g, '');
   content = content.replace(/⚠\s*Normalized model.*?for deepseek\.?\n?/g, '');
   content = content.replace(/(?:^|\n)\s*(?:文件位置|本地路径)：[\s\S]*?(?=\n\s*\n|$)/g, '');
@@ -2409,7 +2786,46 @@ function renderLocalEditMessageCard(ctx, extraClass=''){
 }
 
 function getMessageCopyPayload(msg){
-  return { text: getMessageCopyText(msg), label: '已复制消息' };
+  return { text: getMessageCopyText(msg), label: '\u5df2\u590d\u5236\u6d88\u606f' };
+}
+
+function makeTraceId(prefix='tr'){
+  return prefix + '_' + Date.now().toString(36) + '_' + Math.random().toString(16).slice(2,8);
+}
+
+function getMessageDiagnosticsText(msg){
+  const chat=currentChat();
+  const messages=chat?.messages||[];
+  const idx=messages.indexOf(msg);
+  const userMsg=idx>0 ? [...messages.slice(0, idx)].reverse().find(item=>item?.role==='user') : null;
+  const events=(Array.isArray(msg?.processEvents)?msg.processEvents:[]).slice(-10);
+  const tools=(Array.isArray(msg?.toolCalls)?msg.toolCalls:[]).slice(-8);
+  const eventSession=[...events].reverse().map(event=>event?.hermesSessionId||event?.sessionId||event?.session_id||'').find(Boolean);
+  const rawSession=String(msg?.hermesSessionId||msg?.sessionId||eventSession||'').trim();
+  const chatId=String(chat?.id||chat?._id||'');
+  const hermesSessionId=rawSession && rawSession!==chatId ? rawSession : '';
+  const lines=[
+    'WebUI Diagnostic',
+    'chatId: '+chatId,
+    'chatTitle: '+String(chat?.title||''),
+    'traceId: '+String(msg?.traceId||userMsg?.traceId||''),
+    'userMsgId: '+String(msg?.userMsgId||userMsg?._msgId||''),
+    'assistantMsgId: '+String(msg?._msgId||''),
+    'hermesSessionId: '+hermesSessionId,
+    'streaming: '+String(!!msg?._streaming),
+    'error: '+String(msg?.error?true:false),
+  ];
+  if(events.length){
+    lines.push('', 'processEvents:');
+    events.forEach((event,i)=>lines.push((i+1)+'. '+processEventText(event)));
+  }
+  if(tools.length){
+    lines.push('', 'toolCalls:');
+    tools.forEach((tool,i)=>lines.push((i+1)+'. '+toolDisplayName(tool)+' ['+String(tool.status||'unknown')+'] '+String(tool.output||tool.preview||'').slice(0,180)));
+  }
+  const stderr=(events.map(event=>event?.stderrTail||event?.text||'').filter(Boolean).slice(-3).join('\n')||'').trim();
+  if(stderr) lines.push('', 'stderrTail:', stderr.slice(0,800));
+  return lines.join('\n');
 }
 
 function getAssistantRenderData(msg){
@@ -2463,6 +2879,7 @@ function renderMessageActions(m){
   const msgTime = formatChatDate(m, 'full');
   return `<div class="msg-actions" data-msg-key="${esc(key)}">
     <button type="button" class="msg-action-btn" onclick="copyMessageContent('${esc(actionKey)}')" title="复制" aria-label="复制">${COPY_ICON}</button>
+    <button type="button" class="msg-action-btn" onclick="copyMessageDiagnostics('${esc(actionKey)}')" title="\u590d\u5236\u8bca\u65adID" aria-label="\u590d\u5236\u8bca\u65adID">ID</button>
     <button type="button" class="msg-action-btn like-action${likeActive}" onclick="setMessageFeedback('${chatId}','${esc(key)}','like')" title="有用" aria-label="有用">${likeActive ? LIKE_FILLED_ICON : LIKE_ICON}</button>
     <button type="button" class="msg-action-btn dislike-action${dislikeActive}" onclick="setMessageFeedback('${chatId}','${esc(key)}','dislike')" title="没用" aria-label="没用">${dislikeActive ? DISLIKE_FILLED_ICON : DISLIKE_ICON}</button>
     <button type="button" class="msg-action-btn partial-action${partialActive}" onclick="setMessageFeedback('${chatId}','${esc(key)}','partial')" title="部分有用" aria-label="部分有用">${partialActive ? PARTIAL_FILLED_ICON : PARTIAL_ICON}</button>
@@ -2474,15 +2891,25 @@ async function copyMessageContent(actionKey){
   const chat=currentChat();
   const msg=(chat?.messages||[]).find(item=>stableMessageActionKey(item)===String(actionKey));
   if(!msg){
-    toast('没有找到可复制的消息','warning');
+    toast('\u6ca1\u6709\u627e\u5230\u53ef\u590d\u5236\u7684\u6d88\u606f','warning');
     return;
   }
   const payload=getMessageCopyPayload(msg);
   if(!String(payload.text||'').trim()){
-    toast('这条消息没有可复制的内容','warning');
+    toast('\u8fd9\u6761\u6d88\u606f\u6ca1\u6709\u53ef\u590d\u5236\u7684\u5185\u5bb9','warning');
     return;
   }
-  copyText(payload.text, payload.label || '已复制消息');
+  copyText(payload.text, payload.label || '\u5df2\u590d\u5236\u6d88\u606f');
+}
+
+async function copyMessageDiagnostics(actionKey){
+  const chat=currentChat();
+  const msg=(chat?.messages||[]).find(item=>stableMessageActionKey(item)===String(actionKey));
+  if(!msg){
+    toast('\u6ca1\u6709\u627e\u5230\u8bca\u65ad\u4fe1\u606f','warning');
+    return;
+  }
+  copyText(getMessageDiagnosticsText(msg), '\u5df2\u590d\u5236\u8bca\u65adID');
 }
 
 async function setMessageFeedback(chatId, msgKey, feedback){
@@ -2638,6 +3065,12 @@ function enhanceMessageMarkdown(root){
     img.style.cursor='zoom-in';
     img.style.display='block';
     img.onclick=()=>openImagePreview(src,alt);
+    if(img.dataset.issueBound!=='1'){
+      img.dataset.issueBound='1';
+      img.addEventListener('error',()=>{
+        if(typeof autoReportWebuiIssue==='function') autoReportWebuiIssue('image_load_error','\u56fe\u7247\u52a0\u8f7d\u5931\u8d25', { severity:'medium', context:{ src, alt } });
+      }, { once:true });
+    }
     const bar=document.createElement('span');
     bar.className='image-preview-actions';
     const localPath=imagePathForSrc(src);
@@ -2754,6 +3187,51 @@ function toggleImageZoom(el,event){
   if(!el) return;
   el.classList.toggle('zoomed');
   el.style.cursor=el.classList.contains('zoomed')?'zoom-out':'zoom-in';
+}
+
+function openVideoPreview(src,title='\u89c6\u9891',prompt=''){
+  const safeSrc=esc(mediaUrl(src));
+  const safeTitle=esc(title||'\u89c6\u9891');
+  const safePrompt=esc(prompt||'');
+  const downloadName=(safeTitle||'video').replace(/[\\/:*?"<>|]+/g,'_');
+  const promptHtml=prompt ? '<div class="chat-image-lightbox-prompt video-lightbox-prompt"><div>'+safePrompt+'</div><button type="button" onclick="event.stopPropagation();copyText(this.previousElementSibling.textContent,\'\u63d0\u793a\u8bcd\u5df2\u590d\u5236\')">\u590d\u5236\u63d0\u793a\u8bcd</button></div>' : '';
+  openModal('<div class="chat-image-lightbox video-lightbox" onclick="closeModal()">' +
+    '<button class="image-lightbox-close" onclick="event.stopPropagation();closeModal()" aria-label="\u5173\u95ed">'+SVG.x+'</button>' +
+    '<div class="chat-image-lightbox-stage video-lightbox-stage" onclick="event.stopPropagation()">' +
+      '<div class="video-lightbox-player-wrap"><video controls autoplay playsinline src="'+safeSrc+'"></video>' +
+        '<div class="video-lightbox-actions">' +
+          '<button type="button" class="video-lightbox-fullscreen" aria-label="\u5168\u5c4f\u64ad\u653e" title="\u5168\u5c4f\u64ad\u653e"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 3H3v5M16 3h5v5M8 21H3v-5M21 16v5h-5"/></svg></button>' +
+          '<a href="'+safeSrc+'" download="'+downloadName+'" onclick="event.stopPropagation()" aria-label="\u4e0b\u8f7d\u89c6\u9891" title="\u4e0b\u8f7d\u89c6\u9891"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/></svg></a>' +
+        '</div></div>' +
+      '<div class="video-lightbox-title">'+safeTitle+'</div>' +
+      promptHtml +
+    '</div>' +
+  '</div>',{className:'image-lightbox-shell video-lightbox-shell'});
+}
+
+function requestVideoFullscreen(trigger){
+  const stage=trigger?.closest?.('.video-lightbox-stage,.video-preview-wrap')||document;
+  const video=stage.querySelector?.('video');
+  const target=video||stage;
+  if(target?.requestFullscreen) target.requestFullscreen().catch(()=>{});
+  else if(target?.webkitRequestFullscreen) target.webkitRequestFullscreen();
+}
+
+window.openVideoPreview=openVideoPreview;
+window.requestVideoFullscreen=requestVideoFullscreen;
+if(typeof document!=='undefined' && !window.__hermesVideoPreviewBound){
+  window.__hermesVideoPreviewBound=true;
+  document.addEventListener('click',(event)=>{
+    const fullscreenBtn=event.target?.closest?.('.video-lightbox-fullscreen,.video-card-expand');
+    if(fullscreenBtn){ event.preventDefault(); event.stopPropagation(); requestVideoFullscreen(fullscreenBtn); return; }
+    if(event.target?.closest?.('.video-card-download')) return;
+    if(event.target?.closest?.('.video-preview-stage video')) return;
+    const stage=event.target?.closest?.('.video-preview-stage');
+    if(!stage) return;
+    event.preventDefault();
+    const wrap=stage.closest('.video-preview-wrap');
+    openVideoPreview(wrap?.dataset.videoSrc||stage.dataset.videoSrc||'',wrap?.dataset.videoTitle||stage.dataset.videoTitle||'\u89c6\u9891',wrap?.dataset.videoPrompt||stage.dataset.videoPrompt||'');
+  });
 }
 
 function openImagePreview(src,alt='图片'){
@@ -3040,7 +3518,8 @@ async function selectChat(id){
   if (!state.chatFullData[id]) {
     // Check if this is a CLI session or WebUI chat
     const c = state.chats.find(x => x.id === id);
-    const endpoint = isCliChat(c) ? '/api/cli/sessions/' : '/api/chats/';
+    const cliChat=isCliChat(c);
+    const endpoint = cliChat ? '/api/cli/sessions/' : '/api/chats/';
     const data = await apiGet(endpoint + encodeURIComponent(id));
     if (data) {
       applySyncedChatData(id,data);
@@ -3152,6 +3631,11 @@ function isWebuiImageToolName(name=''){
   const value=String(name||'').toLowerCase();
   return value==='webui_image_generate' || value.endsWith('_webui_image_generate') || value.includes('webui_image_generate');
 }
+
+function isWebuiVideoToolName(name=''){
+  const value=String(name||'').toLowerCase();
+  return value==='webui_video_generate' || value.endsWith('_webui_video_generate') || value.includes('webui_video_generate');
+}
 function renderMessageAttachments(images=[]){
   const list=(images||[]).map(img=>({ img, src:imageSrc(img) })).filter(row=>row.img&&row.src);
   if(!list.length) return '';
@@ -3192,6 +3676,39 @@ function renderImageGenerationLoadingCard(imageGeneration={}){
   const text=esc(imageGenerationLoadingText(imageGeneration));
   return '<div class="image-generation-loading-card" aria-label="图片生成中"><div class="image-generation-loading-inner">' + svg + '<p class="image-generation-loading-text">'+text+'<span class="text-dots"><i>.</i><i>.</i><i>.</i></span></p></div></div>';
 }
+function videoPromptForItem(vid={}){
+  return String(vid.prompt||vid.sourcePrompt||'').trim();
+}
+
+function formatVideoCreatedAt(value){
+  const n=Number(value||0);
+  if(!Number.isFinite(n)||n<=0) return '';
+  try{
+    return new Date(n).toLocaleString('zh-CN',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'}).replace(/\//g,'-');
+  }catch(_){ return ''; }
+}
+
+function generatedVideoMarkdown(videos=[],fallbackPrompt=''){
+  return (videos||[]).map((vid,index)=>{
+    const src=imageSrc(vid);
+    if(!src) return '';
+    const title=vid.name||vid.filename||('\u751f\u6210\u89c6\u9891 '+(index+1));
+    const prompt=videoPromptForItem(vid)||String(fallbackPrompt||'').trim();
+    const timeLabel=formatVideoCreatedAt(vid.createdAt);
+    const safeSrc=esc(src);
+    const safeTitle=esc(title);
+    const safePrompt=esc(prompt);
+    const safeTime=esc(timeLabel);
+    return '<div class="video-preview-wrap" data-video-src="'+safeSrc+'" data-video-title="'+safeTitle+'" data-video-prompt="'+safePrompt+'">'
+      + '<div class="video-preview-stage" data-video-src="'+safeSrc+'" data-video-title="'+safeTitle+'" data-video-prompt="'+safePrompt+'">'
+      + '<video preload="metadata" controls playsinline src="'+safeSrc+'"></video>'
+      + (timeLabel?'<div class="video-preview-time">'+safeTime+'</div>':'')
+      + '</div>'
+      + '<div class="video-preview-meta"><span class="video-preview-title">'+safeTitle+'</span></div>'
+      + '</div>';
+  }).filter(Boolean).join('\n\n');
+}
+
 function generatedImageMarkdown(images=[]){
   return images.map(img=>`![${img.name||'生成图片'}](${imageSrc(img)})`).join('\n\n');
 }
@@ -3254,6 +3771,131 @@ function cleanImagePromptForDisplay(value=''){
     .trim();
 }
 
+
+function parseVideoPendingText(value){
+  const raw=String(value||'');
+  const taskId=(raw.match(/task_[A-Za-z0-9]+/)||[])[0]||'';
+  if(!taskId) return null;
+  if(!/(queued|pending|video task submitted|\u6392\u961f|\u89c6\u9891\u4efb\u52a1\u5df2\u63d0\u4ea4|\u751f\u6210\u5b8c\u6210\u540e|\u751f\u6210\u4e2d)/i.test(raw)) return null;
+  const model=(raw.match(/(?:\u6a21\u578b|model)[:?]\s*([^\n]+)/i)||[])[1]||'auto';
+  return {success:true,type:'webui_video_generate_result',taskId,status:'pending',taskStatus:'queued',outputs:[],model:String(model).trim(),content:raw};
+}
+function parseWebuiVideoToolResult(value){
+  const raw=String(value||'').trim();
+  if(!raw || !raw.includes('webui_video_generate_result')) return null;
+  const candidates=[raw];
+  const fenced=raw.match(new RegExp('```(?:json)?\\s*([\\s\\S]*?)```','i'));
+  if(fenced) candidates.push(fenced[1].trim());
+  const jsonMatch=raw.match(/\{[\s\S]*"webui_video_generate_result"[\s\S]*\}/);
+  if(jsonMatch) candidates.push(jsonMatch[0]);
+  for(const item of candidates){
+    try{
+      const data=JSON.parse(item);
+      if(data?.type==='webui_video_generate_result' || (data?.success===true && (Array.isArray(data?.outputs)||data?.videoUrl))){
+        return data;
+      }
+    }catch(_){}
+  }
+  return null;
+}
+function maybeResumeVideoPolling(msg){
+  if(!msg || msg.role!=='assistant') return;
+  let gen=msg.imageGeneration||{};
+  if((!gen.taskId || gen.mediaType!=='video') && msg.role==='assistant'){
+    const pending=parseVideoPendingText(msg.content||'');
+    if(pending){
+      msg.imageGeneration={...(gen||{}),status:'loading',mediaType:'video',taskId:pending.taskId,taskStatus:pending.taskStatus,model:pending.model||gen.model||'auto',prompt:gen.prompt||'',sourcePrompt:gen.sourcePrompt||'',outputs:[]};
+      gen=msg.imageGeneration;
+    }
+  }
+  if(gen.mediaType==='video' && gen.status==='loading' && gen.taskId && !msg._videoTaskPolling){
+    setTimeout(()=>pollWebuiVideoTask(msg,{taskId:gen.taskId,model:gen.model||'auto',prompt:gen.prompt||'',sourcePrompt:gen.sourcePrompt||''}),100);
+  }
+}
+
+async function pollWebuiVideoTask(msg,result){
+  const taskId=String(result?.taskId||msg?.imageGeneration?.taskId||'').trim();
+  if(!msg||!taskId||msg._videoTaskPolling) return;
+  msg._videoTaskPolling=true;
+  const started=Date.now();
+  try{
+    for(let i=0;i<60;i++){
+      await new Promise(resolve=>setTimeout(resolve,i?10000:3000));
+      const data=await apiGet('/api/images/video/task/'+encodeURIComponent(taskId)+'?model='+encodeURIComponent(result?.model||'auto')+'&publicBase='+encodeURIComponent(publicApiBase())+'&prompt='+encodeURIComponent(result?.prompt||'')+'&sourcePrompt='+encodeURIComponent(result?.sourcePrompt||''));
+      if(!data) continue;
+      const status=String(data.status||'').toLowerCase();
+      const outputs=Array.isArray(data.outputs)?data.outputs:[];
+      msg.imageGeneration={
+        ...(msg.imageGeneration||{}),
+        status:outputs.length?'done':'loading',
+        mediaType:'video',
+        taskId,
+        taskStatus:status||msg.imageGeneration?.taskStatus||'queued',
+        outputs,
+        prompt:msg.imageGeneration?.prompt||result?.prompt||'',
+        sourcePrompt:msg.imageGeneration?.sourcePrompt||result?.sourcePrompt||'',
+        model:data.raw?.model||result?.model||msg.imageGeneration?.model||'',
+        provider:result?.provider||msg.imageGeneration?.provider||'',
+        loadingText:'\u89c6\u9891\u751f\u6210\u4e2d\uff0c\u5df2\u7b49\u5f85 '+Math.floor((Date.now()-started)/1000)+' \u79d2',
+      };
+      if(outputs.length){
+        msg._streaming=false;
+        msg.content=generatedVideoMarkdown(outputs, msg.imageGeneration?.prompt||msg.imageGeneration?.sourcePrompt||'')||'\u89c6\u9891\u5df2\u751f\u6210\u3002';
+        if(typeof HermesArtifact!=='undefined'&&typeof HermesArtifact.refreshImageWaterfall==='function') HermesArtifact.refreshImageWaterfall({rescan:true,silent:true}).catch(()=>{});
+        renderMsgUpdate(msg._msgId||msg.id||msg.ts,msg);
+        try{ persistAssistantMessageState(currentChat()?.id||currentChat()?._id,msg).catch(()=>{}); }catch(_){}
+        toast('?????','success');
+        return;
+      }
+      if(['failed','error','cancelled','canceled'].includes(status)){
+        msg._streaming=false;
+        msg.content='\u89c6\u9891\u751f\u6210\u5931\u8d25\uff1a'+(data.raw?.error?.message||data.raw?.error||status);
+        renderMsgUpdate(msg._msgId||msg.id||msg.ts,msg);
+        return;
+      }
+      renderMsgUpdate(msg._msgId||msg.id||msg.ts,msg);
+    }
+    msg._streaming=false;
+    msg.content='\u89c6\u9891\u4efb\u52a1\u4ecd\u5728\u6392\u961f\u4e2d\uff0c\u4efb\u52a1ID\uff1a'+taskId+'\u3002\u7a0d\u540e\u53ef\u5728\u8f93\u51fa\u56fe\u7247/\u89c6\u9891\u9762\u677f\u5237\u65b0\u67e5\u770b\u3002';
+    renderMsgUpdate(msg._msgId||msg.id||msg.ts,msg);
+  }finally{
+    msg._videoTaskPolling=false;
+  }
+}
+
+function applyWebuiVideoToolResult(msg,result){
+  if(!msg||!result) return false;
+  const outputs=Array.isArray(result.outputs)?result.outputs:[];
+  const taskId=String(result.taskId||'').trim();
+  msg.imageGeneration={
+    ...(msg.imageGeneration||{}),
+    status:outputs.length?'done':'loading',
+    mediaType:'video',
+    model:result.model||msg.imageGeneration?.model||'',
+    provider:result.provider||msg.imageGeneration?.provider||'',
+    outputs,
+    inputs:result.inputs||[],
+    prompt:result.prompt||msg.imageGeneration?.prompt||'',
+    sourcePrompt:result.sourcePrompt||msg.imageGeneration?.sourcePrompt||'',
+    optimizedPrompt:result.prompt||msg.imageGeneration?.optimizedPrompt||'',
+    mode:result.mode||'text-to-video',
+    taskId:taskId||msg.imageGeneration?.taskId||'',
+    taskStatus:result.taskStatus||result.status||msg.imageGeneration?.taskStatus||'',
+    loadingText:outputs.length?'':'\u89c6\u9891\u4efb\u52a1\u5df2\u63d0\u4ea4\uff0c\u6b63\u5728\u7b49\u5f85\u751f\u6210\u7ed3\u679c',
+    directMode:false,
+  };
+  if(outputs.length){
+    msg.content=generatedVideoMarkdown(outputs, result.prompt||result.sourcePrompt||msg.imageGeneration?.prompt||'')||result.content||result.markdown||'\u89c6\u9891\u5df2\u751f\u6210\u3002';
+    msg._streaming=false;
+    try{ persistAssistantMessageState(currentChat()?.id||currentChat()?._id,msg).catch(()=>{}); }catch(_){}
+  }else if(taskId){
+    msg.content='\u89c6\u9891\u4efb\u52a1\u5df2\u63d0\u4ea4\uff0c\u6b63\u5728\u751f\u6210\u4e2d\u3002\u4efb\u52a1ID\uff1a'+taskId;
+    pollWebuiVideoTask(msg,result);
+  }else{
+    msg.content=result.content||result.markdown||'\u89c6\u9891\u4efb\u52a1\u5df2\u63d0\u4ea4\uff0c\u6b63\u5728\u751f\u6210\u4e2d\u3002';
+  }
+  return true;
+}
 function renderImagePromptPanel(imageGeneration={}){
   const prompt=cleanImagePromptForDisplay(imageGeneration.optimizedPrompt||imageGeneration.prompt||'');
   const source=cleanImagePromptForDisplay(imageGeneration.sourcePrompt||'');
@@ -3272,16 +3914,18 @@ function renderImagePromptPanel(imageGeneration={}){
 
 function imageAttachmentAgentText(images=[]){
   if(!images.length) return '';
-  return '\n\n[The user uploaded local images and WebUI saved them locally. Important rule: if the user asks to generate, edit, optimize, or create based on reference images, call the webui_image_generate tool directly. This is the only default image generation endpoint inside WebUI. It uses WebUI Model Configuration for the image model and API key. Do not switch to Hermes native image_gen, and do not ask the user to configure ~/.hermes/.env. Do not output curl, Python, HTTP examples, or text like waiting for API. For image-to-image/reference tasks, pass the attachment IDs below as attachmentIds.]\n'+images.map((img,i)=>{
+  const ids=images.map(img=>img.id).filter(Boolean).join(', ');
+  return '\n\n[WebUI uploaded image attachment context. The user uploaded local reference images and WebUI saved them locally. IMPORTANT: If the user asks for image generation/editing, call webui_image_generate and pass attachmentIds. If the user asks for video / animation / motion / image-to-video / make this image move, call webui_video_generate and pass the same attachmentIds. If the user asks to insert/use this image in a Markdown document/report, keep the image path/Preview URL and write Markdown image syntax into the target document with a markdown/file write tool; do not claim success unless the write tool succeeds. Do not omit attachmentIds. Do not use text-to-video when reference images exist. Preserve the reference image identity, character, composition, colors, and style; only add the requested motion. Available attachmentIds: '+ids+'.]\n'+images.map((img,i)=>{
     const parts=[
-      `${i+1}. ${img.name||'参考图片'}`,
-      `附件ID：${img.id||'未返回'}`,
-      `本地路径：${img.path||'未返回'}`,
-      `预览地址：${mediaUrl(img.url||img.publicUrl)}`,
+      `${i+1}. ${img.name||'reference image'}`,
+      `Attachment ID: ${img.id||''}`,
+      `Local path: ${img.path||''}`,
+      `Preview URL: ${mediaUrl(img.url||img.publicUrl)}`,
     ];
     return parts.join('\n');
   }).join('\n\n');
 }
+
 
 function directImageContext(){
   const c=currentChat();
@@ -3331,13 +3975,20 @@ function isImageModelId(id){
   return model.apiFormat==='openai-image'||model.apiFormat==='openai_image'||model.kind==='image'||tags.includes('image')||tags.includes('vision');
 }
 
-function isImageGenerationIntent(pendingImages=[]){
+function isVideoGenerationIntent(){
+  const ta=$('#chatInput');
+  const text=String(ta?.value||'').trim();
+  if(!text) return false;
+  return /(\u751f\u6210|\u505a|\u521b\u5efa|\u8f93\u51fa|\u5236\u4f5c).{0,32}(\u89c6\u9891|\u77ed\u7247|\u52a8\u753b|\u52a8\u6548|\u52a8\u6001\u753b\u9762|motion|video|clip|animation)|\u6587\u751f\u89c6\u9891|\u56fe\u751f\u89c6\u9891|video generation|generate.{0,80}(video|clip|animation|motion)|create.{0,80}(video|clip|animation|motion)|make.{0,80}(video|clip|animation|motion)/i.test(text);
+}
+
+function isImageGenerationIntent(pendingImages=[], options={}){
   if(state.forceImageGeneration) return true;
   if(state.imageEditReference) return true;
   const ta=$('#chatInput');
   const text=String(ta?.value||'').trim();
-  if(pendingImages.length && /^(generate|draw|create|edit|modify|optimize|change|replace|remove|keep|reference|based on).*(image|picture|photo|poster|avatar|wallpaper|illustration|visual|effect)/i.test(text)) return true;
-  return false;
+  if(!text && !pendingImages.length) return false;
+  return !!(options.explicitDirectImageMode || ta?.dataset?.directImageMode==='1');
 }
 
 function stripImagePromptPrefix(text=''){
@@ -3500,6 +4151,9 @@ async function sendImageGenerationMessage(txt,pendingImages=[]){
   }finally{
     if(imageTimeoutTimer){clearTimeout(imageTimeoutTimer);imageTimeoutTimer=null;}
     if(imageProgressTimer){clearInterval(imageProgressTimer);imageProgressTimer=null;}
+    if(assistantMsg.imageGeneration?.outputs?.length && typeof HermesArtifact !== 'undefined' && typeof HermesArtifact.refreshImageWaterfall === 'function') {
+      HermesArtifact.refreshImageWaterfall({ rescan:true, silent:true }).catch(()=>{});
+    }
     assistantMsg._streaming=false;
     renderMsgUpdate(msgId,assistantMsg);
     flushMsgUpdates();
@@ -3541,10 +4195,18 @@ async function sendMessage(){
     messagesArea.innerHTML = '';
   }
 
-  if(isImageGenerationIntent(pendingImages)){
+  const explicitImageMode=!!state.imagePromptMode;
+  const explicitDirectImageMode=!!(ta?.dataset?.directImageMode==='1');
+  if(isImageGenerationIntent(pendingImages,{explicitDirectImageMode})){
+    state.imagePromptMode=false;
+    save();
+    if(ta) { delete ta.dataset.explicitImageMode; delete ta.dataset.directImageMode; }
     await sendImageGenerationMessage(txt,pendingImages);
     return;
   }
+  state.imagePromptMode=false;
+  save();
+  if(ta) { delete ta.dataset.directImageMode; delete ta.dataset.explicitImageMode; }
 
   // Add user message to local state immediately; send attachment context to Agent separately from visible bubble.
   const agentAttachmentContext=imageAttachmentAgentText(pendingImages);
@@ -3595,8 +4257,9 @@ async function sendMessage(){
     '</webui_current_markdown_context>'
   ].join('\n') : '';
   const contentWithAttachments=txt+agentAttachmentContext+localEditAgentContext+artifactAgentContext;
+  const traceId = makeTraceId('chat');
   const userMsgId = 'u_' + Date.now();
-  const userMsg = {role:'user',content:txt,agentContent:contentWithAttachments,ts:Date.now(),attachments:pendingImages,_msgId:userMsgId};
+  const userMsg = {role:'user',content:txt,agentContent:contentWithAttachments,ts:Date.now(),attachments:pendingImages,_msgId:userMsgId,traceId};
   if(localEditContext) userMsg.localEditContext=localEditContext;
   if(artifactContext && !localEditContext) userMsg.artifactContext=artifactContext;
   c.messages.push(userMsg);
@@ -3610,7 +4273,7 @@ async function sendMessage(){
   }
 
   const msgId = '' + Date.now();
-  const assistantMsg = { role: 'assistant', content: '', thinking: '', toolCalls: [], processEvents: [{ type: 'queued' }], _msgId: msgId, _streaming: true, ts: Date.now() };
+  const assistantMsg = { role: 'assistant', content: '', thinking: '', toolCalls: [], processEvents: [{ type: 'queued', traceId }], _msgId: msgId, userMsgId, traceId, _streaming: true, ts: Date.now() };
   if(localEditContext) assistantMsg.localEditContextId=localEditContext.id;
   c.messages.push(assistantMsg);
 
@@ -3631,32 +4294,56 @@ async function sendMessage(){
   let firstTokenAt = 0;
   let tokenCount = 0;
   function pushProcessEvent(event){
-    const item={ ...event };
-    assistantMsg.processEvents=[...(assistantMsg.processEvents||[]), item].slice(-20);
+    const item={ ...event, at: Date.now() };
+    const normalizedType = item.type === 'perf' && item.stage ? item.stage : (item.type || item.stage || 'event');
+    item.type = normalizedType;
+    const list=[...(assistantMsg.processEvents||[])];
+    const last=list[list.length-1];
+    const sameToolProgress=last && item.type==='tool-running' && last.type==='tool-running' && last.name===item.name;
+    const sameRoute=last && item.type===last.type && ['sse-flushed','route-selected','cli-spawned','first-cli-stdout'].includes(item.type);
+    if(sameToolProgress || sameRoute) list[list.length-1]={...last,...item};
+    else list.push(item);
+    assistantMsg.processEvents=list.slice(-12);
   }
 
   const profile=profileForChat(c);
   const requestModel = state.chatModelOverride !== 'auto' ? state.chatModelOverride : (profile?.modelId && profile.modelId !== 'auto' ? profile.modelId : 'auto');
   const streamPath=sendingToCli?('/api/cli/sessions/'+encodeURIComponent(c.id)+'/messages'):('/api/chats/' + (c._id || c.id) + '/messages');
+  const routingMode=effectiveRoutingMode(profile);
   await apiStream(streamPath, {
     content: contentWithAttachments,
     displayContent: txt,
     attachments: pendingImages,
-    scene:pendingImages.length?'vision':(profile?.modelScene||'chat'),
+    pendingAttachmentIds: pendingImages.map(img=>img.id).filter(Boolean),
+    routingMode,
+    scene:isVideoGenerationIntent()?'video':(explicitImageMode?'image':(pendingImages.length?'vision':(profile?.modelScene||'chat'))),
     model:requestModel,
     profileId:profile?.id,
     profileName:profile?.name||'默认助手',
     profilePrompt:profile?.systemPrompt||'',
     profileSkillIds:profile?.skillIds||[],
+    agentRuntime:'cli',
     localEditContext,
+    traceId,
     userMsgId,
     assistantMsgId:msgId,
   }, {
     signal: streamController.signal,
     onPerf(data) {
       hermesPerfLog('backend', data);
-      if(data?.stage && ['sse-flushed','route-selected','route-fallback','model-fallback','hermes-api-connect','hermes-api-failed','first-hermes-event','first-cli-stdout','cli-spawned','direct-api-aborted','client-aborted'].includes(data.stage)){
+      if(data?.traceId) assistantMsg.traceId=data.traceId;
+      if(data?.userMsgId) assistantMsg.userMsgId=data.userMsgId;
+      let shouldRenderPerf = false;
+      if(data?.stage==='hermes-session'){
+        const sid=String(data.hermesSessionId||data.sessionId||data.session_id||'').trim();
+        if(sid) {
+          assistantMsg.hermesSessionId=sid;
+          shouldRenderPerf = true;
+        }
+      }
+      if(data?.stage && ['sse-flushed','route-selected','runtime-selected','route-fallback','model-fallback','hermes-api-connect','hermes-api-failed','hermes-session','first-hermes-event','first-cli-stdout','cli-spawned','direct-api-aborted','client-aborted'].includes(data.stage)){
         pushProcessEvent(data);
+        if(data.stage==='hermes-session') shouldRenderPerf = true;
       }
       if(data?.stage==='sse-flushed' && Array.isArray(data.promptDebug)){
         assistantMsg.promptDebug={
@@ -3670,6 +4357,7 @@ async function sendMessage(){
         pushProcessEvent({type:'skill-match',items:skillItems,names:skillItems.map(s=>s.name)});
         renderMsgUpdate(msgId, assistantMsg);
       }
+      if(shouldRenderPerf) renderMsgUpdate(msgId, assistantMsg);
     },
     onToken(text) {
       tokenCount += 1;
@@ -3681,6 +4369,10 @@ async function sendMessage(){
       }
       fullContent += text;
       assistantMsg.content = fullContent;
+      if (assistantMsg.imageGeneration?.outputs?.length && typeof HermesArtifact !== 'undefined' && typeof HermesArtifact.refreshImageWaterfall === 'function') {
+        HermesArtifact.refreshImageWaterfall({ rescan:true, silent:true }).catch(()=>{});
+      }
+
       if (typeof HermesArtifact !== 'undefined') {
         if (localEditContext) {
           assistantMsg.thinking = fullReasoning;
@@ -3716,8 +4408,9 @@ async function sendMessage(){
       renderMsgUpdate(msgId, assistantMsg);
     },
     onTool(data) {
+      const name = toolDisplayName(data);
       // Check if this is a clarify/ask_user tool call
-      if (data.name === 'clarify' || data.name === 'ask_user' || data.name === 'AskUserQuestion') {
+      if (name === 'clarify' || name === 'ask_user' || name === 'AskUserQuestion') {
         assistantMsg._streaming = false;
         assistantMsg.content = '📋 需要你确认...';
         renderMsgUpdate(msgId, assistantMsg);
@@ -3788,10 +4481,10 @@ async function sendMessage(){
         });
         return;
       }
-      const tc = { name: data.name, status: 'running', input: data.args || data.preview || '', output: '', startedAt: Date.now() };
+      const tc = { name, status: 'running', input: data.args || data.input || data.params || data.preview || '', output: '', startedAt: Date.now() };
       tools.push(tc);
       assistantMsg.toolCalls = [...tools];
-      if(isWebuiImageToolName(data.name)){
+      if(isWebuiImageToolName(name)){
         let imageToolArgs=data.args || {};
         if(typeof imageToolArgs==='string'){
           try{ imageToolArgs=JSON.parse(imageToolArgs); }catch(_){ imageToolArgs={prompt:imageToolArgs}; }
@@ -3802,25 +4495,87 @@ async function sendMessage(){
           stage:Array.isArray(imageToolArgs.attachmentIds)&&imageToolArgs.attachmentIds.length?'editing':'generating',
           prompt:imageToolArgs.prompt||'',
           sourcePrompt:imageToolArgs.sourcePrompt||imageToolArgs.prompt||'',
-          loadingText:'???? WebUI ????',
+          loadingText:'\u6b63\u5728\u8c03\u7528 WebUI \u751f\u56fe\u5de5\u5177',
           startedAt:assistantMsg.imageGeneration?.startedAt||Date.now()
         };
         assistantMsg.content='';
       }
-      pushProcessEvent({ type:'tool-start', name:data.name });
+      pushProcessEvent({ type:'tool-start', name });
       renderMsgUpdate(msgId, assistantMsg);
     },
-    onToolComplete(data) {
-      for (const t of tools) {
-        if (t.name === data.name && t.status === 'running') {
-          t.status = data.is_error ? 'error' : 'success';
-          t.output = data.preview || '';
-          t.duration = data.duration || (t.startedAt ? Date.now() - t.startedAt : 0);
+    onToolRunning(data) {
+      const name = toolDisplayName(data);
+      const preview = data?.preview || '';
+      let target = null;
+      for (let i=tools.length-1;i>=0;i--) {
+        const existingName=toolDisplayName(tools[i]);
+        if (tools[i].status === 'running' && (existingName === name || name === 'tool')) {
+          target=tools[i];
           break;
         }
       }
+      if (target) {
+        target.output = preview || target.output || '';
+        target.elapsedMs = data.elapsedMs || (target.startedAt ? Date.now() - target.startedAt : 0);
+        if(toolDisplayName(target)==='tool' && name !== 'tool') target.name = name;
+      } else {
+        tools.push({ name, status:'running', input:'', output:preview, startedAt:Date.now(), elapsedMs:data.elapsedMs||0 });
+      }
       assistantMsg.toolCalls = [...tools];
-      if(isWebuiImageToolName(data.name)){
+      if((isWebuiImageToolName(name)||isWebuiVideoToolName(name)) && assistantMsg.imageGeneration?.status === 'loading'){
+        const elapsedMs = data.elapsedMs || imageGenerationElapsedMs(assistantMsg.imageGeneration);
+        assistantMsg.imageGeneration={
+          ...(assistantMsg.imageGeneration||{}),
+          loadingText:(isWebuiVideoToolName(name)?'正在生成视频，已等待 ':'正在生成图片，已等待 ')+Math.floor(elapsedMs/1000)+' 秒',
+          elapsedMs
+        };
+      }
+      pushProcessEvent({ type:'tool-running', name, elapsed:data.elapsedMs||0 });
+      renderMsgUpdate(msgId, assistantMsg);
+    },
+    onHeartbeat(data) {
+      if(assistantMsg.imageGeneration?.status === 'loading'){
+        const elapsedMs = imageGenerationElapsedMs(assistantMsg.imageGeneration);
+        assistantMsg.imageGeneration={
+          ...(assistantMsg.imageGeneration||{}),
+          loadingText:'正在生成媒体，已等待 '+Math.floor(elapsedMs/1000)+' 秒',
+          elapsedMs
+        };
+        renderMsgUpdate(msgId, assistantMsg);
+      }
+    },
+    onAgentRaw(data) {
+      const text = String(data?.text || '').trim();
+      if(!text || data?.stream !== 'stderr') return;
+      pushProcessEvent({ type:'agent-raw', stream:'stderr', text:text.slice(0, 500), rawType:data.rawType||'' });
+      renderMsgUpdate(msgId, assistantMsg);
+    },
+    onAgentExit(data) {
+      if(data?.code || !data?.meaningfulStdout || data?.stderrTail){
+        pushProcessEvent({ type:'agent-exit', code:data?.code, meaningfulStdout:!!data?.meaningfulStdout, ms:data?.ms||0, stderrTail:data?.stderrTail||'' });
+        renderMsgUpdate(msgId, assistantMsg);
+      }
+    },
+    onToolComplete(data) {
+      const name = toolDisplayName(data);
+      let matched = false;
+      for (let i=tools.length-1;i>=0;i--) {
+        const t=tools[i];
+        const existingName=toolDisplayName(t);
+        if (t.status === 'running' && (existingName === name || existingName === 'tool' || name === 'tool')) {
+          t.status = data.is_error ? 'error' : 'success';
+          t.output = data.preview || '';
+          t.duration = data.duration || (t.startedAt ? Date.now() - t.startedAt : 0);
+          if(existingName === 'tool' && name !== 'tool') t.name = name;
+          matched = true;
+          break;
+        }
+      }
+      if(!matched){
+        tools.push({ name, status:data.is_error?'error':'success', input:data.args || data.input || data.params || '', output:data.preview || '', duration:data.duration||0, startedAt:Date.now()-(Number(data.duration)||0) });
+      }
+      assistantMsg.toolCalls = [...tools];
+      if(isWebuiImageToolName(name)){
         if(data.is_error){
           assistantMsg.imageGeneration=null;
         }else{
@@ -3829,13 +4584,27 @@ async function sendMessage(){
             const elapsedMs=data.duration || imageGenerationElapsedMs(assistantMsg.imageGeneration);
             applyWebuiImageToolResult(assistantMsg, toolResult);
             assistantMsg.imageGeneration={...(assistantMsg.imageGeneration||{}),elapsedMs,duration:elapsedMs};
+            if (typeof HermesArtifact !== 'undefined' && typeof HermesArtifact.refreshImageWaterfall === 'function') {
+              HermesArtifact.refreshImageWaterfall({ rescan:true, silent:true }).catch(()=>{});
+            }
           }else if(assistantMsg.imageGeneration?.status==='loading'){
             assistantMsg.imageGeneration={...(assistantMsg.imageGeneration||{}),status:'done',elapsedMs:data.duration||imageGenerationElapsedMs(assistantMsg.imageGeneration),duration:data.duration||imageGenerationElapsedMs(assistantMsg.imageGeneration)};
           }
         }
       }
-      pushProcessEvent({ type:'tool-done', name:data.name, error:!!data.is_error, elapsed:data.duration||0 });
-      if(data.is_error) toast('工具 '+data.name+' 执行失败','error');
+      if(isWebuiVideoToolName(name)){
+        const toolResult=parseWebuiVideoToolResult(data.preview)||parseVideoPendingText(data.preview)||parseVideoPendingText(assistantMsg.content);
+        if(data.is_error && !toolResult){
+          assistantMsg.imageGeneration=null;
+        }else if(toolResult){
+          applyWebuiVideoToolResult(assistantMsg, toolResult);
+          if (typeof HermesArtifact !== 'undefined' && typeof HermesArtifact.refreshImageWaterfall === 'function') {
+            HermesArtifact.refreshImageWaterfall({ rescan:true, silent:true }).catch(()=>{});
+          }
+        }
+      }
+      pushProcessEvent({ type:'tool-done', name, error:!!data.is_error, elapsed:data.duration||0, preview:data.preview||'' });
+      if(data.is_error) toast('工具 '+name+' 执行失败','error');
       renderMsgUpdate(msgId, assistantMsg);
     },
     onTitle(data) {
@@ -3847,7 +4616,13 @@ async function sendMessage(){
         if (sessionItems) sessionItems.innerHTML = renderSessionList();
       }
     },
-    async onDone() {
+    async onDone(data) {
+      if(data?.traceId) assistantMsg.traceId=data.traceId;
+      if(data?.userMsgId) assistantMsg.userMsgId=data.userMsgId;
+      if(data?.assistantMsgId) assistantMsg._msgId=data.assistantMsgId;
+      const doneSessionId=String(data?.hermesSessionId||data?.sessionId||data?.session_id||'').trim();
+      const chatSessionId=String(data?.chat_session_id||c?.id||c?._id||'').trim();
+      if(doneSessionId && doneSessionId!==chatSessionId && !assistantMsg.hermesSessionId) assistantMsg.hermesSessionId=doneSessionId;
       assistantMsg._streaming = false;
       setStreamingState(false,null,null);
       const doneEvent={ type:'done', ms: Math.round((performance.now ? performance.now() : Date.now()) - perfStart), tokens: tokenCount, chars: fullContent.length };
@@ -3879,6 +4654,12 @@ async function sendMessage(){
         const toolResult=parseWebuiImageToolResult(assistantMsg.content||'');
         if(toolResult){
           applyWebuiImageToolResult(assistantMsg, toolResult);
+        }
+      }
+      if(String(assistantMsg.content||'').includes('webui_video_generate_result')){
+        const toolResult=parseWebuiVideoToolResult(assistantMsg.content||'');
+        if(toolResult){
+          applyWebuiVideoToolResult(assistantMsg, toolResult);
         }
       }
 
@@ -3966,7 +4747,10 @@ async function sendMessage(){
       await persistAssistantMessageState(c._id || c.id, assistantMsg);
       syncCurrentChat(c._id || c.id);
     },
-    onError(msg) {
+    onError(msg, data) {
+      if(data?.traceId) assistantMsg.traceId=data.traceId;
+      if(data?.userMsgId) assistantMsg.userMsgId=data.userMsgId;
+      if(data?.assistantMsgId) assistantMsg._msgId=data.assistantMsgId;
       assistantMsg._streaming = false;
       setStreamingState(false,null,null);
       const errorText = '⚠️ ' + (msg || '请求失败');
@@ -4086,7 +4870,7 @@ function flushMsgUpdates() {
       if (bubble) {
         let content = cleanMessageContent(msg.content || '');
         if(msg.role==='assistant' && msg.imageGeneration?.outputs?.length){
-          content=generatedImageMarkdown(msg.imageGeneration.outputs);
+          content=msg.imageGeneration.mediaType==='video'?generatedVideoMarkdown(msg.imageGeneration.outputs, msg.imageGeneration.prompt||msg.imageGeneration.sourcePrompt||previousUserPromptForMessage(msg)):generatedImageMarkdown(msg.imageGeneration.outputs);
         }
         const isLocalEditAssistant=msg.role==='assistant' && !!msg.localEditContextId;
         const isLocalEditCompletion=isLocalEditAssistant && !msg._streaming;
@@ -4131,7 +4915,7 @@ function flushMsgUpdates() {
         const modelBadge = '';
         const promptDebugHtml = msg.role==='assistant' ? renderPromptDebugPanel(msg.promptDebug) : '';
         const imagePromptHtml = msg.role==='assistant' && msg.imageGeneration ? renderImagePromptPanel(msg.imageGeneration) : '';
-        const imageLoadingHtml = msg.role==='assistant' && msg._streaming && msg.imageGeneration?.status==='loading' ? renderImageGenerationLoadingCard(msg.imageGeneration) : '';
+        const imageLoadingHtml = msg.role==='assistant' && msg.imageGeneration?.status==='loading' ? renderImageGenerationLoadingCard(msg.imageGeneration) : '';
         const streamDots = msg._streaming && !imageLoadingHtml ? '<span class="msg-streaming"><span></span><span></span><span></span></span>' : '';
         const bodyHtml = isStreaming && content && !fileCards && !refs
           ? `<div>${esc(content).replace(/\n/g,'<br>')}</div>`
@@ -4750,10 +5534,10 @@ function gcAddAgent(){
 
 function defaultFixedProfiles(){
   return FIXED_AGENT_PROFILES.map(def=>({
-    id:def.id,name:def.name,role:def.role,fixed:true,modelScene:def.modelScene,
+    id:def.id,name:def.name,role:def.role,fixed:true,modelScene:def.modelScene,routingMode:def.routingMode||((def.id==='default')?'auto':'hermes'),
     modelId:activeModelsConfig().scenarios?.[def.modelScene]||'auto',
     model:scenarioModelName(def.modelScene==='image'?'chat':def.modelScene),
-    systemPrompt:def.systemPrompt,color:def.color,knowledgeFocus:def.knowledgeFocus||[],skillIds:[],enabled:true,
+    systemPrompt:def.systemPrompt,color:def.color,knowledgeFocus:def.knowledgeFocus||[],skillIds:[],enabled:true,routingMode:def.routingMode||((def.id==='default')?'auto':'hermes'),
   }));
 }
 function mergeFixedProfiles(stored){
@@ -4780,6 +5564,7 @@ function normalizeProfile(profile){
   if(!p.modelId) p.modelId=p.model&&p.model!=='auto'?p.model:'auto';
   if(!p.color) p.color='var(--c-block-lime)';
   if(!p.avatar) p.avatar='';
+  if(!p.routingMode) p.routingMode=p.id==='default'?'auto':'hermes';
   return p;
 }
 
@@ -4791,7 +5576,7 @@ function agentDirs(profile){
 function agentSnapshotForProfile(profile){
   const p=normalizeProfile(profile||getActiveProfile()||{});
   const dirs=agentDirs(p);
-  return { id:p.id, name:p.name, role:p.role||'', modelId:p.modelId||'auto', systemPrompt:p.systemPrompt||'', skillIds:p.skillIds||[], knowledgeFocus:p.knowledgeFocus||[], ...dirs };
+  return { id:p.id, name:p.name, role:p.role||'', modelId:p.modelId||'auto', routingMode:p.routingMode||'auto', systemPrompt:p.systemPrompt||'', skillIds:p.skillIds||[], knowledgeFocus:p.knowledgeFocus||[], ...dirs };
 }
 function agentChatPayload(profile){
   const snap=agentSnapshotForProfile(profile);
@@ -4815,6 +5600,12 @@ function profileForChat(chat=currentChat()){
   const byChat=agentId ? profiles.find(p=>p.id===agentId) : null;
   if(byChat) return byChat;
   return getActiveProfile();
+}
+
+function effectiveRoutingMode(profile){
+  const globalMode=String(state.settings?.routingMode||'auto').toLowerCase();
+  if(globalMode && globalMode!=='auto') return globalMode;
+  return String(profile?.routingMode||globalMode||'auto').toLowerCase();
 }
 
 gcShowAddAgent=function(){
@@ -5010,7 +5801,17 @@ function gcProcessMentions(content,roomId){
         const r=await fetch(apiBase()+'/api/chats/gc-stream',{
           method:'POST',
           headers:{'Content-Type':'application/json'},
-          body:JSON.stringify({messages,model:agent.modelId||agent.profile,scene:'reasoning'}),
+          body:JSON.stringify({
+            messages,
+            model:agent.modelId||agent.profile,
+            scene:'reasoning',
+            routingMode:state.settings.routingMode||'auto',
+            agentRuntime:'cli',
+            agentId:agent.profileId||agent.agentId,
+            profileId:agent.profileId||agent.agentId,
+            profileName:agent.name,
+            profilePrompt:agent.systemPrompt||'',
+          }),
         });
         if(!r.ok||!r.body){
           throw new Error('API返回错误: '+r.status);
@@ -5828,7 +6629,7 @@ function renderMemoryLibrary(){
   const selectedId=state.memory.selectedId;
   const mode=state.memory.mode||'preview';
   const conversationView=state.memory.conversationView||'all';
-  const workspacePath=data?.workspaceDir||'C:\\Users\\Administrator\\Desktop\\Hermes Agent';
+  const workspacePath=data?.workspaceDir||'C:\Users\\Administrator\\Desktop\\Hermes Agent';
   const currentPath=current?.path||'选择左侧文件查看内容';
   const headerMeta=current?[
     current.type==='core'?'核心文件':'对话记忆',
@@ -6042,12 +6843,17 @@ function apiFormatLabel(value){
   const map={
     'openai-chat':'OpenAI 兼容',
     'openai-image':'OpenAI 图像',
+    'openai-video':'OpenAI 视频',
     'ollama':'Ollama / 本地',
     'anthropic_messages':'Anthropic Messages',
     'anthropic':'Anthropic Messages',
     'gemini':'Gemini'
   };
   return map[value] || value || 'OpenAI 兼容';
+}
+const MODEL_API_FORMATS=['openai-chat','openai-image','openai-video','ollama','anthropic_messages','gemini'];
+function apiFormatOptionsHtml(selected='openai-chat'){
+  return MODEL_API_FORMATS.map(v=>`<option value="${v}"${(selected||'openai-chat')===v?' selected':''}>${apiFormatLabel(v)}</option>`).join('');
 }
 function authTypeLabel(value, customHeader=''){
   const map={bearer:'Bearer Token','x-api-key':'x-api-key','api-key':'api-key',custom:customHeader||'Custom Header',none:'No Auth'};
@@ -6056,9 +6862,11 @@ function authTypeLabel(value, customHeader=''){
 function inferModelTags(name){
   const text=String(name||'').toLowerCase();
   const tags=[];
+  if(/video|sora|runway|kling|pika|veo|视频|生成视频/.test(text)) tags.push('video');
   if(/reason|r1|thinking|o1|o3|o4|deep|推理/.test(text)) tags.push('reasoning');
-  if(/image|vision|draw|sd|dall|flux|midjourney|图|视觉/.test(text)) tags.push(/image|draw|sd|dall|flux|midjourney|生图/.test(text)?'image':'vision');
-  if(!tags.includes('chat')) tags.unshift('chat');
+  if(/gpt-image|image|draw|sd|stable-diffusion|dall|flux|midjourney|生图|绘图|图像生成/.test(text)) tags.push('image');
+  if(/vision|visual|omni|vl\b|gpt-4o|gemini|多模态|视觉|看图|识图/.test(text)) tags.push('vision');
+  if(!tags.includes('chat') && !tags.includes('image') && !tags.includes('video')) tags.unshift('chat');
   return [...new Set(tags)];
 }
 
@@ -6293,46 +7101,72 @@ function renderModelsV2Legacy(){
   </div>`;
 }
 
+
+function inferModelKind(model = {}) {
+  const tags = modelTags(model);
+  if ((model.apiFormat || '') === 'openai-video' || tags.includes('video')) return 'video';
+  if ((model.apiFormat || '') === 'openai-image' || tags.includes('image')) return 'image';
+  if (tags.includes('vision') || model.kind === 'vision') return 'vision';
+  return 'chat';
+}
+function scenarioKeyForModel(model = {}) {
+  const kind = inferModelKind(model);
+  if (kind === 'video') return 'video';
+  if (kind === 'image') return 'image';
+  if (kind === 'vision') return 'vision';
+  const tags = modelTags(model);
+  if (tags.includes('reasoning')) return 'reasoning';
+  return 'chat';
+}
+function toggleSecretInput(id){
+  const input=$('#'+id);
+  if(!input) return;
+  input.type=input.type==='password'?'text':'password';
+}
+
 function renderModels(){
   const cfg=activeModelsConfig();
   const lib=Array.isArray(cfg.library)?cfg.library:[];
   const scenarios=[
-    {key:'chat',title:'普通对话',desc:'默认聊天、日常问答和轻量任务。'},
-    {key:'reasoning',title:'深度推理',desc:'复杂分析、规划和长链路任务。'},
-    {key:'vision',title:'图片识别',desc:'看图、识图和多模态图片分析。'},
-    {key:'image',title:'图像生成',desc:'绘图、改图和图片 Prompt 工作流。'},
-    {key:'fallback',title:'失败退回',desc:'主模型不可用时自动兜底。'}
+    {key:'chat',title:'\u666e\u901a\u5bf9\u8bdd',desc:'\u9ed8\u8ba4\u804a\u5929\u3001\u65e5\u5e38\u95ee\u7b54\u548c\u8f7b\u91cf\u4efb\u52a1\u3002'},
+    {key:'reasoning',title:'\u6df1\u5ea6\u63a8\u7406',desc:'\u590d\u6742\u5206\u6790\u3001\u89c4\u5212\u548c\u957f\u94fe\u8def\u4efb\u52a1\u3002'},
+    {key:'vision',title:'\u56fe\u7247\u8bc6\u522b',desc:'\u770b\u56fe\u3001\u8bc6\u56fe\u548c\u591a\u6a21\u6001\u56fe\u7247\u5206\u6790\u3002'},
+    {key:'image',title:'\u56fe\u50cf\u751f\u6210',desc:'\u7ed8\u56fe\u3001\u6539\u56fe\u548c\u56fe\u7247 Prompt \u5de5\u4f5c\u6d41\u3002'},
+    {key:'video',title:'\u751f\u6210\u89c6\u9891',desc:'\u6587\u751f\u89c6\u9891\u3001\u77ed\u7247\u548c\u52a8\u6001\u521b\u610f\u751f\u6210\u3002'},
+    {key:'fallback',title:'\u5931\u8d25\u9000\u56de',desc:'\u4e3b\u6a21\u578b\u4e0d\u53ef\u7528\u65f6\u81ea\u52a8\u515c\u5e95\u3002'}
   ];
+  const currentScope=activeModelScope();
   const enabledLib=lib.filter(m=>m.enabled!==false);
-  const isImageLibraryModel=(m)=>{
-    const tags=(m.tags||[]).map(t=>String(t).toLowerCase());
-    return ['openai-image','openai_image'].includes(m.apiFormat)||m.kind==='image'||(tags.includes('image')&&!tags.includes('vision'));
+  const scopedEnabled=allScopedModels().filter(m=>m.enabled!==false);
+  const modelsForScenario=(key)=>{
+    if(key==='image') return enabledLib.filter(isImageGenerationModel);
+    if(key==='video') return dedupeModels([
+      ...enabledLib.filter(isVideoGenerationModel).map(m=>({...m,_scope:currentScope})),
+      ...scopedEnabled.filter(isVideoGenerationModel)
+    ]);
+    if(key==='vision') return enabledLib.filter(isVisionChatModel);
+    return enabledLib.filter(isChatSelectableModel);
   };
-  const isVisionLibraryModel=(m)=>{
-    const tags=(m.tags||[]).map(t=>String(t).toLowerCase());
-    return !isImageLibraryModel(m) && (m.kind==='vision'||tags.includes('vision')||/vision|omni|vl|视觉|多模态|看图|识图/i.test([m.name,m.provider,...(m.tags||[])].join(' ')));
-  };
-  const modelsForScenario=(key)=>key==='image'
-    ? enabledLib.filter(isImageLibraryModel)
-    : (key==='vision'?enabledLib.filter(isVisionLibraryModel):enabledLib.filter(m=>!isImageLibraryModel(m)));
-  const optionHtml=(selected,key)=>'<option value="">选择模型</option>'+modelsForScenario(key).map(m=>'<option value="'+esc(m.id)+'"'+(selected===m.id?' selected':'')+'>'+esc(m.name)+' · '+esc(m.provider||'custom')+'</option>').join('');
+  const optionHtml=(selected,key)=>`<option value="">选择模型</option>`+modelsForScenario(key).map(m=>{
+    const shared=m._scope&&m._scope!==currentScope?' · Agent共享':'';
+    return `<option value="${esc(m.id)}"${selected===m.id?' selected':''}>${esc(m.name)} · ${esc(m.provider||'custom')}${shared}</option>`;
+  }).join('');
   const cards=scenarios.map(item=>{
     const selected=scenarioModel(item.key);
     const list=modelsForScenario(item.key);
-    const warning=item.key==='image'&&!list.length?'<div class="scenario-warning">请先添加接口格式为 OpenAI 图像的模型。</div>':(item.key==='vision'&&!list.length?'<div class="scenario-warning">请先添加带 vision 标签或多模态名称的聊天模型。</div>':'');
-    return '<div class="scenario-card"><div><strong>'+esc(item.title)+'</strong><p>'+esc(item.desc)+'</p></div><select onchange="setScenarioModel(\''+item.key+'\',this.value)">'+optionHtml(selected,item.key)+'</select>'+warning+'</div>';
+    const warning=item.key==='image'&&!list.length?'<div class="scenario-warning">\u8bf7\u5148\u6dfb\u52a0\u63a5\u53e3\u683c\u5f0f\u4e3a OpenAI \u56fe\u50cf\u7684\u6a21\u578b\u3002</div>':(item.key==='video'&&!list.length?'<div class="scenario-warning">\u8bf7\u5148\u6dfb\u52a0\u89c6\u9891\u751f\u6210\u6a21\u578b\u3002</div>':(item.key==='vision'&&!list.length?'<div class="scenario-warning">\u8bf7\u5148\u6dfb\u52a0\u5e26 vision \u6807\u7b7e\u6216\u591a\u6a21\u6001\u540d\u79f0\u7684\u804a\u5929\u6a21\u578b\u3002</div>':''));
+    return `<div class="scenario-card"><div><strong>${esc(item.title)}</strong><p>${esc(item.desc)}</p></div><select onchange="setScenarioModel('${item.key}',this.value)">${optionHtml(selected,item.key)}</select>${warning}</div>`;
   }).join('');
   const groups={};
   lib.forEach(m=>{ const k=m.provider||'Custom'; (groups[k]||(groups[k]=[])).push(m); });
   const modelRow=(m)=>{
     const enabled=m.enabled!==false;
-    const benchmark=m.benchmark;
-    const benchText=benchmark?.ok ? ('首字 '+Math.round(benchmark.firstTokenMs||0)+'ms · 总计 '+Math.round(benchmark.totalMs||0)+'ms') : (benchmark?.error ? '上次测速失败' : '未测速');
-    const tags=(m.tags||[]).slice(0,4).map(t=>'<span>'+esc(t)+'</span>').join('');
-    return '<div class="model-lib-item model-lib-item-rich '+(enabled?'':'disabled')+'"><label class="toggle model-card-toggle" title="'+(enabled?'停用模型':'启用模型')+'" onclick="event.stopPropagation()"><input type="checkbox" '+(enabled?'checked':'')+' onchange="toggleLibraryModel(\''+esc(m.id)+'\',this.checked)"><span class="toggle-slider"></span></label><div class="model-lib-main"><div class="model-lib-name-row"><strong>'+esc(m.name)+'</strong><span class="model-status-pill '+(enabled?'on':'off')+'">'+(enabled?'启用':'停用')+'</span></div><small>'+esc(m.provider||'custom')+' · '+esc(apiFormatLabel(m.apiFormat||'openai-chat'))+' · '+esc(m.base||'未填写地址')+'</small><div class="model-lib-meta">'+tags+'</div></div><div class="model-lib-actions"><button class="btn btn-xs btn-secondary" id="modelTestBtn_'+domId(m.id)+'" onclick="testLibraryModel(\''+esc(m.id)+'\')">测试</button><button class="btn btn-xs btn-secondary" onclick="editLibraryModel(\''+esc(m.id)+'\')">编辑</button><button class="btn btn-xs btn-ghost danger" onclick="deleteLibraryModel(\''+esc(m.id)+'\')">删除</button></div></div>';
+    const tags=(m.tags||[]).slice(0,5).map(t=>`<span>${esc(t)}</span>`).join('');
+    const kindLabel={chat:'\u5bf9\u8bdd',vision:'\u8bc6\u56fe',image:'\u751f\u56fe',video:'\u89c6\u9891'}[inferModelKind(m)]||'\u5bf9\u8bdd';
+    return `<div class="model-lib-item model-lib-item-rich ${enabled?'':'disabled'}"><label class="toggle model-card-toggle" title="${enabled?'\u505c\u7528\u6a21\u578b':'\u542f\u7528\u6a21\u578b'}" onclick="event.stopPropagation()"><input type="checkbox" ${enabled?'checked':''} onchange="toggleLibraryModel('${esc(m.id)}',this.checked)"><span class="toggle-slider"></span></label><div class="model-lib-main"><div class="model-lib-name-row"><strong>${esc(m.name)}</strong><span class="model-status-pill ${enabled?'on':'off'}">${enabled?'\u542f\u7528':'\u505c\u7528'}</span><span class="model-status-pill">${kindLabel}</span></div><small>${esc(m.provider||'custom')} \u00b7 ${esc(apiFormatLabel(m.apiFormat||'openai-chat'))} \u00b7 ${esc(m.base||'\u672a\u586b\u5199\u5730\u5740')}</small><div class="model-lib-meta">${tags}</div></div><div class="model-lib-actions"><button class="btn btn-xs btn-secondary" onclick="editLibraryModel('${esc(m.id)}')">\u7f16\u8f91</button><button class="btn btn-xs btn-secondary" id="modelTestBtn_${domId(m.id)}" onclick="testLibraryModel('${esc(m.id)}')">\u6d4b\u8bd5</button><button class="btn btn-xs btn-ghost danger" onclick="deleteLibraryModel('${esc(m.id)}')">\u5220\u9664</button></div></div>`;
   };
-  const groupHtml=Object.entries(groups).map(([provider,items])=>'<div class="model-provider-group"><div class="model-provider-title"><strong>'+esc(provider)+'</strong><span>'+items.length+'</span></div>'+items.map(modelRow).join('')+'</div>').join('');
-  return '<div class="models-view"><div class="page-header"><h2>模型配置</h2><div style="display:flex;gap:8px;align-items:center"><span class="model-scope-pill">当前配置：'+(activeModelScope()==='webui'?'WebUI 专用':'Agent 共享')+'</span><button class="btn btn-sm btn-primary" onclick="addModelModal()">添加模型</button></div></div><div class="models-content model-v15-content"><section class="model-panel model-scenario-panel"><h3>应用场景</h3><p>配置普通对话、深度推理、图片识别、图像生成和失败退回使用的默认模型。</p><div class="scenario-card-grid">'+cards+'</div></section><div class="model-main-layout"><section class="model-panel model-fetch-panel"><h3>获取模型</h3><p>从 Provider 拉取模型列表，勾选后加入模型库；图像模型请使用 OpenAI 图像接口格式。</p><div class="model-connector-grid"><label><span class="model-field-label">Provider</span><input id="mProvider" placeholder="如 xiaomi / deepseek / openai" value="'+esc(state.model.provider||'')+'" oninput="applyProviderPreset()"></label><label class="model-field-wide"><span class="model-field-label">API Key</span><input id="mKey" type="password" placeholder="sk-..." value="'+esc(state.model.key||'')+'"></label><label class="model-field-wide"><span class="model-field-label">API 地址</span><input id="mBase" placeholder="如 https://api.openai.com/v1" value="'+esc(state.model.base||'')+'"></label><label><span class="model-field-label">接口格式</span><select id="mApiFormat" onchange="applyApiFormatPreset()"><option value="openai-chat">OpenAI 对话</option><option value="openai-image">OpenAI 图像</option><option value="ollama">Ollama / 本地</option><option value="anthropic_messages">Anthropic Messages</option><option value="gemini">Gemini</option></select></label><div id="mFormatHint" class="model-format-hint">提示：DeepSeek、OpenAI 兼容服务通常填写 API Key 和 /v1 地址。</div><button class="btn btn-secondary" id="fetchModelsBtn" onclick="fetchModelsForLibrary()">获取模型</button></div><div id="modelMsg" class="model-msg"></div><div id="fetchModelsList" class="model-fetch-list" style="display:none"><div class="model-fetch-actions"><button class="btn btn-xs btn-secondary" onclick="selectAllFetchModels()">全选</button><button class="btn btn-xs btn-secondary" onclick="deselectAllFetchModels()">取消全选</button><button class="btn btn-xs btn-primary" onclick="addSelectedFetchedModels()">加入模型库</button></div><div id="fetchModelsItems"></div></div></section><section class="model-panel model-library-panel"><h3>模型库</h3><p>按 Provider 分组管理模型，可启用、测试、编辑或删除。</p><div class="model-lib-list">'+(lib.length?groupHtml:'<div class="model-empty-state"><strong>暂无模型</strong><span>请先添加或获取模型。</span><button class="btn btn-sm btn-primary" onclick="addModelModal()">添加模型</button></div>')+'</div></section></div></div></div>';
+  const groupHtml=Object.entries(groups).map(([provider,items])=>`<div class="model-provider-group"><div class="model-provider-title"><strong>${esc(provider)}</strong><span>${items.length}</span><div class="model-provider-actions"><button class="btn btn-xs btn-secondary" onclick="testProviderModels('${esc(provider)}')">\u6d4b\u8bd5</button><button class="btn btn-xs btn-secondary" onclick="editProviderModels('${esc(provider)}')">\u7f16\u8f91</button></div></div><div class="model-provider-body">${items.map(modelRow).join('')}</div></div>`).join('');
+  return `<div class="models-view"><div class="page-header"><h2>\u6a21\u578b\u914d\u7f6e</h2><div style="display:flex;gap:8px;align-items:center"><span class="model-scope-pill">\u5f53\u524d\u914d\u7f6e\uff1a${activeModelScope()==='webui'?'WebUI \u4e13\u7528':'Agent \u5171\u4eab'}</span><button class="btn btn-sm btn-primary" onclick="addModelModal()">\u6dfb\u52a0\u6a21\u578b</button></div></div><div class="models-content model-v15-content"><section class="model-panel model-scenario-panel"><h3>\u5e94\u7528\u573a\u666f</h3><p>\u914d\u7f6e\u666e\u901a\u5bf9\u8bdd\u3001\u6df1\u5ea6\u63a8\u7406\u3001\u56fe\u7247\u8bc6\u522b\u3001\u56fe\u50cf\u751f\u6210\u3001\u89c6\u9891\u751f\u6210\u548c\u5931\u8d25\u9000\u56de\u4f7f\u7528\u7684\u9ed8\u8ba4\u6a21\u578b\u3002</p><div class="scenario-card-grid">${cards}</div></section><div class="model-main-layout"><section class="model-panel model-fetch-panel"><h3>\u83b7\u53d6\u6a21\u578b</h3><p>\u4ece Provider \u62c9\u53d6\u6a21\u578b\u5217\u8868\uff0c\u52fe\u9009\u540e\u52a0\u5165\u6a21\u578b\u5e93\uff1b\u56fe\u50cf/\u89c6\u9891\u6a21\u578b\u4f1a\u6309\u540d\u79f0\u4e0e\u63a5\u53e3\u683c\u5f0f\u81ea\u52a8\u5206\u7c7b\u3002</p><div class="model-connector-grid"><label><span class="model-field-label">Provider</span><input id="mProvider" placeholder="\u5982 xiaomi / deepseek / openai" value="${esc(state.model.provider||'')}" oninput="applyProviderPreset()"></label><label class="model-field-wide"><span class="model-field-label">API Key</span><span class="secret-input-wrap"><input id="mKey" type="password" placeholder="sk-..." value="${esc(state.model.key||'')}"><button type="button" class="secret-eye-btn" onclick="toggleSecretInput('mKey')">&#128065;</button></span></label><label class="model-field-wide"><span class="model-field-label">API \u5730\u5740</span><input id="mBase" placeholder="\u5982 https://api.openai.com/v1" value="${esc(state.model.base||'')}"></label><label><span class="model-field-label">\u63a5\u53e3\u683c\u5f0f</span><select id="mApiFormat" onchange="applyApiFormatPreset()"><option value="openai-chat">OpenAI \u5bf9\u8bdd</option><option value="openai-image">OpenAI \u56fe\u50cf</option><option value="openai-video">OpenAI \u89c6\u9891</option><option value="ollama">Ollama / \u672c\u5730</option><option value="anthropic_messages">Anthropic Messages</option><option value="gemini">Gemini</option></select></label><div id="mFormatHint" class="model-format-hint">\u63d0\u793a\uff1aDeepSeek\u3001OpenAI \u517c\u5bb9\u670d\u52a1\u901a\u5e38\u586b\u5199 API Key \u548c /v1 \u5730\u5740\u3002</div><button class="btn btn-secondary" id="fetchModelsBtn" onclick="fetchModelsForLibrary()">\u83b7\u53d6\u6a21\u578b</button></div><div id="modelMsg" class="model-msg"></div><div id="fetchModelsList" class="model-fetch-list" style="display:none"><div class="model-fetch-actions"><button class="btn btn-xs btn-secondary" onclick="selectAllFetchModels()">\u5168\u9009</button><button class="btn btn-xs btn-secondary" onclick="deselectAllFetchModels()">\u53d6\u6d88\u5168\u9009</button><button class="btn btn-xs btn-primary" onclick="addSelectedFetchedModels()">\u52a0\u5165\u6a21\u578b\u5e93</button></div><div id="fetchModelsItems"></div></div></section><section class="model-panel model-library-panel"><h3>\u6a21\u578b\u5e93</h3><p>\u6309 Provider \u5206\u7ec4\u7ba1\u7406\u6a21\u578b\uff0c\u53ef\u542f\u7528\u3001\u6d4b\u8bd5\u3001\u7f16\u8f91\u6216\u5220\u9664\u3002</p><div class="model-lib-list">${lib.length?groupHtml:'<div class="model-empty-state"><strong>\u6682\u65e0\u6a21\u578b</strong><span>\u8bf7\u5148\u6dfb\u52a0\u6216\u83b7\u53d6\u6a21\u578b\u3002</span><button class="btn btn-sm btn-primary" onclick="addModelModal()">\u6dfb\u52a0\u6a21\u578b</button></div>'}</div></section></div></div></div>`;
 }
 
 function domId(value){return String(value||'').replace(/[^a-zA-Z0-9_-]/g,'_')}
@@ -6351,7 +7185,8 @@ function updateModelFormatHint(prefix='m'){
   if(!hint) return;
   const values=modelFormValues(prefix);
   const notes=[];
-  if(values.apiFormat==='openai-chat') notes.push('Supports /v1/models and /v1/chat/completions; compatible with Xiaomi MiMo, New API, One API gateways.');
+  if(values.apiFormat==='openai-image') notes.push('\u7528\u4e8e\u56fe\u50cf\u751f\u6210\u6a21\u578b\uff0c\u4f1a\u81ea\u52a8\u5f52\u5165\u56fe\u50cf\u751f\u6210\u573a\u666f\u3002');
+  if(values.apiFormat==='openai-video') notes.push('\u7528\u4e8e\u89c6\u9891\u751f\u6210\u6a21\u578b\uff0c\u4f1a\u81ea\u52a8\u5f52\u5165\u751f\u6210\u89c6\u9891\u573a\u666f\u3002');
   if(values.apiFormat==='ollama') notes.push('Ollama usually needs no API Key; default endpoint is http://127.0.0.1:11434.');
   if(values.apiFormat==='anthropic_messages') notes.push('Claude / Anthropic uses x-api-key and Messages API.');
   hint.textContent=notes.join(' ');
@@ -6430,6 +7265,13 @@ async function fetchModelsForLibrary(){
     if(btn){btn.disabled=false;btn.textContent='获取模型'}
   }
 }
+
+function classifyFetchedModel(name, apiFormat='openai-chat'){
+  const tags=[...new Set([...(inferModelTags(name)), ...(apiFormat==='openai-image'?['image']:[]), ...(apiFormat==='openai-video'?['video']:[])])];
+  const kind=apiFormat==='openai-image'?'image':(apiFormat==='openai-video'?'video':(tags.includes('image')?'image':(tags.includes('video')?'video':(tags.includes('vision')?'vision':'chat'))));
+  return { tags, kind };
+}
+
 async function addSelectedFetchedModels(){
   const selected=[...document.querySelectorAll('.fetch-model-cb:checked')].map(c=>c.value);
   const f=state._fetchedModels;
@@ -6437,44 +7279,548 @@ async function addSelectedFetchedModels(){
   const cfg=activeModelsConfig();
   const existing=new Map((cfg.library||[]).map(m=>[m.id,m]));
   selected.forEach(name=>{
+    const { tags, kind } = classifyFetchedModel(name, f.apiFormat);
     existing.set(f.provider+':'+name,{
       id:f.provider+':'+name,provider:f.provider,name,base:f.base,key:f.key,enabled:true,
-      tags:[...new Set([...(inferModelTags(name)), ...(f.apiFormat==='openai-image'?['image']:[])])],kind:f.apiFormat==='openai-image'?'image':(inferModelTags(name).includes('vision')?'vision':'chat'),apiFormat:f.apiFormat,authType:f.authType,authHeader:f.authHeader,
+      tags,kind,apiFormat:f.apiFormat,authType:f.authType,authHeader:f.authHeader,
     });
   });
   cfg.library=[...existing.values()];
   cfg.current=cfg.current||f.provider+':'+selected[0];
   cfg.scenarios={...(cfg.scenarios||{})};
-  const firstId=f.provider+':'+selected[0];
-  if(f.apiFormat==='openai-image'){
-    if(!cfg.scenarios.image) cfg.scenarios.image=firstId;
-  }else{
-    if(!cfg.scenarios.chat) cfg.scenarios.chat=firstId;
-    const reasoning=selected.find(n=>inferModelTags(n).includes('reasoning'));
-    if(reasoning&&!cfg.scenarios.reasoning) cfg.scenarios.reasoning=f.provider+':'+reasoning;
-    const vision=selected.find(n=>inferModelTags(n).includes('vision'));
-    if(vision&&!cfg.scenarios.vision) cfg.scenarios.vision=f.provider+':'+vision;
-  }
+  const byKind = selected.map(name => ({ name, id: f.provider+':'+name, ...classifyFetchedModel(name, f.apiFormat) }));
+  const firstChat = byKind.find(item => item.kind === 'chat');
+  const firstReasoning = byKind.find(item => item.tags.includes('reasoning') && item.kind === 'chat');
+  const firstVision = byKind.find(item => item.kind === 'vision');
+  const firstImage = byKind.find(item => item.kind === 'image');
+  const firstVideo = byKind.find(item => item.kind === 'video');
+  if(firstChat && !cfg.scenarios.chat) cfg.scenarios.chat = firstChat.id;
+  if(firstReasoning && !cfg.scenarios.reasoning) cfg.scenarios.reasoning = firstReasoning.id;
+  if(firstVision && !cfg.scenarios.vision) cfg.scenarios.vision = firstVision.id;
+  if(firstImage && !cfg.scenarios.image) cfg.scenarios.image = firstImage.id;
+  if(firstVideo && !cfg.scenarios.video) cfg.scenarios.video = firstVideo.id;
+  if(!cfg.scenarios.chat && byKind.length && byKind[0].kind !== 'image' && byKind[0].kind !== 'video') cfg.scenarios.chat = byKind[0].id;
   const data=await persistModelsConfig(cfg);
   if(!data) return;
   toast('已添加 '+selected.length+' 个模型','success');
   renderPage();
 }
+
+
+function fetchedModelNames(models=[]){
+  const seen=new Set();
+  return (models||[]).map(m=>typeof m==='string'?m:(m?.id||m?.name||'')).map(name=>String(name||'').trim()).filter(Boolean).filter(name=>{
+    const key=name.toLowerCase();
+    if(seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function modelIdFor(provider,name){
+  return `${provider||'custom'}:${name}`;
+}
+
+function modelNameForMerge(model){
+  return String(model?.name||model?.id||'').trim();
+}
+
+function applyModelIdMap(cfg,idMap){
+  if(!idMap?.size) return;
+  if(idMap.has(cfg.current)) cfg.current=idMap.get(cfg.current);
+  cfg.scenarios={...(cfg.scenarios||{})};
+  Object.keys(cfg.scenarios).forEach(key=>{
+    if(idMap.has(cfg.scenarios[key])) cfg.scenarios[key]=idMap.get(cfg.scenarios[key]);
+  });
+}
+
+function syncProviderConnectionModels(cfg, originalProvider, values){
+  const provider=values.provider||'custom';
+  const idMap=new Map();
+  const merged=new Map();
+  (cfg.library||[]).forEach(model=>{
+    const fromProvider=(model.provider||'Custom')===(originalProvider||'Custom');
+    const name=modelNameForMerge(model);
+    const next=fromProvider
+      ? {...model,id:modelIdFor(provider,name),provider,base:values.base,key:values.key,apiFormat:values.apiFormat,authType:values.authType,authHeader:values.authHeader}
+      : {...model};
+    if(fromProvider && model.id && model.id!==next.id) idMap.set(model.id,next.id);
+    const key=String(next.id||modelIdFor(next.provider||'custom',modelNameForMerge(next))).toLowerCase();
+    merged.set(key,{...(merged.get(key)||{}),...next});
+  });
+  cfg.library=[...merged.values()];
+  applyModelIdMap(cfg,idMap);
+  return idMap;
+}
+
+function upsertFetchedModelIntoLibrary(library,name,values){
+  const provider=values.provider||'custom';
+  const id=modelIdFor(provider,name);
+  const providerNameKey=`${provider.toLowerCase()}::${String(name).toLowerCase()}`;
+  let index=library.findIndex(item=>item.id===id);
+  if(index<0) index=library.findIndex(item=>`${String(item.provider||'custom').toLowerCase()}::${String(item.name||'').toLowerCase()}`===providerNameKey);
+  const old=index>=0?library[index]:null;
+  const classified=classifyFetchedModel(name, values.apiFormat);
+  const tags=[...new Set((old?.tags?.length?old.tags:classified.tags)||[])];
+  if(values.apiFormat==='openai-image'&&!tags.includes('image')) tags.push('image');
+  if(values.apiFormat==='openai-video'&&!tags.includes('video')) tags.push('video');
+  const kind=values.apiFormat==='openai-image'?'image':(values.apiFormat==='openai-video'?'video':(tags.includes('image')?'image':(tags.includes('video')?'video':(tags.includes('vision')?'vision':'chat'))));
+  const next={...(old||{}),id,provider,name,base:values.base,key:values.key,enabled:old?old.enabled!==false:true,tags,kind,apiFormat:values.apiFormat,authType:values.authType,authHeader:values.authHeader};
+  if(index>=0){
+    library[index]=next;
+    return 'updated';
+  }
+  library.push(next);
+  return 'added';
+}
+
+function fillScenarioDefaultsFromFetched(cfg,names,values){
+  cfg.scenarios={...(cfg.scenarios||{})};
+  const byKind=names.map(name=>({name,id:modelIdFor(values.provider||'custom',name),...classifyFetchedModel(name,values.apiFormat)}));
+  const firstChat=byKind.find(item=>item.kind==='chat');
+  const firstReasoning=byKind.find(item=>item.tags.includes('reasoning')&&item.kind==='chat');
+  const firstVision=byKind.find(item=>item.kind==='vision');
+  const firstImage=byKind.find(item=>item.kind==='image');
+  const firstVideo=byKind.find(item=>item.kind==='video');
+  if(firstChat&&!cfg.scenarios.chat) cfg.scenarios.chat=firstChat.id;
+  if(firstReasoning&&!cfg.scenarios.reasoning) cfg.scenarios.reasoning=firstReasoning.id;
+  if(firstVision&&!cfg.scenarios.vision) cfg.scenarios.vision=firstVision.id;
+  if(firstImage&&!cfg.scenarios.image) cfg.scenarios.image=firstImage.id;
+  if(firstVideo&&!cfg.scenarios.video) cfg.scenarios.video=firstVideo.id;
+  if(!cfg.scenarios.chat&&byKind.length&&byKind[0].kind!=='image'&&byKind[0].kind!=='video') cfg.scenarios.chat=byKind[0].id;
+}
+
+function selectedEditorFetchedModels(){
+  return [...document.querySelectorAll('.editor-fetch-model-cb:checked')].map(c=>c.value).filter(Boolean);
+}
+
+function editorFetchVisibleCheckboxes(){
+  return [...document.querySelectorAll('.editor-fetch-model-cb')].filter(c=>!c.closest('.model-fetch-item')?.hidden);
+}
+
+function selectedVisibleEditorFetchedModels(){
+  return editorFetchVisibleCheckboxes().filter(c=>c.checked).map(c=>c.value).filter(Boolean);
+}
+
+function updateEditorFetchSelectedCount(){
+  const count=$('#editorFetchSelectedCount');
+  if(count) count.textContent=selectedEditorFetchedModels().length;
+  const hint=$('#editorFetchVisibleHint');
+  if(hint){
+    const visible=editorFetchVisibleCheckboxes().length;
+    const total=document.querySelectorAll('.editor-fetch-model-cb').length;
+    hint.textContent=visible===total?`共 ${total} 个`:`当前显示 ${visible}/${total} 个`;
+  }
+}
+
+function selectAllEditorFetchModels(){
+  editorFetchVisibleCheckboxes().forEach(c=>c.checked=true);
+  updateEditorFetchSelectedCount();
+}
+
+function deselectAllEditorFetchModels(){
+  editorFetchVisibleCheckboxes().forEach(c=>c.checked=false);
+  updateEditorFetchSelectedCount();
+}
+
+function filterEditorFetchedModels(){
+  const q=($('#editorFetchSearch')?.value||'').trim().toLowerCase();
+  let visible=0;
+  document.querySelectorAll('#addFetchModelsList .model-fetch-item.remote').forEach(row=>{
+    const name=(row.dataset.modelName||row.querySelector('.model-fetch-name')?.textContent||'').toLowerCase();
+    const show=!q||name.includes(q);
+    row.hidden=!show;
+    row.style.display=show?'':'none';
+    if(show) visible++;
+  });
+  const empty=$('#editorFetchEmpty');
+  if(empty) empty.style.display=visible?'none':'block';
+  updateEditorFetchSelectedCount();
+}
+
+function renderEditorFetchedModels(){
+  if($('#providerModelMapRows')){
+    renderProviderMappingRemoteSelectors();
+    return;
+  }
+  const box=$('#addFetchModelsList');
+  const fetched=state._editorFetchedModels;
+  if(!box||!fetched) return;
+  const prevQuery=$('#editorFetchSearch')?.value||'';
+  const values=modelFormValues('addModel');
+  const existing=new Set(providerModels(values.provider||fetched.provider||'custom').map(item=>String(item.name||item.id||'').toLowerCase()));
+  const rows=(fetched.models||[]).map(name=>{
+    const exists=existing.has(String(name).toLowerCase());
+    const classified=classifyFetchedModel(name, values.apiFormat||fetched.apiFormat);
+    const kindLabel={chat:'对话',vision:'识图',image:'生图',video:'视频'}[classified.kind]||'对话';
+    return `<label class="model-fetch-item remote ${exists?'is-existing':''}" data-model-name="${esc(name)}" title="${esc(name)}"><input type="checkbox" class="editor-fetch-model-cb" value="${esc(name)}" ${exists?'':'checked'} onchange="updateEditorFetchSelectedCount()"><span class="model-fetch-name">${esc(name)}</span><span class="model-fetch-badges"><em>${esc(kindLabel)}</em>${exists?'<em>已添加</em>':''}</span></label>`;
+  }).join('');
+  const existingCount=(fetched.models||[]).filter(name=>existing.has(String(name).toLowerCase())).length;
+  box.style.display='block';
+  box.innerHTML=`<div class="model-fetch-toolbar"><div class="model-fetch-summary"><strong>远端返回 ${fetched.models.length} 个模型</strong><span>${existingCount?`${existingCount} 个已在当前 Provider 中`: '可直接勾选加入模型库'}</span></div><div class="model-fetch-toolbar-actions"><button type="button" class="btn btn-xs btn-secondary" onclick="selectAllEditorFetchModels()">全选当前</button><button type="button" class="btn btn-xs btn-secondary" onclick="deselectAllEditorFetchModels()">取消当前</button><button type="button" class="btn btn-xs btn-secondary" onclick="applySelectedFetchedModelToEditor()">填入选中</button><button type="button" class="btn btn-xs btn-primary" onclick="addSelectedEditorFetchedModels()">加入选中模型</button></div></div><div class="model-fetch-search-row"><input id="editorFetchSearch" placeholder="搜索远端模型名称" value="${esc(prevQuery)}" oninput="filterEditorFetchedModels()"></div><div class="model-fetch-selected">已选择 <strong id="editorFetchSelectedCount">0</strong> 个模型 <span id="editorFetchVisibleHint"></span></div><div id="editorFetchEmpty" class="model-fetch-empty">没有匹配的远端模型</div><div class="model-fetch-remote-list">${rows}</div>`;
+  filterEditorFetchedModels();
+}
+
+function applyFetchedModelToEditor(name){
+  const input=document.getElementById('addModelName');
+  if(input) input.value=name;
+  const apiFormat=document.getElementById('addModelApiFormat')?.value||'openai-chat';
+  const classified=classifyFetchedModel(name, apiFormat);
+  document.querySelectorAll('.addModelTag').forEach(cb=>{ cb.checked=classified.tags.includes(cb.value); });
+  if(classified.kind==='image') document.querySelectorAll('.addModelTag[value="image"]').forEach(cb=>{ cb.checked=true; });
+  if(classified.kind==='video') document.querySelectorAll('.addModelTag[value="video"]').forEach(cb=>{ cb.checked=true; });
+  if(classified.kind==='vision') document.querySelectorAll('.addModelTag[value="vision"]').forEach(cb=>{ cb.checked=true; });
+}
+
+function applySelectedFetchedModelToEditor(){
+  const selected=selectedVisibleEditorFetchedModels();
+  const fallback=selectedEditorFetchedModels();
+  const name=selected[0] || fallback[0] || state._editorFetchedModels?.models?.[0] || '';
+  if(!name){toast('请选择要填入的模型','info');return}
+  applyFetchedModelToEditor(name);
+  toast('已填入：'+name,'success');
+}
+
+async function fetchModelsFromEditor(){
+  const values=modelFormValues('addModel');
+  const btn=$('#addFetchModelsBtn');
+  if(!values.base){toast('\u8bf7\u586b\u5199 API \u8bf7\u6c42\u5730\u5740','error');return}
+  if(!values.key && values.authType!=='none'){toast('\u8bf7\u586b\u5199 API Key','error');return}
+  const summary=$('#providerModelMapFetchSummary');
+  if(summary){
+    summary.dataset.tone='loading';
+    summary.style.display='block';
+    summary.textContent='正在获取模型列表...';
+  }
+  if(btn){btn.disabled=true;btn.textContent='\u83b7\u53d6\u4e2d...'}
+  try{
+    const r=await fetch(apiBase()+'/api/models/fetch-remote',{method:'POST',cache:'no-store',headers:{'Content-Type':'application/json','Cache-Control':'no-cache'},body:JSON.stringify(values)});
+    const j=await r.json().catch(()=>({}));
+    const data=j.code===0?j.data:null;
+    if(!data||!data.models?.length){
+      const msg=j.msg||'\u6ca1\u6709\u83b7\u53d6\u5230\u6a21\u578b';
+      if(summary){summary.dataset.tone='error';summary.style.display='block';summary.textContent=msg}
+      toast(msg,'error');
+      return;
+    }
+    state._editorFetchedModels={...values,models:fetchedModelNames(data.models)};
+    if(!state._editorFetchedModels.models.length){
+      const msg=j.msg||'没有获取到可用模型名';
+      if(summary){summary.dataset.tone='error';summary.style.display='block';summary.textContent=msg}
+      toast(msg,'error');
+      return;
+    }
+    renderEditorFetchedModels();
+    const count=state._editorFetchedModels.models.length;
+    if(summary){
+      summary.dataset.tone='success';
+      summary.style.display='block';
+      summary.textContent=`已获取 ${count} 个远端模型；点击“实际请求模型”右侧箭头选择。`;
+    }
+    toast(`已获取 ${count} 个模型`,'success');
+  }catch(e){
+    const msg='\u83b7\u53d6\u5931\u8d25\uff1a'+e.message;
+    if(summary){summary.dataset.tone='error';summary.style.display='block';summary.textContent=msg}
+    toast(msg,'error');
+  }
+  finally{if(btn){btn.disabled=false;btn.textContent=btn.dataset.idleText||'\u83b7\u53d6\u6a21\u578b'}}
+}
+
+async function addSelectedEditorFetchedModels(){
+  const fetched=state._editorFetchedModels;
+  const selected=selectedEditorFetchedModels();
+  if(!fetched||!selected.length){toast('请选择要加入的模型','info');return}
+  const values=modelFormValues('addModel');
+  if(!values.base&&values.apiFormat!=='ollama'){toast('请填写 API 请求地址','error');return}
+  if(!values.key&&values.authType!=='none'){toast('请填写 API Key','error');return}
+  const cfg=activeModelsConfig();
+  cfg.library=[...(cfg.library||[])];
+  const ctx=state._modelEditorContext||{};
+  if(ctx.providerEdit) syncProviderConnectionModels(cfg, ctx.originalProvider||values.provider, values);
+  let added=0,updated=0;
+  selected.forEach(name=>{
+    const result=upsertFetchedModelIntoLibrary(cfg.library,name,values);
+    if(result==='added') added++;
+    else updated++;
+  });
+  cfg.current=cfg.current||modelIdFor(values.provider||'custom',selected[0]);
+  fillScenarioDefaultsFromFetched(cfg,selected,values);
+  const data=await persistModelsConfig(cfg);
+  if(!data) return;
+  state.model={...state.model,provider:values.provider,model:selected[0],base:values.base,key:values.key};
+  save();
+  closeModal();
+  renderPage();
+  toast(`已加入 ${added} 个，更新 ${updated} 个模型`,'success');
+}
+
 function addModelModal(){openModelEditor()}
+
+function editorRemoteModelOptionsHtml(selected=''){
+  const names=state._editorFetchedModels?.models||[];
+  if(!names.length) return '';
+  const selectedKey=String(selected||'').toLowerCase();
+  const current=names.find(name=>String(name).toLowerCase()===selectedKey)||'';
+  return `<button type="button" class="provider-model-remote-trigger" title="选择远端模型（已加载 ${names.length} 个）" aria-label="选择远端模型" onclick="toggleProviderModelRemoteMenu(this,event)">
+      <span class="provider-model-remote-current">${current?esc(current):'选择'}</span>
+      <span class="provider-model-remote-chevron">⌄</span>
+    </button>
+    <div class="provider-model-remote-menu" hidden>
+      ${names.map(name=>`<button type="button" class="provider-model-remote-option${String(name).toLowerCase()===selectedKey?' active':''}" data-model-name="${esc(name)}" onclick="chooseRemoteModelForMappingRow(this,event)">${esc(name)}</button>`).join('')}
+    </div>`;
+}
+
+function providerModelMappingRowHtml(item={}, index=''){
+  const rowId=index||String(Date.now());
+  const name=item.name||'';
+  const apiFormat=item.apiFormat||'openai-chat';
+  return `<div class="provider-model-map-row" data-row-id="${esc(rowId)}" data-model-id="${esc(item.id||'')}" data-enabled="${item.enabled===false?'0':'1'}" data-original-api-format="${esc(apiFormat)}">
+    <div class="provider-model-name-cell">
+      <input class="provider-model-name-input" placeholder="实际请求模型" value="${esc(name)}">
+      <span class="provider-model-remote-slot">${editorRemoteModelOptionsHtml(name)}</span>
+    </div>
+    <select class="provider-model-api-format">${apiFormatOptionsHtml(apiFormat)}</select>
+    <button type="button" class="btn btn-xs btn-ghost danger provider-model-delete" onclick="removeProviderModelMappingRow(this)">删除</button>
+  </div>`;
+}
+
+function providerEditModelListHtml(model){
+  if(!model?._providerEdit) return '';
+  const items=providerModels(model.provider||'Custom');
+  const rows=items.map((item,index)=>providerModelMappingRowHtml(item,index)).join('');
+  return `<section class="wide provider-model-map">
+    <div class="provider-model-map-head">
+      <strong>模型映射</strong>
+      <div class="provider-model-map-actions">
+        <button type="button" class="btn btn-sm btn-secondary" id="addFetchModelsBtn" data-idle-text="获取模型列表" onclick="fetchModelsFromEditor()">获取模型列表</button>
+        <button type="button" class="btn btn-sm btn-primary" onclick="addProviderModelMappingRow()">添加模型</button>
+      </div>
+    </div>
+    <div class="provider-model-map-labels"><span>实际请求模型</span><span>接口格式</span><span>操作</span></div>
+    <div id="providerModelMapRows" class="provider-model-map-rows">${rows||'<div class="provider-model-map-empty">还没有模型，点击“添加模型”新建一行。</div>'}</div>
+    <div id="providerModelMapFetchSummary" class="provider-model-fetch-summary" style="display:none"></div>
+  </section>`;
+}
+
+function renderProviderMappingRemoteSelectors(){
+  const names=state._editorFetchedModels?.models||[];
+  const rowsBox=$('#providerModelMapRows');
+  if(names.length&&rowsBox){
+    rowsBox.querySelector('.provider-model-map-empty')?.remove();
+    const apiFormat=$('#addModelApiFormat')?.value||'openai-chat';
+    if(!rowsBox.querySelector('.provider-model-map-row')){
+      rowsBox.insertAdjacentHTML('beforeend', providerModelMappingRowHtml({name:'',apiFormat,enabled:true}, 'new-'+Date.now()));
+    }
+  }
+  const summary=$('#providerModelMapFetchSummary');
+  if(summary){
+    summary.dataset.tone=names.length?'success':'info';
+    summary.style.display=names.length?'block':'none';
+    summary.textContent=names.length?`已获取 ${names.length} 个远端模型；点击每行“实际请求模型”右侧箭头选择，或直接手动输入。`:'';
+  }
+  document.querySelectorAll('.provider-model-map-row').forEach(row=>{
+    const input=row.querySelector('.provider-model-name-input');
+    const slot=row.querySelector('.provider-model-remote-slot');
+    if(slot) slot.innerHTML=editorRemoteModelOptionsHtml(input?.value||'');
+  });
+}
+
+function closeProviderModelRemoteMenus(except){
+  document.querySelectorAll('.provider-model-remote-menu').forEach(menu=>{
+    if(menu!==except){
+      menu.hidden=true;
+      menu.style.removeProperty('top');
+      menu.style.removeProperty('left');
+      menu.style.removeProperty('width');
+      menu.style.removeProperty('max-height');
+    }
+  });
+}
+
+function positionProviderModelRemoteMenu(button, menu){
+  if(!button||!menu) return;
+  const rect=button.getBoundingClientRect();
+  const viewportW=document.documentElement.clientWidth||window.innerWidth||0;
+  const viewportH=document.documentElement.clientHeight||window.innerHeight||0;
+  const width=Math.min(420, Math.max(220, viewportW-32));
+  const left=Math.min(Math.max(16, rect.right-width), Math.max(16, viewportW-width-16));
+  const belowTop=rect.bottom+6;
+  let maxHeight=Math.min(300, Math.max(160, viewportH-belowTop-16));
+  let top=belowTop;
+  if(viewportH-belowTop<160 && rect.top>180){
+    maxHeight=Math.min(300, Math.max(160, rect.top-16));
+    top=Math.max(16, rect.top-6-maxHeight);
+  }
+  menu.style.top=`${top}px`;
+  menu.style.left=`${left}px`;
+  menu.style.width=`${width}px`;
+  menu.style.maxHeight=`${maxHeight}px`;
+}
+
+function toggleProviderModelRemoteMenu(button,event){
+  if(event) event.stopPropagation();
+  const menu=button?.parentElement?.querySelector('.provider-model-remote-menu');
+  if(!menu) return;
+  const willOpen=menu.hidden;
+  closeProviderModelRemoteMenus(menu);
+  menu.hidden=!willOpen;
+  if(willOpen) positionProviderModelRemoteMenu(button,menu);
+}
+
+function chooseRemoteModelForMappingRow(button,event){
+  if(event) event.stopPropagation();
+  const name=button?.dataset?.modelName||button?.textContent?.trim()||'';
+  const row=button?.closest('.provider-model-map-row');
+  const input=row?.querySelector('.provider-model-name-input');
+  if(!row||!input||!name) return;
+  input.value=name;
+  input.dispatchEvent(new Event('input',{bubbles:true}));
+  const current=row.querySelector('.provider-model-remote-current');
+  if(current) current.textContent=name;
+  row.querySelectorAll('.provider-model-remote-option').forEach(item=>item.classList.toggle('active', item===button));
+  closeProviderModelRemoteMenus();
+}
+
+if(typeof window!=='undefined'&&!window.__providerModelRemotePickerBound){
+  window.__providerModelRemotePickerBound=true;
+  document.addEventListener('click',()=>closeProviderModelRemoteMenus());
+  window.addEventListener('resize',()=>closeProviderModelRemoteMenus());
+  document.addEventListener('scroll',(event)=>{
+    if(event.target?.closest?.('.provider-model-remote-menu')) return;
+    closeProviderModelRemoteMenus();
+  },true);
+}
+
+function addProviderModelMappingRow(){
+  const rows=$('#providerModelMapRows');
+  if(!rows) return;
+  rows.querySelector('.provider-model-map-empty')?.remove();
+  const apiFormat=$('#addModelApiFormat')?.value||'openai-chat';
+  rows.insertAdjacentHTML('beforeend', providerModelMappingRowHtml({name:'',apiFormat,enabled:true}, 'new-'+Date.now()));
+  renderProviderMappingRemoteSelectors();
+}
+
+function removeProviderModelMappingRow(button){
+  const row=button?.closest('.provider-model-map-row');
+  const rows=$('#providerModelMapRows');
+  if(row) row.remove();
+  if(rows&&!rows.querySelector('.provider-model-map-row')){
+    rows.innerHTML='<div class="provider-model-map-empty">还没有模型，点击“添加模型”新建一行。</div>';
+  }
+}
+
+function collectProviderModelMappings(){
+  const rows=[...document.querySelectorAll('.provider-model-map-row')];
+  const mappings=[];
+  const seen=new Set();
+  for(const row of rows){
+    row.classList.remove('invalid');
+    const name=row.querySelector('.provider-model-name-input')?.value?.trim()||'';
+    if(!name) continue;
+    const key=name.toLowerCase();
+    if(seen.has(key)){
+      row.classList.add('invalid');
+      toast('模型映射里有重复的模型名：'+name,'error');
+      return null;
+    }
+    seen.add(key);
+    mappings.push({
+      name,
+      apiFormat:row.querySelector('.provider-model-api-format')?.value||'openai-chat',
+      originalId:row.dataset.modelId||'',
+      enabled:row.dataset.enabled!=='0',
+    });
+  }
+  return mappings;
+}
+
+function uniqueModelTags(tags=[]){
+  return [...new Set((tags||[]).map(t=>String(t||'').trim()).filter(Boolean))];
+}
+
+function providerRowTags(oldModel={}, name='', apiFormat='openai-chat'){
+  const classified=classifyFetchedModel(name, apiFormat);
+  let tags=uniqueModelTags(oldModel.tags?.length?oldModel.tags:classified.tags);
+  if(apiFormat==='openai-image'){
+    tags=tags.filter(t=>t!=='video');
+    if(!tags.includes('image')) tags.push('image');
+  }else if(apiFormat==='openai-video'){
+    tags=tags.filter(t=>t!=='image');
+    if(!tags.includes('video')) tags.push('video');
+  }else{
+    if(oldModel.apiFormat==='openai-image'||oldModel.kind==='image') tags=tags.filter(t=>t!=='image');
+    if(oldModel.apiFormat==='openai-video'||oldModel.kind==='video') tags=tags.filter(t=>t!=='video');
+    if(!tags.length) tags=classified.tags;
+  }
+  return uniqueModelTags(tags);
+}
+
+function providerRowKind(apiFormat='openai-chat', tags=[]){
+  if(apiFormat==='openai-image') return 'image';
+  if(apiFormat==='openai-video') return 'video';
+  if((tags||[]).includes('image')) return 'image';
+  if((tags||[]).includes('video')) return 'video';
+  if((tags||[]).includes('vision')) return 'vision';
+  return 'chat';
+}
+
+function cleanupModelSelections(cfg){
+  const ids=new Set((cfg.library||[]).map(m=>m.id));
+  cfg.scenarios={...(cfg.scenarios||{})};
+  Object.keys(cfg.scenarios).forEach(key=>{ if(cfg.scenarios[key]&&!ids.has(cfg.scenarios[key])) cfg.scenarios[key]=''; });
+  if(cfg.current&&!ids.has(cfg.current)) cfg.current=cfg.scenarios.chat||cfg.library.find(m=>m.enabled!==false)?.id||cfg.library[0]?.id||'';
+}
+
+function fillScenarioDefaultsFromModels(cfg, models=[]){
+  cfg.scenarios={...(cfg.scenarios||{})};
+  const firstChat=models.find(item=>item.kind==='chat');
+  const firstReasoning=models.find(item=>(item.tags||[]).includes('reasoning')&&item.kind==='chat');
+  const firstVision=models.find(item=>item.kind==='vision');
+  const firstImage=models.find(item=>item.kind==='image');
+  const firstVideo=models.find(item=>item.kind==='video');
+  if(firstChat&&!cfg.scenarios.chat) cfg.scenarios.chat=firstChat.id;
+  if(firstReasoning&&!cfg.scenarios.reasoning) cfg.scenarios.reasoning=firstReasoning.id;
+  if(firstVision&&!cfg.scenarios.vision) cfg.scenarios.vision=firstVision.id;
+  if(firstImage&&!cfg.scenarios.image) cfg.scenarios.image=firstImage.id;
+  if(firstVideo&&!cfg.scenarios.video) cfg.scenarios.video=firstVideo.id;
+}
+
 function openModelEditor(model){
   const isEdit=!!model;
+  const isProviderEdit=!!model?._providerEdit;
+  state._editorFetchedModels=null;
+  state._modelEditorContext={providerEdit:isProviderEdit,originalProvider:model?.provider||'Custom',existingId:model?.id||''};
   const tags=new Set(model?.tags||[]);
-  const apiOptions=['openai-chat','openai-image','ollama','anthropic_messages','gemini'].map(v=>`<option value="${v}"${(model?.apiFormat||'openai-chat')===v?' selected':''}>${apiFormatLabel(v)}</option>`).join('');
+  const apiOptions=apiFormatOptionsHtml(model?.apiFormat||'openai-chat');
   const authOptions=['bearer','x-api-key','api-key','custom','none'].map(v=>`<option value="${v}"${(model?.authType||'bearer')===v?' selected':''}>${authTypeLabel(v)}</option>`).join('');
-  const tagOptions=['chat','reasoning','vision','image'].map(t=>`<label><input type="checkbox" class="addModelTag" value="${t}" ${tags.has(t)?'checked':''}>${t}</label>`).join('');
-  openModal(`<div class="model-editor-modal">
-    <h3>${isEdit?'编辑模型':'添加模型'}</h3>
-    <div class="model-editor-grid">
-      <label>Provider<input id="addModelProvider" placeholder="例如 xiaomi / deepseek / openai" value="${esc(model?.provider||'')}" oninput="applyProviderPreset('addModel')"></label>
-      <label>模型名称<input id="addModelName" placeholder="例如 mimo-v2.5-pro" value="${esc(model?.name||'')}"></label>
-      <label class="wide">API Key<input id="addModelKey" type="password" placeholder="sk-..." value="${esc(model?.key||'')}"></label>
+  const tagOptions=['chat','reasoning','vision','image','video'].map(t=>`<label><input type="checkbox" class="addModelTag" value="${t}" ${tags.has(t)?'checked':''}>${t}</label>`).join('');
+  const authType=model?.authType||'bearer';
+  const providerAuthBody=authType==='custom'
+    ? `<details class="wide model-advanced-details model-auth-section">
+      <summary>高级认证设置</summary>
+      <div class="model-editor-grid inner">
+        <label>认证方式<select id="addModelAuthType" onchange="toggleCustomAuthHeader('addModel')">${authOptions}</select></label>
+        <label>自定义认证 Header<input id="addModelAuthHeader" placeholder="如 X-API-Key" value="${esc(model?.authHeader||'')}"></label>
+      </div>
+    </details>`
+    : `<input id="addModelAuthType" type="hidden" value="${esc(authType)}"><input id="addModelAuthHeader" type="hidden" value="${esc(model?.authHeader||'')}">`;
+  const providerEditorBody=`<section class="wide model-editor-section provider-info-section">
+      <div class="model-editor-section-head"><strong>提供者信息</strong></div>
+      <div class="model-editor-grid inner provider-info-grid">
+        <label>提供者名称<input id="addModelProvider" placeholder="例如 xiaomi / deepseek / openai" value="${esc(model?.provider||'')}" oninput="applyProviderPreset('addModel');renderEditorFetchedModels()"></label>
+        <label>API Key<span class="secret-input-wrap"><input id="addModelKey" type="password" placeholder="sk-..." value="${esc(model?.key||'')}"><button type="button" class="secret-eye-btn" onclick="toggleSecretInput(\'addModelKey\')">&#128065;</button></span></label>
+        <label class="wide">API 请求地址<input id="addModelBase" placeholder="例如 https://api.openai.com/v1" value="${esc(model?.base||'')}"></label>
+        <input id="addModelApiFormat" type="hidden" value="${esc(model?.apiFormat||'openai-chat')}">
+      </div>
+    </section>
+    ${providerEditModelListHtml(model)}
+    ${providerAuthBody}
+    <div id="addModelFormatHint" class="wide model-format-hint" style="display:none"></div>`;
+  const singleModelBody=`<label>提供者<input id="addModelProvider" placeholder="例如 xiaomi / deepseek / openai" value="${esc(model?.provider||'')}" oninput="applyProviderPreset('addModel');renderEditorFetchedModels()"></label>
+      <label>\u6a21\u578b\u540d\u79f0<span class="model-name-fetch-row"><input id="addModelName" placeholder="\u4f8b\u5982 mimo-v2.5-pro" value="${esc(model?.name||'')}"><button type="button" class="btn btn-sm btn-secondary" id="addFetchModelsBtn" onclick="fetchModelsFromEditor()">\u83b7\u53d6\u6a21\u578b</button></span></label>
+      <label class="wide">API Key<span class="secret-input-wrap"><input id="addModelKey" type="password" placeholder="sk-..." value="${esc(model?.key||'')}"><button type="button" class="secret-eye-btn" onclick="toggleSecretInput(\'addModelKey\')">&#128065;</button></span></label>
       <label class="wide">API 请求地址<input id="addModelBase" placeholder="例如 https://api.openai.com/v1" value="${esc(model?.base||'')}"></label>
-      <label>接口格式<select id="addModelApiFormat" onchange="applyApiFormatPreset('addModel')">${apiOptions}</select></label>
+      <label>接口格式<select id="addModelApiFormat" onchange="applyApiFormatPreset('addModel');renderEditorFetchedModels()">${apiOptions}</select></label>
       <label>启用状态<select id="addModelEnabled"><option value="1"${model?.enabled!==false?' selected':''}>启用</option><option value="0"${model?.enabled===false?' selected':''}>停用</option></select></label>
       <details class="wide model-advanced-details">
         <summary>高级认证设置</summary>
@@ -6485,49 +7831,129 @@ function openModelEditor(model){
       </details>
       <div class="wide model-tag-editor"><span>用途标签</span>${tagOptions}</div>
       <div id="addModelFormatHint" class="wide model-format-hint"></div>
+      <div class="wide model-editor-fetch"><div id="addFetchModelsList" class="model-fetch-list compact" style="display:none"></div></div>`;
+  openModal(`<div class="model-editor-modal">
+    <div class="model-editor-head"><div><h3>${isProviderEdit?'编辑模型':(isEdit?'编辑模型':'添加模型')}</h3>${isProviderEdit?'':'<p>配置单个模型；获取模型后可填入名称或批量加入模型库。</p>'}</div><button type="button" class="modal-close" onclick="closeModal()" aria-label="关闭">×</button></div>
+    <div class="model-editor-grid">
+      ${isProviderEdit?providerEditorBody:singleModelBody}
     </div>
     <div class="model-editor-actions">
       <button class="btn btn-secondary" onclick="closeModal()">取消</button>
       <button class="btn btn-secondary" onclick="doSaveModel('${esc(model?.id||'')}',true)">保存并测试</button>
       <button class="btn btn-primary" onclick="doSaveModel('${esc(model?.id||'')}')">${isEdit?'保存':'添加'}</button>
     </div>
-  </div>`);
+  </div>`, { className:'model-editor-shell', disableBackdropClose:true });
   setTimeout(()=>updateModelFormatHint('addModel'),0);
-}function editLibraryModel(id){
+}
+function editLibraryModel(id){
   const model=getModelById(id);
   if(!model){toast('模型不存在','error');return}
   openModelEditor(model);
 }
+
+function providerModels(provider){
+  const lib=activeModelsConfig().library||[];
+  return lib.filter(m=>(m.provider||'Custom')===provider);
+}
+function testProviderModels(provider){
+  const items=providerModels(provider);
+  const model=items.find(m=>m.enabled!==false)||items[0];
+  if(!model) return toast('\u8fd9\u4e2a Provider \u8fd8\u6ca1\u6709\u6a21\u578b','error');
+  toast(`正在测试 ${model.name||provider}...`,'info');
+  testLibraryModel(model.id);
+}
+function editProviderModels(provider){
+  const model=providerModels(provider)[0];
+  if(!model) return toast('\u8fd9\u4e2a Provider \u8fd8\u6ca1\u6709\u6a21\u578b','error');
+  openModelEditor({...model,_providerEdit:true});
+}
+
 async function doSaveModel(existingId,shouldTest=false){
   const values=modelFormValues('addModel');
   const provider=values.provider||'custom';
   const name=$('#addModelName')?.value?.trim();
-  if(!name){toast('请填写模型名称','error');return}
+  const editorCtx=state._modelEditorContext||{};
+  const providerEdit=!!editorCtx.providerEdit;
+  const old=getModelById(existingId)||{};
+  if(providerEdit){
+    const mappings=collectProviderModelMappings();
+    if(!mappings) return;
+    if(!mappings.length){
+      const ok=await askConfirm('当前没有模型映射，保存后会删除这个 Provider 下的所有模型。确定继续吗？');
+      if(!ok) return;
+    }
+    if(mappings.length&&!values.base&&mappings.some(item=>item.apiFormat!=='ollama')){toast('请填写 API 请求地址','error');return}
+    if(mappings.length&&!values.key&&values.authType!=='none'){toast('请填写 API Key','error');return}
+    const cfg=activeModelsConfig();
+    cfg.library=[...(cfg.library||[])];
+    const originalProvider=editorCtx.originalProvider||old.provider||provider;
+    const originalItems=cfg.library.filter(m=>(m.provider||'Custom')===(originalProvider||'Custom'));
+    const oldById=new Map(originalItems.map(item=>[item.id,item]));
+    const oldByName=new Map(originalItems.map(item=>[String(item.name||item.id||'').toLowerCase(),item]));
+    const idMap=new Map();
+    const kept=cfg.library.filter(m=>(m.provider||'Custom')!==(originalProvider||'Custom')).map(m=>({...m}));
+    const mappedModels=mappings.map(item=>{
+      const oldModel=oldById.get(item.originalId)||oldByName.get(item.name.toLowerCase())||{};
+      const id=modelIdFor(provider,item.name);
+      if(oldModel.id&&oldModel.id!==id) idMap.set(oldModel.id,id);
+      const tags=providerRowTags(oldModel,item.name,item.apiFormat);
+      const kind=providerRowKind(item.apiFormat,tags);
+      return {...oldModel,id,provider,name:item.name,base:values.base,key:values.key,enabled:oldModel.enabled!==undefined?oldModel.enabled!==false:item.enabled!==false,tags,kind,apiFormat:item.apiFormat,authType:values.authType,authHeader:values.authHeader};
+    });
+    const merged=new Map();
+    [...kept,...mappedModels].forEach(item=>{
+      const key=String(item.id||modelIdFor(item.provider||'custom',modelNameForMerge(item))).toLowerCase();
+      merged.set(key,{...(merged.get(key)||{}),...item});
+    });
+    cfg.library=[...merged.values()];
+    applyModelIdMap(cfg,idMap);
+    cleanupModelSelections(cfg);
+    fillScenarioDefaultsFromModels(cfg,mappedModels);
+    if(!cfg.current&&mappedModels.length) cfg.current=(mappedModels.find(m=>m.enabled!==false)||mappedModels[0]).id;
+    const data=await persistModelsConfig(cfg);
+    if(!data) return;
+    const first=mappedModels.find(m=>m.enabled!==false)||mappedModels[0]||{};
+    state.model={...state.model,provider,model:first.name||'',base:values.base,key:values.key};
+    save();
+    closeModal();
+    renderPage();
+    toast(shouldTest?'模型配置已保存，开始测试...':'模型配置已保存','success');
+    if(shouldTest&&first.id) setTimeout(()=>testLibraryModel(first.id),80);
+    return;
+  }
   if(!values.base && values.apiFormat!=='ollama'){toast('请填写 API 请求地址','error');return}
   if(!values.key && values.authType!=='none'){toast('请填写 API Key','error');return}
-  const old=getModelById(existingId)||{};
+  if(!name){toast('请填写模型名称','error');return}
   const tags=[...document.querySelectorAll('.addModelTag:checked')].map(c=>c.value);
   const id=existingId||`${provider}:${name}`;
   const enabled=$('#addModelEnabled')?.value!=='0';
-  const finalTags=tags.length?tags:inferModelTags(name);
+  const classified=classifyFetchedModel(name, values.apiFormat);
+  const finalTags=tags.length?tags:classified.tags;
   if(values.apiFormat==='openai-image'&&!finalTags.includes('image')) finalTags.push('image');
-  const item={...old,id,provider,name,base:values.base,key:values.key,enabled,tags:finalTags,kind:values.apiFormat==='openai-image'?'image':(finalTags.includes('vision')?'vision':'chat'),apiFormat:values.apiFormat,authType:values.authType,authHeader:values.authHeader};
-  const data=await apiPost('/api/models/library'+modelScopeParam(),item);
+  if(values.apiFormat==='openai-video'&&!finalTags.includes('video')) finalTags.push('video');
+  const kind=values.apiFormat==='openai-image'?'image':(values.apiFormat==='openai-video'?'video':(finalTags.includes('image')?'image':(finalTags.includes('vision')?'vision':'chat')));
+  const item={...old,id,provider,name,base:values.base,key:values.key,enabled,tags:finalTags,kind,apiFormat:values.apiFormat,authType:values.authType,authHeader:values.authHeader};
+  let data=await apiPost('/api/models/library'+modelScopeParam(),item);
+  if(data&&providerEdit){
+    const cfgAfter=data;
+    cfgAfter.library=(cfgAfter.library||[]).map(m=>(m.provider||'Custom')===(old.provider||'Custom')?{...m,provider,base:values.base,key:values.key,apiFormat:values.apiFormat,authType:values.authType,authHeader:values.authHeader}:m);
+    data=await persistModelsConfig(cfgAfter)||cfgAfter;
+  }
   if(data){
     setActiveModelsConfig(data);
     const savedCfg=activeModelsConfig();
-    if(values.apiFormat==='openai-image' && !savedCfg.scenarios?.image){
-      savedCfg.scenarios={...(savedCfg.scenarios||{}),image:id};
-      await persistModelsConfig(savedCfg);
-    }else if(finalTags.includes('vision') && !savedCfg.scenarios?.vision){
-      savedCfg.scenarios={...(savedCfg.scenarios||{}),vision:id};
-      await persistModelsConfig(savedCfg);
-    }
+    savedCfg.scenarios={...(savedCfg.scenarios||{})};
+    if(kind==='image' && !savedCfg.scenarios.image) savedCfg.scenarios.image=id;
+    else if(kind==='video' && !savedCfg.scenarios.video) savedCfg.scenarios.video=id;
+    else if(kind==='vision' && !savedCfg.scenarios.vision) savedCfg.scenarios.vision=id;
+    else if(kind==='chat' && !savedCfg.scenarios.chat) savedCfg.scenarios.chat=id;
+    if(finalTags.includes('reasoning') && kind==='chat' && !savedCfg.scenarios.reasoning) savedCfg.scenarios.reasoning=id;
+    await persistModelsConfig(savedCfg);
     state.model={...state.model,provider,model:name,base:values.base,key:values.key};
     save();
     closeModal();
     renderPage();
-    toast(existingId?'模型已保存':'模型已添加','success');
+    toast(shouldTest?'模型已保存，开始测试...':(existingId?'模型已保存':'模型已添加'),'success');
     if(shouldTest) setTimeout(()=>testLibraryModel(id),80);
   }
 }
@@ -6549,7 +7975,7 @@ function buildModelTestModal(model,result){
   const capItems=[];
   if('text' in caps) capItems.push('文本对话：'+(caps.text?'支持':'未通过'));
   if('image' in caps) capItems.push('图片识别：'+(caps.image?(caps.imageVerified?'已验证':'疑似支持'):'未检测到'));
-  if('video' in caps) capItems.push('视频识别：'+(caps.video?(caps.videoVerified?'已验证':'疑似支持'):'未检测到'));
+  if('video' in caps) capItems.push('视频生成：'+(caps.video?(caps.videoVerified?'已验证':'疑似支持'):'未检测到'));
   const suggestedTags=Array.isArray(suggested.tags)?suggested.tags:[];
   const autoApplied=!!result.autoApplied;
   return `<div class="model-test-modal">
@@ -6652,6 +8078,7 @@ async function testLibraryModel(id){
   const btn=$(`#modelTestBtn_${domId(id)}`);
   const mode=$(`#modelTestMode_${domId(id)}`)?.value||'auto';
   if(btn){btn.disabled=true;btn.textContent='测试中...'}
+  else toast(`正在测试 ${m.name||id}...`,'info');
   try{
     const r=await fetch(apiBase()+'/api/models/test',{method:'POST',cache:'no-store',headers:{'Content-Type':'application/json','Cache-Control':'no-cache'},body:JSON.stringify({mode,testMode:mode,provider:{provider:m.provider,base:m.base,model:m.name,key:m.key,apiFormat:m.apiFormat,authType:m.authType,authHeader:m.authHeader}})});
     const j=await r.json().catch(()=>({}));
@@ -6910,12 +8337,6 @@ function renderSettings(){
             <option value="hermes" ${(state.settings.routingMode||'auto')==='hermes'?'selected':''}>始终 Hermes Agent</option>
           </select>
         </div>
-        <div class="settings-item"><div><div class="settings-label">Hermes API Server 地址</div><div class="settings-desc">预留给官方 Hermes API Server；留空继续使用当前 CLI/直连策略。</div></div>
-          <input id="sHermesApiServerUrl" value="${esc(state.settings.hermesApiServerUrl||'')}" placeholder="例如 http://127.0.0.1:8000" style="width:320px">
-        </div>
-        <div class="settings-item"><div><div class="settings-label">Hermes API Key</div><div class="settings-desc">如 API Server 启用鉴权，在这里填写；本地空值即可。</div></div>
-          <input id="sHermesApiServerKey" type="password" value="${esc(state.settings.hermesApiServerKey||'')}" placeholder="可选" style="width:320px">
-        </div>
       </div>
       <div class="settings-section" id="data">
         <div class="settings-section-title">本地数据目录</div>
@@ -6987,7 +8408,7 @@ function renderSettings(){
         <div id="cliStatusCard" class="settings-item" style="align-items:flex-start;gap:12px">
           <div style="flex:1">
             <div class="settings-label">正在检测...</div>
-            <div class="settings-desc">正在检查 Hermes CLI 是否可用，以及是否需要安装或配置 WSL 路径。</div>
+            <div class="settings-desc">Checking native Hermes CLI availability on Windows.</div>
           </div>
           <div style="display:flex;gap:8px;flex-shrink:0">
             <button class="btn btn-secondary" onclick="loadCliStatusCard()">刷新状态</button>
@@ -7040,11 +8461,12 @@ async function exportWebuiBackup(){
 
 function showUpdateGuide(){
   openModal(`<div style="padding:24px;min-width:min(620px,92vw)">
-    <h3 style="margin:0 0 12px">WebUI 更新方法</h3>
+    <h3 style="margin:0 0 12px">安装与更新方法</h3>
     <div style="line-height:1.8;color:var(--c-ink-muted)">
-      <p>如果当前 WebUI 是从 GitHub 克隆的，推荐关闭正在运行的服务后双击项目根目录的 <code>update.bat</code>。</p>
-      <p>它会执行 <code>git pull --ff-only</code> 和 <code>npm install</code>，完成后重新运行 <code>start.bat</code>。</p>
-      <p>建议先把记忆、图片、历史和输出文档配置到外部数据目录，避免更新代码时影响个人数据。</p>
+      <p>第一次使用：双击项目根目录的 <code>install.bat</code>，它会检查 Node.js / Git、安装依赖，然后启动 WebUI。</p>
+      <p>日常启动：双击 <code>start.bat</code>。如果依赖缺失，它会自动补装后再启动。</p>
+      <p>更新代码：关闭正在运行的 WebUI 后双击 <code>update.bat</code>，或在本页点击“安全更新”。</p>
+      <p>公司电脑常见失败点是 GitHub / npm 被代理、证书或防火墙拦截；本页会尽量把失败原因显示出来。</p>
     </div>
     <div style="display:flex;justify-content:flex-end;margin-top:18px"><button class="btn btn-primary" onclick="closeModal()">知道了</button></div>
   </div>`);
@@ -7052,28 +8474,49 @@ function showUpdateGuide(){
 
 function updateStatusCardHtml(status={}, {checking=false, error=''}={}){
   if(checking){
-    return `<div style="flex:1;min-width:0"><div class="settings-label">正在检测更新状态...</div><div class="settings-desc">正在读取本地 Git 信息，请稍候。</div></div>`;
+    return `<div style="flex:1;min-width:0"><div class="settings-label">正在检测更新状态...</div><div class="settings-desc">正在读取 Git / Node / npm 信息，请稍候。</div></div>`;
   }
   if(error){
     return `<div style="flex:1;min-width:0"><div class="settings-label">更新状态检测失败</div><div class="settings-desc">${esc(error)}</div></div>`;
   }
+  const gitOk=status.git?.available!==false;
+  const nodeOk=status.node?.available!==false;
+  const npmOk=status.npm?.available!==false;
+  const toolLine=`Git：${gitOk?esc(status.git?.version||'已检测'):'未检测到'} · Node：${nodeOk?esc(status.node?.version||'已检测'):'未检测到'} · npm：${npmOk?esc(status.npm?.version||'已检测'):'未检测到'} · 依赖：${status.dependenciesInstalled?'已安装':'可能缺失'}`;
   if(!status.isGitRepo){
-    return `<div style="flex:1;min-width:0"><div class="settings-label">当前不是 Git 克隆项目</div><div class="settings-desc">${esc(status.message||'无法通过 GitHub 自动检测更新。')}</div><div style="margin-top:8px;font-size:var(--fs-sm);color:var(--c-ink-muted)">版本：${esc(status.packageVersion||'unknown')} · 目录：${esc(status.projectRoot||'')}</div></div>`;
+    const title=status.reason==='git_missing'?'未检测到 Git':'当前不是 Git 克隆项目';
+    return `<div style="flex:1;min-width:0">
+      <div class="settings-label">${esc(title)}</div>
+      <div class="settings-desc">${esc(status.message||'无法通过 GitHub 自动检测更新。')}</div>
+      <div style="margin-top:8px;font-size:var(--fs-sm);color:var(--c-ink-muted);line-height:1.7">
+        ${toolLine}<br>
+        版本：${esc(status.packageVersion||'unknown')} · 目录：${esc(status.projectRoot||'')}<br>
+        下一步：${esc(status.nextAction||'请使用 install.bat 或下载新版压缩包。')}
+      </div>
+    </div>`;
   }
   const behind=Number(status.behind||0);
   const ahead=Number(status.ahead||0);
   const dirty=Number(status.dirtyCount||0);
-  const stateText=behind>0?'发现远端更新':dirty>0?'存在本地未提交改动':ahead>0?'本地领先远端':'当前代码已是最新状态';
-  const stateClass=behind>0?'disconnected':'connected';
-  const advice=behind>0
-    ? (status.safeToPull?'可以点击安全更新；完成后重启 WebUI。':'检测到本地改动或分支状态不适合自动更新，建议先提交/备份后再手动更新。')
-    : '如果要主动确认 GitHub 最新版本，可点击“检查远端”。';
+  const stateText=status.reason==='fetch_failed'?'远端检查失败'
+    : status.reason==='dirty_worktree'?'存在本地未提交改动'
+    : status.reason==='ahead'?'本地领先远端'
+    : status.reason==='no_upstream'?'未设置远端分支'
+    : behind>0?'发现远端更新'
+    : '当前代码已是最新状态';
+  const stateClass=status.safeToPull||status.reason==='up_to_date'?'connected':'disconnected';
+  const advice=status.message||'如果要主动确认 GitHub 最新版本，可点击“检查远端”。';
+  const dirtyPreview=Array.isArray(status.dirtyFiles)&&status.dirtyFiles.length
+    ? `<br>改动预览：${status.dirtyFiles.map(x=>`<code>${esc(x)}</code>`).join(' ')}${dirty>status.dirtyFiles.length?' ...':''}`
+    : '';
   return `<div style="flex:1;min-width:0">
     <div class="settings-label">GitHub 更新 · <span class="platform-status ${stateClass}" style="display:inline-flex;align-items:center">${esc(stateText)}</span></div>
     <div class="settings-desc">${esc(advice)}</div>
     <div style="margin-top:8px;font-size:var(--fs-sm);color:var(--c-ink-muted);line-height:1.7">
+      ${toolLine}<br>
       版本：${esc(status.packageVersion||'unknown')} · 分支：${esc(status.branch||'unknown')} · 提交：${esc(status.localCommit||'')}${status.currentTag?` · 当前标签：${esc(status.currentTag)}`:''}${status.latestTag?` · 最新标签：${esc(status.latestTag)}`:''}<br>
-      远端：${esc(status.upstream||'未设置 upstream')} · 落后 ${behind} / 领先 ${ahead} · 本地改动 ${dirty} 个${status.fetched?' · 已检查远端':''}${status.fetchError?`<br>远端检查失败：${esc(status.fetchError)}`:''}
+      远端：${esc(status.upstream||'未设置 upstream')} · 落后 ${behind} / 领先 ${ahead} · 本地改动 ${dirty} 个${status.fetched?' · 已检查远端':''}${status.fetchError?`<br>远端错误：${esc(status.fetchError)}`:''}${dirtyPreview}<br>
+      下一步：${esc(status.nextAction||'可以点击“检查远端”重新检测。')}
     </div>
   </div>`;
 }
@@ -7083,8 +8526,24 @@ async function applySafeUpdate(){
   const card=$('#updateStatusCard');
   if(card) card.innerHTML=updateStatusCardHtml({}, {checking:true})+'<div style="display:flex;gap:8px;flex-shrink:0"><button class="btn btn-secondary" disabled>更新中...</button></div>';
   try{
-    const result=await apiPost('/api/system/update-apply', {});
-    toast(result?.message||'更新完成，请重启 WebUI','success');
+    const result=await apiPostRaw('/api/system/update-apply', {});
+    if(result?.code!==0) throw new Error(result?.msg||'更新失败');
+    toast(result.data?.message||'更新完成，请重启 WebUI','success');
+    await loadUpdateStatus(false);
+  }catch(err){
+    toast(err.message||String(err),'error');
+    await loadUpdateStatus(true);
+  }
+}
+
+async function repairUpdateDependencies(){
+  if(!confirm('将重新执行 npm install 修复 WebUI 依赖。不会拉取代码，完成后建议重启 WebUI。是否继续？')) return;
+  const card=$('#updateStatusCard');
+  if(card) card.innerHTML=updateStatusCardHtml({}, {checking:true})+'<div style="display:flex;gap:8px;flex-shrink:0"><button class="btn btn-secondary" disabled>修复中...</button></div>';
+  try{
+    const result=await apiPostRaw('/api/system/update-repair-deps', {});
+    if(result?.code!==0) throw new Error(result?.msg||'依赖修复失败');
+    toast(result.data?.message||'依赖修复完成，请重启 WebUI','success');
     await loadUpdateStatus(false);
   }catch(err){
     toast(err.message||String(err),'error');
@@ -7097,12 +8556,13 @@ async function loadUpdateStatus(fetchRemote=false, seq){
   if(!card || !isSettingsPage('settings')) return;
   card.innerHTML=`${updateStatusCardHtml({}, {checking:true})}<div style="display:flex;gap:8px;flex-shrink:0;flex-wrap:wrap;justify-content:flex-end"><button class="btn btn-secondary" disabled>检测中</button><button class="btn btn-secondary" onclick="showUpdateGuide()">查看方法</button></div>`;
   try{
-    const data=await apiGet('/api/system/update-status'+(fetchRemote?'?fetch=1':''));
+    const raw=await apiGetRaw('/api/system/update-status'+(fetchRemote?'?fetch=1':''));
+    const data=raw?.code===0 ? raw.data : null;
     if(!isRenderCurrent(seq) || !isSettingsPage('settings')) return;
-    card.innerHTML=`${updateStatusCardHtml(data||{}, {error:data?'' : '接口没有返回有效数据'})}<div style="display:flex;gap:8px;flex-shrink:0;flex-wrap:wrap;justify-content:flex-end"><button class="btn btn-secondary" onclick="loadUpdateStatus(false)">刷新状态</button><button class="btn btn-secondary" onclick="loadUpdateStatus(true)">检查远端</button><button class="btn btn-primary" onclick="applySafeUpdate()" ${data?.safeToPull?'':'disabled'}>安全更新</button><button class="btn btn-secondary" onclick="showUpdateGuide()">查看方法</button></div>`;
+    card.innerHTML=`${updateStatusCardHtml(data||{}, {error:data?'' : (raw?.msg||'接口没有返回有效数据')})}<div style="display:flex;gap:8px;flex-shrink:0;flex-wrap:wrap;justify-content:flex-end"><button class="btn btn-secondary" onclick="loadUpdateStatus(false)">刷新状态</button><button class="btn btn-secondary" onclick="loadUpdateStatus(true)">检查远端</button><button class="btn btn-primary" onclick="applySafeUpdate()" ${data?.safeToPull?'':'disabled'}>安全更新</button><button class="btn btn-secondary" onclick="repairUpdateDependencies()" ${data?.canRepairDependencies===false?'disabled':''}>修复依赖</button><button class="btn btn-secondary" onclick="showUpdateGuide()">安装/更新说明</button></div>`;
   }catch(err){
     if(!isRenderCurrent(seq) || !isSettingsPage('settings')) return;
-    card.innerHTML=`${updateStatusCardHtml({}, {error:err.message||String(err)})}<div style="display:flex;gap:8px;flex-shrink:0;flex-wrap:wrap;justify-content:flex-end"><button class="btn btn-secondary" onclick="loadUpdateStatus(false)">重试</button><button class="btn btn-secondary" onclick="showUpdateGuide()">查看方法</button></div>`;
+    card.innerHTML=`${updateStatusCardHtml({}, {error:err.message||String(err)})}<div style="display:flex;gap:8px;flex-shrink:0;flex-wrap:wrap;justify-content:flex-end"><button class="btn btn-secondary" onclick="loadUpdateStatus(false)">重试</button><button class="btn btn-secondary" onclick="repairUpdateDependencies()">修复依赖</button><button class="btn btn-secondary" onclick="showUpdateGuide()">安装/更新说明</button></div>`;
   }
 }
 
@@ -7110,21 +8570,21 @@ function cliStatusCardHtml(cli={}, {checking=false, error=''}={}){
   const ok=!!cli.available;
   const stale=!!cli.stale;
   const statusClass=ok?'connected':'disconnected';
-  const statusText=checking ? '检测中' : ok ? (stale?'上次可用':'可用') : '不可用';
+  const statusText=checking ? 'Checking' : ok ? (stale?'Last known good':'Available') : 'Unavailable';
   const detail=error
     ? error
     : ok
-      ? `命令：${cli.command||'unknown'} · 版本：${cli.version||'unknown'}${stale?' · 当前为缓存状态，正在后台复查':''}`
-      : ((cli.error||'未检测到 Hermes CLI') + '。普通聊天默认依赖 Hermes CLI；只有开启快速模式时才会直连模型 API。');
+      ? `Command: ${cli.command||'hermes'} ? Version: ${cli.version||'unknown'}${cli.path ? ` ? Path: ${cli.path}` : ''}${stale?' ? Cached result, rechecking in background':''}`
+      : ((cli.error||'Hermes CLI not detected') + '. Install native Hermes for Windows and ensure hermes is on PATH.');
   return `
     <div style="flex:1;min-width:0">
       <div class="settings-label">Hermes CLI ${statusText}</div>
       <div class="settings-desc">${esc(detail)}</div>
-      <div style="margin-top:8px;font-size:var(--fs-sm);color:var(--c-ink-muted)">状态：<span class="platform-status ${statusClass}" style="display:inline-flex;align-items:center">${statusText}</span> · 模式：${esc(cli.type||'unknown')}</div>
+      <div style="margin-top:8px;font-size:var(--fs-sm);color:var(--c-ink-muted)">Status: <span class="platform-status ${statusClass}" style="display:inline-flex;align-items:center">${statusText}</span> ? Runtime: ${esc(cli.type||'native')}</div>
     </div>
     <div style="display:flex;gap:8px;flex-shrink:0;align-items:flex-start">
-      <button class="btn btn-secondary" onclick="loadCliStatusCard(true)">${checking?'检测中...':'刷新状态'}</button>
-      <button class="btn btn-secondary" onclick="showCliInstallGuide()">安装指引</button>
+      <button class="btn btn-secondary" onclick="loadCliStatusCard(true)">${checking?'Checking...':'Refresh status'}</button>
+      <button class="btn btn-secondary" onclick="showCliInstallGuide()">Install guide</button>
     </div>`;
 }
 
@@ -7163,28 +8623,26 @@ async function loadCliStatusCard(force=false, seq){
 function showCliInstallGuide(){
   openModal(`
     <div class="confirm-modal">
-      <h3>Hermes CLI 安装指引</h3>
+      <h3>Hermes CLI for Windows</h3>
       <div style="display:grid;gap:10px;font-size:var(--fs-md);line-height:1.65;color:var(--c-ink)">
-        <div>1. 先确认终端能执行 <code>hermes --version</code>。</div>
-        <div>2. 如果你在 Windows 上使用 WSL，先在 WSL 里安装 Hermes，再回到 WebUI 刷新状态。</div>
-        <div>3. 不确定是否安装成功时，优先用“快速模式”直连可用的模型 API。</div>
-        <div>4. 如果命令不可用，检查 <code>PATH</code> 是否包含 Hermes 安装目录。</div>
+        <div>1. Install the native Windows Hermes Agent CLI.</div>
+        <div>2. Open Windows Terminal and verify <code>hermes --version</code>.</div>
+        <div>3. If detection fails, make sure the Hermes install directory is included in <code>PATH</code>.</div>
         <div style="padding:12px;border:1px solid var(--c-hairline);border-radius:12px;background:var(--c-surface1)">
-          <strong>建议检查</strong>
-          <div style="margin-top:6px;color:var(--c-ink-muted)">在终端依次运行：<code>where hermes</code>（Windows）或 <code>which hermes</code>（WSL/Linux）。</div>
+          <strong>Recommended checks</strong>
+          <div style="margin-top:6px;color:var(--c-ink-muted)"><code>where hermes</code><br><code>hermes --version</code></div>
         </div>
       </div>
       <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:16px">
-        <button class="btn btn-secondary" onclick="closeModal()">关闭</button>
+        <button class="btn btn-secondary" onclick="closeModal()">Close</button>
       </div>
-    </div>
-  `);
+    </div>`);
 }
 
 function saveSettings(){
   const promptToggles={};
   ['webuiRules','coreMemory','agentRules','userSystemPrompt','profilePrompt','skills','knowledgeSearch'].forEach(id=>promptToggles[id]=$(`#pt_${id}`)?.checked!==false);
-  state.settings={lang:$('#sLang').value,stream:$('#sStream').checked,debugPerf:$('#sDebugPerf').checked,quickMode:$('#sQuick').checked,routingMode:$('#sRoutingMode')?.value||'auto',hermesApiServerUrl:$('#sHermesApiServerUrl')?.value?.trim()||'',hermesApiServerKey:$('#sHermesApiServerKey')?.value?.trim()||'',toolPermissions:{commandPolicy:$('#sCommandPolicy')?.value||'safe',logApprovals:$('#sLogApprovals')?.checked!==false,requireApprovalForRisky:$('#sRequireRiskyApproval')?.checked!==false},history:parseInt($('#sHistory').value)||20,systemPrompt:$('#sSys').value,api:$('#sApi').value.trim(),style:$('#sStyle')?.value||'minimal',dataRootDir:$('#sDataRootDir')?.value?.trim()||'',memoryDir:$('#sMemoryDir')?.value?.trim()||'',imageDir:$('#sImageDir')?.value?.trim()||'',historyDir:$('#sHistoryDir')?.value?.trim()||'',mdLibraryDir:$('#sMdLibraryDir')?.value?.trim()||'',promptToggles,knowledgeSearchLimit:Math.max(0,Math.min(parseInt($('#sKnowledgeSearchLimit')?.value)||0,8))};
+  state.settings={lang:$('#sLang').value,stream:$('#sStream').checked,debugPerf:$('#sDebugPerf').checked,quickMode:$('#sQuick').checked,routingMode:$('#sRoutingMode')?.value||'auto',agentRuntime:'cli',hermesApiServerUrl:state.settings.hermesApiServerUrl||'',hermesApiServerKey:state.settings.hermesApiServerKey||'',toolPermissions:{commandPolicy:$('#sCommandPolicy')?.value||'safe',logApprovals:$('#sLogApprovals')?.checked!==false,requireApprovalForRisky:$('#sRequireRiskyApproval')?.checked!==false},history:parseInt($('#sHistory').value)||20,systemPrompt:$('#sSys').value,api:$('#sApi').value.trim(),style:$('#sStyle')?.value||'minimal',dataRootDir:$('#sDataRootDir')?.value?.trim()||'',memoryDir:$('#sMemoryDir')?.value?.trim()||'',imageDir:$('#sImageDir')?.value?.trim()||'',historyDir:$('#sHistoryDir')?.value?.trim()||'',mdLibraryDir:$('#sMdLibraryDir')?.value?.trim()||'',promptToggles,knowledgeSearchLimit:Math.max(0,Math.min(parseInt($('#sKnowledgeSearchLimit')?.value)||0,8))};
   state.modelConfigScope = state.settings.quickMode ? 'webui' : 'agent';
   LS.set('hermes.modelConfigScope', state.modelConfigScope);
   activeModelsConfig();
@@ -7196,6 +8654,7 @@ function saveSettings(){
     debugPerf: state.settings.debugPerf,
     quickMode: state.settings.quickMode,
     routingMode: state.settings.routingMode || 'auto',
+    agentRuntime: 'cli',
     hermesApiServerUrl: state.settings.hermesApiServerUrl || '',
     hermesApiServerKey: state.settings.hermesApiServerKey || '',
     toolPermissions: state.settings.toolPermissions || { commandPolicy:'safe', logApprovals:true, requireApprovalForRisky:true },
@@ -7444,6 +8903,33 @@ async function saveGateway(id){
   _channelsCache=_gatewaysCache;
   closeModal();renderPage();toast(id==='feishu'?'飞书网关已保存':'网关配置已保存','success');
 }
+
+let _diagnosticsCache=null;
+function renderDiagnostics(){
+  if(!_diagnosticsCache){
+    apiGet('/api/system/diagnostics').then(data=>{
+      _diagnosticsCache=data||null;
+      const el=$('#diagnosticsContainer');
+      if(el) el.innerHTML=buildDiagnosticsHtml(_diagnosticsCache);
+    });
+  }
+  return `<div class="logs-view diagnostic-page">
+    <div class="page-header"><h2>Diagnostics</h2>
+      <div class="page-subtitle">Windows native Hermes, data directories, models, and recent warnings.</div>
+      <div class="header-actions"><button class="btn btn-xs btn-ghost" onclick="refreshDiagnostics()">Refresh</button></div>
+    </div>
+    <div id="diagnosticsContainer">${buildDiagnosticsHtml(_diagnosticsCache)}</div>
+  </div>`;
+}
+function buildDiagnosticsHtml(data){
+  if(typeof HermesDiagnostics!=='undefined' && HermesDiagnostics && typeof HermesDiagnostics.render==='function') return HermesDiagnostics.render(data);
+  return data ? `<pre>${esc(JSON.stringify(data,null,2))}</pre>` : '<div class="empty-state"><span>Loading diagnostics...</span></div>';
+}
+function refreshDiagnostics(){
+  _diagnosticsCache=null;
+  if(isSettingsPage('diagnostics')) renderPage();
+}
+
 let _logsCache=null;
 function renderLogs(){
   if(!_logsCache){
@@ -7457,7 +8943,7 @@ function renderLogs(){
   }
   return `<div class="logs-view">
     <div class="page-header"><h2>任务日志</h2>
-      <div class="header-actions"><button class="btn btn-xs btn-ghost" onclick="_logsCache=null;renderPage()">刷新</button></div>
+      <div class="header-actions"><button class="btn btn-xs btn-secondary" onclick="setSettingsTab('diagnostics')">Diagnostics</button><button class="btn btn-xs btn-ghost" onclick="_logsCache=null;renderPage()">刷新</button></div>
     </div>
     <div class="log-container" id="logsContainer">${buildLogsHtml(_logsCache)}</div>
   </div>`;
@@ -7558,7 +9044,7 @@ function profileModal(profile){
       </div>
       <label class="agent-editor-prompt">Agent 提示词<textarea id="pfPrompt" placeholder="描述这个 Agent 的身份、能力边界、工作方式…">${esc(p.systemPrompt||'')}</textarea></label>
       <section class="agent-skill-picker">
-        <div class="agent-skill-picker-head"><strong>技能</strong><small>选择这个 Agent 默认可使用的技能。</small></div>
+        <div class="agent-skill-picker-head"><strong>\u6280\u80fd</strong></div>
         <div class="agent-skill-list">${skillHtml}</div>
       </section>
     </div>
@@ -7836,15 +9322,28 @@ function openModal(html,options={}){
   if(!overlay||!content) return;
   content.className='modal';
   if(options.className) content.classList.add(options.className);
+  overlay.dataset.disableBackdropClose=options.disableBackdropClose?'1':'0';
   content.innerHTML=html;
   overlay.classList.add('show');
+}
+
+function handleModalOverlayClick(event){
+  const overlay=$('#modalOverlay');
+  if(!overlay || event.target!==overlay) return;
+  if(overlay.dataset.disableBackdropClose==='1') return;
+  closeModal();
 }
 
 function closeModal(){
   const overlay=$('#modalOverlay');
   const content=$('#modalContent');
-  if(overlay) overlay.classList.remove('show');
+  if(overlay){
+    overlay.classList.remove('show');
+    overlay.dataset.disableBackdropClose='0';
+  }
   if(content) content.className='modal';
+  state._editorFetchedModels=null;
+  state._modelEditorContext=null;
 }
 
 function askConfirm(message){
@@ -8281,6 +9780,7 @@ async function initApp() {
     state.settings = { ...state.settings, ...settings };
     if (settings.quickMode !== undefined) state.settings.quickMode = !!settings.quickMode;
     if (settings.routingMode !== undefined) state.settings.routingMode = settings.routingMode || 'auto';
+    state.settings.agentRuntime = 'cli';
     if (settings.hermesApiServerUrl !== undefined) state.settings.hermesApiServerUrl = settings.hermesApiServerUrl || '';
     if (settings.hermesApiServerKey !== undefined) state.settings.hermesApiServerKey = settings.hermesApiServerKey || '';
     if (settings.toolPermissions !== undefined) state.settings.toolPermissions = { ...(state.settings.toolPermissions||{}), ...(settings.toolPermissions||{}) };
@@ -8347,4 +9847,16 @@ function toggleSecretInput(id, btn){
   const show=input.type==='password';
   input.type=show?'text':'password';
   if(btn) btn.classList.toggle('active', show);
+}
+
+
+if (typeof window !== 'undefined' && !window.__hermesIssueGlobalBound) {
+  window.__hermesIssueGlobalBound = true;
+  window.addEventListener('error', (event) => {
+    if (typeof autoReportWebuiIssue === 'function') autoReportWebuiIssue('frontend_error', event.message || 'frontend error', { severity:'medium', context:{ filename:event.filename||'', lineno:event.lineno||0, colno:event.colno||0 } });
+  });
+  window.addEventListener('unhandledrejection', (event) => {
+    const reason = event.reason && (event.reason.stack || event.reason.message) ? (event.reason.stack || event.reason.message) : String(event.reason || 'unhandled rejection');
+    if (typeof autoReportWebuiIssue === 'function') autoReportWebuiIssue('frontend_rejection', reason, { severity:'medium' });
+  });
 }

@@ -1,4 +1,4 @@
-﻿const express = require('express');
+const express = require('express');
 const fs = require('fs');
 const path = require('path');
 const { spawn } = require('child_process');
@@ -6,6 +6,7 @@ const { spawnSync } = require('child_process');
 const store = require('../services/store');
 const paths = require('../services/paths');
 const modalBus = require('./modal');
+const { stopActiveHermesChildren, activeHermesChildStats, detectHermesCommand } = require('../services/hermes');
 const { DOC_FOLDERS, LEGACY_DOC_FOLDERS, VAULT_CATEGORIES, stripFrontmatter, parseFrontmatter, firstHeading, summarizeMarkdown, inferMdType, normalizeTags, safeFilePart, normalizeDocFolder, ensureMarkdownFrontmatter, uniqueMarkdownPath, saveKnowledgeMarkdown, captureKnowledge } = require('../services/knowledgeCapture');
 
 const router = express.Router();
@@ -113,6 +114,90 @@ function runGit(args, { timeout = 8000 } = {}) {
   };
 }
 
+function runTool(command, args = [], { cwd = PROJECT_ROOT, timeout = 8000, maxBuffer = 1024 * 1024 } = {}) {
+  const result = spawnSync(command, args, {
+    cwd,
+    encoding: 'utf8',
+    timeout,
+    windowsHide: true,
+    maxBuffer,
+  });
+  return {
+    ok: result.status === 0,
+    code: result.status,
+    stdout: String(result.stdout || '').trim(),
+    stderr: String(result.stderr || '').trim(),
+    error: result.error ? result.error.message : '',
+    timedOut: result.error && result.error.code === 'ETIMEDOUT',
+  };
+}
+
+function toolVersion(command, args = ['--version']) {
+  const result = runTool(command, args, { timeout: 5000 });
+  return {
+    available: result.ok,
+    version: result.ok ? (result.stdout || result.stderr).split(/\r?\n/)[0] : '',
+    error: result.ok ? '' : (result.error || result.stderr || result.stdout || `${command} not found`),
+  };
+}
+
+function clipped(text, limit = 1200) {
+  const value = String(text || '').trim();
+  if (value.length <= limit) return value;
+  return value.slice(0, limit) + '...';
+}
+
+function classifyCommandFailure(raw, fallback = '命令执行失败。') {
+  const text = String(raw || '');
+  const lower = text.toLowerCase();
+  if (!text.trim()) return fallback;
+  if (/enoent|not recognized|not found|无法将|不是内部或外部命令/.test(lower)) {
+    return '没有找到必要命令。请确认 Git 和 Node.js 已安装，并且已经加入 PATH。';
+  }
+  if (/authentication failed|permission denied|could not read username|terminal prompts disabled|403|401/.test(lower)) {
+    return 'Git 远端需要登录或权限不足。公司电脑如果拦截 GitHub，需要先配置 Git 凭据、代理或换可访问网络。';
+  }
+  if (/could not resolve host|failed to connect|connection timed out|timed out|unable to access|proxy|ssl certificate|certificate|network/.test(lower)) {
+    return '网络连接远端失败。常见原因是公司网络/代理/证书拦截 GitHub 或 npm registry。';
+  }
+  if (/your local changes|would be overwritten|untracked working tree files|please commit/.test(lower)) {
+    return '本地文件有改动，Git 为了避免覆盖你的内容拒绝更新。请先备份、提交或恢复这些改动。';
+  }
+  if (/not possible to fast-forward|divergent|need to specify how to reconcile/.test(lower)) {
+    return '本地分支和远端分叉了，不能安全自动更新，需要手动处理 Git 分支。';
+  }
+  if (/no such remote ref|no upstream|no tracking information|upstream/.test(lower)) {
+    return '当前分支没有绑定远端 upstream，无法判断要从哪里更新。';
+  }
+  if (/npm err|eai_again|eresolve|etarget|econnreset|fetch failed|registry/.test(lower)) {
+    return 'npm 依赖安装失败。公司网络常见原因是 npm registry 被拦截，可以切换镜像后重试。';
+  }
+  return fallback;
+}
+
+function runNpm(args = [], options = {}) {
+  const command = process.platform === 'win32' ? 'cmd.exe' : 'npm';
+  const finalArgs = process.platform === 'win32' ? ['/d', '/c', 'npm', ...args] : args;
+  return runTool(command, finalArgs, options);
+}
+
+function npmVersion() {
+  const result = runNpm(['--version'], { timeout: 5000 });
+  return {
+    available: result.ok,
+    version: result.ok ? (result.stdout || result.stderr).split(/\r?\n/)[0] : '',
+    error: result.ok ? '' : (result.error || result.stderr || result.stdout || 'npm not found'),
+  };
+}
+
+function runNpmInstall({ timeout = 180000 } = {}) {
+  return runNpm(['install', '--loglevel=warn'], {
+    cwd: PROJECT_ROOT,
+    timeout,
+    maxBuffer: 1024 * 1024 * 6,
+  });
+}
+
 function parseAheadBehind(text) {
   const match = String(text || '').match(/^(\d+)\s+(\d+)$/);
   return match ? { ahead: Number(match[1]) || 0, behind: Number(match[2]) || 0 } : { ahead: 0, behind: 0 };
@@ -120,13 +205,39 @@ function parseAheadBehind(text) {
 
 function getUpdateStatus({ fetchRemote = false } = {}) {
   const packageVersion = readPackageVersion();
+  const gitInfo = toolVersion('git');
+  const nodeInfo = toolVersion('node');
+  const npmInfo = npmVersion();
+  const dependenciesInstalled = fs.existsSync(path.join(PROJECT_ROOT, 'node_modules')) && fs.existsSync(path.join(PROJECT_ROOT, 'backend', 'node_modules'));
+  if (!gitInfo.available) {
+    return {
+      isGitRepo: false,
+      packageVersion,
+      projectRoot: PROJECT_ROOT,
+      git: gitInfo,
+      node: nodeInfo,
+      npm: npmInfo,
+      dependenciesInstalled,
+      canRepairDependencies: npmInfo.available,
+      message: '没有检测到 Git，不能在线更新代码。请安装 Git for Windows，或下载最新版压缩包覆盖安装。',
+      reason: 'git_missing',
+      nextAction: '安装 Git 后重启 WebUI，再回到这里点击“检查远端”。',
+    };
+  }
   const isRepo = runGit(['rev-parse', '--is-inside-work-tree']);
   if (!isRepo.ok || isRepo.stdout !== 'true') {
     return {
       isGitRepo: false,
       packageVersion,
       projectRoot: PROJECT_ROOT,
+      git: gitInfo,
+      node: nodeInfo,
+      npm: npmInfo,
+      dependenciesInstalled,
+      canRepairDependencies: npmInfo.available,
       message: '当前目录不是 Git 克隆项目，无法通过 GitHub 自动检测更新。',
+      reason: 'not_git_repo',
+      nextAction: '如果这是下载的压缩包版本，请下载新版压缩包替换；如果想一键更新，建议用 Git 克隆项目。',
     };
   }
   const fetchResult = fetchRemote ? runGit(['fetch', '--tags', '--prune'], { timeout: 30000 }) : null;
@@ -135,18 +246,59 @@ function getUpdateStatus({ fetchRemote = false } = {}) {
   const upstream = runGit(['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}']);
   const remote = runGit(['remote', '-v']).stdout.split(/\r?\n/).find(line => /\(fetch\)$/.test(line)) || '';
   const dirty = runGit(['status', '--porcelain']).stdout;
+  const allDirtyFiles = dirty ? dirty.split(/\r?\n/).filter(Boolean) : [];
+  const dirtyFiles = allDirtyFiles.slice(0, 12);
   let ahead = 0;
   let behind = 0;
+  let countsError = '';
   if (upstream.ok && upstream.stdout) {
     const counts = runGit(['rev-list', '--left-right', '--count', 'HEAD...' + upstream.stdout]);
-    ({ ahead, behind } = parseAheadBehind(counts.stdout));
+    if (counts.ok) ({ ahead, behind } = parseAheadBehind(counts.stdout));
+    else countsError = counts.stderr || counts.error || counts.stdout || '';
   }
   const latestTag = runGit(['describe', '--tags', '--abbrev=0']).stdout || '';
   const currentTag = runGit(['describe', '--tags', '--exact-match', 'HEAD']).stdout || '';
+  const fetchError = fetchResult && !fetchResult.ok ? (fetchResult.stderr || fetchResult.error || fetchResult.stdout || 'git fetch failed') : '';
+  const dirtyCount = allDirtyFiles.length;
+  const hasRemoteProblem = fetchRemote && fetchResult && !fetchResult.ok;
+  const hasLocalChanges = !!dirty;
+  const noUpstream = !upstream.ok || !upstream.stdout;
+  const safeToPull = !hasRemoteProblem && !noUpstream && behind > 0 && ahead === 0 && !hasLocalChanges;
+  let reason = 'up_to_date';
+  let message = '当前代码已是最新状态。';
+  let nextAction = '如果你想重新确认 GitHub 上有没有新版本，点击“检查远端”。';
+  if (hasRemoteProblem) {
+    reason = 'fetch_failed';
+    message = classifyCommandFailure(fetchError, '远端检查失败。');
+    nextAction = '优先检查公司网络、代理、GitHub 访问权限；也可以关闭 WebUI 后双击 update.bat 查看完整日志。';
+  } else if (noUpstream) {
+    reason = 'no_upstream';
+    message = '当前 Git 分支没有绑定远端 upstream，WebUI 不知道应该从哪个分支更新。';
+    nextAction = remote ? '请在命令行设置 upstream，或重新 clone 项目。' : '当前没有 Git 远端，请重新 clone 项目或下载新版压缩包。';
+  } else if (hasLocalChanges) {
+    reason = 'dirty_worktree';
+    message = '检测到本地文件改动，自动更新已暂停，避免覆盖你的内容。';
+    nextAction = '如果这些是你自己的改动，请先备份或提交；如果只是临时文件，可以手动处理后再更新。';
+  } else if (ahead > 0) {
+    reason = 'ahead';
+    message = '本地提交领先远端，不能安全自动快进更新。';
+    nextAction = '这通常表示你本地改过代码并提交过，需要手动处理分支。';
+  } else if (behind > 0) {
+    reason = 'update_available';
+    message = '发现远端更新，可以执行安全更新。';
+    nextAction = '点击“安全更新”，完成后重启 WebUI。';
+  } else if (fetchRemote && fetchResult && fetchResult.ok) {
+    message = '已检查远端，当前没有可更新内容。';
+  }
   return {
     isGitRepo: true,
     packageVersion,
     projectRoot: PROJECT_ROOT,
+    git: gitInfo,
+    node: nodeInfo,
+    npm: npmInfo,
+    dependenciesInstalled,
+    canRepairDependencies: npmInfo.available,
     branch,
     upstream: upstream.ok ? upstream.stdout : '',
     remote,
@@ -155,13 +307,18 @@ function getUpdateStatus({ fetchRemote = false } = {}) {
     latestTag,
     ahead,
     behind,
-    dirtyCount: dirty ? dirty.split(/\r?\n/).filter(Boolean).length : 0,
-    hasLocalChanges: !!dirty,
+    dirtyCount,
+    dirtyFiles,
+    hasLocalChanges,
     fetched: fetchRemote,
     fetchOk: fetchResult ? fetchResult.ok : null,
-    fetchError: fetchResult && !fetchResult.ok ? (fetchResult.stderr || fetchResult.error || 'git fetch failed') : '',
+    fetchError: clipped(fetchError),
+    countsError: clipped(countsError),
     updateCommand: 'git pull --ff-only && npm install',
-    safeToPull: behind > 0 && ahead === 0 && !dirty,
+    safeToPull,
+    message,
+    reason,
+    nextAction,
   };
 }
 
@@ -301,24 +458,44 @@ router.get('/update-status', (req, res) => {
 router.post('/update-apply', (req, res) => {
   try {
     const before = getUpdateStatus({ fetchRemote: true });
-    if (!before.isGitRepo) return res.fail('当前目录不是 Git 克隆项目，无法自动更新。', 400, 400);
-    if (before.hasLocalChanges) return res.fail('存在本地未提交改动。请先提交或备份后再更新，避免覆盖你的工作。', 409, 409);
-    if (before.ahead > 0) return res.fail('本地提交领先远端，不能自动快进更新。请手动处理分支。', 409, 409);
+    if (!before.git?.available) return res.fail(before.message || '没有检测到 Git，无法自动更新。', 400, 400);
+    if (!before.isGitRepo) return res.fail(before.message || '当前目录不是 Git 克隆项目，无法自动更新。', 400, 400);
+    if (before.fetchOk === false) return res.fail(`${before.message || '远端检查失败。'} ${before.nextAction || ''}`.trim(), 502, 502);
+    if (!before.upstream) return res.fail(`${before.message || '当前分支没有 upstream，无法自动更新。'} ${before.nextAction || ''}`.trim(), 409, 409);
+    if (before.hasLocalChanges) return res.fail(`${before.message || '存在本地未提交改动。'} ${before.nextAction || ''}`.trim(), 409, 409);
+    if (before.ahead > 0) return res.fail(`${before.message || '本地提交领先远端，不能自动快进更新。'} ${before.nextAction || ''}`.trim(), 409, 409);
     if (before.behind <= 0) return res.ok({ message: '当前已经是最新状态。', before, after: before, logs: [] });
     const pull = runGit(['pull', '--ff-only'], { timeout: 60000 });
-    if (!pull.ok) return res.fail('git pull 失败：' + (pull.stderr || pull.error || pull.stdout || 'unknown error'), 500, 500);
-    const install = spawnSync('npm', ['install'], {
-      cwd: PROJECT_ROOT,
-      encoding: 'utf8',
-      timeout: 120000,
-      windowsHide: true,
-      maxBuffer: 1024 * 1024 * 4,
-    });
-    if (install.status !== 0) return res.fail('npm install 失败：' + (install.stderr || (install.error && install.error.message) || install.stdout || 'unknown error'), 500, 500);
+    if (!pull.ok) {
+      const raw = pull.stderr || pull.error || pull.stdout || 'unknown error';
+      return res.fail(`git pull 失败：${classifyCommandFailure(raw, 'Git 拉取失败。')} 详情：${clipped(raw)}`, 500, 500);
+    }
+    const install = runNpmInstall();
+    if (!install.ok) {
+      const raw = install.stderr || install.error || install.stdout || 'unknown error';
+      return res.fail(`代码已更新，但依赖安装失败：${classifyCommandFailure(raw, 'npm install 失败。')} 详情：${clipped(raw)}`, 500, 500);
+    }
     const after = getUpdateStatus({ fetchRemote: false });
     res.ok({ message: '更新完成，请重启 WebUI。', before, after, logs: [pull.stdout, install.stdout].filter(Boolean) });
   } catch (e) {
     res.fail('apply update failed: ' + e.message, 500, 500);
+  }
+});
+
+router.post('/update-repair-deps', (req, res) => {
+  try {
+    const before = getUpdateStatus({ fetchRemote: false });
+    if (!before.node?.available) return res.fail('没有检测到 Node.js，无法安装依赖。请安装 Node.js 18+ 后重启 WebUI。', 400, 400);
+    if (!before.npm?.available) return res.fail('没有检测到 npm，无法安装依赖。请重新安装 Node.js LTS，安装时勾选 npm。', 400, 400);
+    const install = runNpmInstall();
+    if (!install.ok) {
+      const raw = install.stderr || install.error || install.stdout || 'unknown error';
+      return res.fail(`依赖修复失败：${classifyCommandFailure(raw, 'npm install 失败。')} 详情：${clipped(raw)}`, 500, 500);
+    }
+    const after = getUpdateStatus({ fetchRemote: false });
+    res.ok({ message: '依赖修复完成，请重启 WebUI。', before, after, logs: [install.stdout].filter(Boolean) });
+  } catch (e) {
+    res.fail('repair dependencies failed: ' + e.message, 500, 500);
   }
 });
 
@@ -435,6 +612,94 @@ router.get('/file-raw', (req, res) => {
   } catch (e) {
     res.status(500).send('read failed: ' + e.message);
   }
+});
+
+
+function modelDiagnostics(settings, models) {
+  const modelScope = settings.quickMode ? 'webui' : 'agent';
+  const cfg = models && (models.webui || models.agent) ? (models[modelScope] || models.webui || models.agent || {}) : models;
+  const library = Array.isArray(cfg.library) ? cfg.library : [];
+  const enabled = library.filter(m => m && m.enabled !== false);
+  const imageId = cfg.scenarios && cfg.scenarios.image;
+  const imageModel = enabled.find(m => m.id === imageId || m.name === imageId) || enabled.find(m => m.kind === 'image' || m.apiFormat === 'openai-image' || m.apiFormat === 'openai_image');
+  return { modelScope, total: library.length, enabled: enabled.length, imageModel, current: cfg.current || cfg.scenarios?.chat || '' };
+}
+
+function agentHealthItems() {
+  const settings = store.read('settings', {});
+  const models = store.read('models', {});
+  const active = activeHermesChildStats();
+  const modelInfo = modelDiagnostics(settings, models);
+  const hermesCmd = detectHermesCommand();
+  return [
+    { key: 'webui', label: 'WebUI', status: 'ok', detail: 'Backend API is connected' },
+    { key: 'hermes', label: 'Hermes', status: active.length ? 'busy' : (hermesCmd ? 'ok' : 'warn'), detail: active.length ? `Running ${active.length} Hermes child process(es)` : (hermesCmd ? `Detected Windows native Hermes CLI${hermesCmd.version ? ` (${hermesCmd.version})` : ''}` : 'Windows native Hermes CLI not detected') },
+    { key: 'models', label: 'Models', status: modelInfo.enabled ? 'ok' : 'warn', detail: `Scope ${modelInfo.modelScope}, enabled ${modelInfo.enabled}/${modelInfo.total}${modelInfo.current ? `, default ${modelInfo.current}` : ''}` },
+    { key: 'image', label: 'Image', status: modelInfo.imageModel ? 'ok' : 'warn', detail: modelInfo.imageModel ? `Image model configured: ${modelInfo.imageModel.name || modelInfo.imageModel.id || 'unnamed model'}` : 'No enabled image model detected' },
+    { key: 'mcp', label: 'MCP', status: 'ok', detail: 'Hermes native runtime mounts the webui_image toolset' },
+  ];
+}
+
+
+router.get('/diagnostics', (_req, res) => {
+  const startedAt = Date.now();
+  try {
+    const settings = store.read('settings', {});
+    const models = store.read('models', {});
+    const logs = store.read('logs', []);
+    const hermesCmd = detectHermesCommand();
+    const active = activeHermesChildStats();
+    const modelInfo = modelDiagnostics(settings, models);
+    const recentErrors = logs.filter(item => ['error', 'warn'].includes(String(item.level || '').toLowerCase())).slice(-20);
+    const dirs = {
+      store: store.DATA_DIR,
+      dataRoot: paths.dataRoot(),
+      memory: paths.memoryRoot(),
+      images: paths.imageRoot(),
+      history: paths.historyDir(),
+      mdLibrary: paths.mdLibraryRoot(),
+    };
+    const dirStatus = Object.entries(dirs).map(([key, dir]) => {
+      let writable = false;
+      try {
+        if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+        fs.accessSync(dir, fs.constants.W_OK);
+        writable = true;
+      } catch (_) {}
+      return { key, path: dir, exists: fs.existsSync(dir), writable };
+    });
+    res.ok({
+      ts: Date.now(),
+      elapsedMs: Date.now() - startedAt,
+      platform: process.platform,
+      node: process.version,
+      pid: process.pid,
+      uptimeSec: Math.round(process.uptime()),
+      hermes: hermesCmd || null,
+      activeHermes: active,
+      modelInfo,
+      health: agentHealthItems(),
+      dirs: dirStatus,
+      logs: { total: logs.length, recentErrors },
+      settings: { quickMode: !!settings.quickMode, routingMode: settings.routingMode || 'auto', agentRuntime: 'cli' },
+    });
+  } catch (e) {
+    res.fail('diagnostics failed: ' + e.message, 500, 500);
+  }
+});
+
+router.get('/agent-health', (_req, res) => {
+  res.ok({ items: agentHealthItems(), ts: Date.now() });
+});
+
+router.get('/hermes-processes', (_req, res) => {
+  res.ok({ processes: activeHermesChildStats() });
+});
+
+router.post('/restart-hermes', (req, res) => {
+  const result = stopActiveHermesChildren(String(req.body?.reason || 'manual-restart'));
+  appendLog({ type: 'hermes-restart', level: 'warn', msg: '\u5df2\u8bf7\u6c42\u91cd\u542f Hermes \u5b50\u8fdb\u7a0b', ...result });
+  res.ok(result);
 });
 
 router.post('/execute-command', async (req, res) => {

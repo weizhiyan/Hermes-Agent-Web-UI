@@ -12,12 +12,18 @@ function candidateWebuiApis() {
   const list = [];
   if (explicit) list.push(explicit);
   list.push('http://127.0.0.1:3381');
-  try {
-    const resolv = fs.readFileSync('/etc/resolv.conf', 'utf8');
-    const match = resolv.match(/^nameserver\s+([^\s]+)/m);
-    if (match && match[1]) list.push('http://' + match[1] + ':3381');
-  } catch (_) {}
   return [...new Set(list.map(v => String(v || '').replace(/\/$/, '')).filter(Boolean))];
+}
+
+
+function normalizeAttachmentIds(value, ...texts) {
+  const ids = [];
+  if (Array.isArray(value)) ids.push(...value);
+  for (const text of texts) {
+    const raw = String(text || '');
+    for (const match of raw.matchAll(/\b(?:in|out)_[A-Za-z0-9_\-]+\b/g)) ids.push(match[0]);
+  }
+  return [...new Set(ids.map(id => String(id || '').trim()).filter(Boolean))];
 }
 
 async function fetchWebui(path, init) {
@@ -81,10 +87,12 @@ server.registerTool(
     if (!text) {
       return { content: [{ type: 'text', text: 'Missing prompt.' }], isError: true };
     }
-    const refs = Array.isArray(attachmentIds) ? attachmentIds.map(id => String(id || '').trim()).filter(Boolean) : [];
+    const refs = normalizeAttachmentIds(attachmentIds, prompt, sourcePrompt);
     const sourceText = String(sourcePrompt || prompt || '').trim();
-    const optimized = await optimizePromptThroughWebui({ prompt: text, sourcePrompt: sourceText, refs, model });
-    const finalPrompt = optimized.prompt || text;
+    // Hermes Agent has already reasoned about the prompt before calling this tool.
+    // Avoid an extra WebUI prompt-optimization LLM round here so Agent image generation starts faster.
+    const optimized = { prompt: text, optimized: false, skill: '' };
+    const finalPrompt = text;
     const { resp, base: webuiApi } = await fetchWebui('/api/images/generate', (base) => ({
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -134,6 +142,139 @@ server.registerTool(
   }
 );
 
+
+server.registerTool(
+  'webui_video_generate',
+  {
+    description: 'Generate videos through Hermes WebUI. This tool uses WebUI Model Configuration for the video model, API key, storage, and preview history. When the user asks to create/generate a video, animation, short clip, motion visual, or dynamic scene, call this tool instead of writing curl, Python, HTTP examples, or saying the video API is unavailable. Returns local paths and Markdown preview URLs.',
+    inputSchema: {
+      prompt: z.string().describe('Video generation prompt from the user intent. Include subject, motion, camera movement, style, scene, duration, and key constraints. Preserve named characters, brands, products, and user constraints exactly.'),
+      sourcePrompt: z.string().optional().describe('The user original request before optimization. Defaults to prompt.'),
+      attachmentIds: z.array(z.string()).optional().describe('Reference image IDs from the WebUI attachment context. Use these for image-to-video tasks when the user asks to animate or generate a video from an uploaded image.'),
+      size: z.string().optional().describe('Video size or aspect ratio, for example 1024x1024 or 16:9. Default: 1024x1024.'),
+      seconds: z.number().optional().describe('Duration in seconds. Default: 5.'),
+      model: z.string().optional().describe('Optional WebUI video model id. Use auto unless the user explicitly picked a model.'),
+      chatId: z.string().optional().describe('Optional current WebUI chat id for saving the result into the conversation.'),
+    },
+  },
+  async ({ prompt, sourcePrompt = '', attachmentIds = [], size = '1024x1024', seconds = 5, model = 'auto', chatId = '' }) => {
+    const text = String(prompt || '').trim();
+    if (!text) {
+      return { content: [{ type: 'text', text: 'Missing prompt.' }], isError: true };
+    }
+    const sourceText = String(sourcePrompt || prompt || '').trim();
+    const { resp, base: webuiApi } = await fetchWebui('/api/images/video/generate', (base) => ({
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        prompt: text,
+        sourcePrompt: sourceText,
+        attachmentIds: normalizeAttachmentIds(attachmentIds, prompt, sourcePrompt),
+        model: String(model || 'auto'),
+        size,
+        seconds: Number(seconds || 5),
+        chatId: String(chatId || ''),
+        publicBase: base,
+      }),
+      signal: AbortSignal.timeout(15 * 60 * 1000),
+    }));
+    const json = await resp.json().catch(() => ({}));
+    if (!resp.ok || json.code !== 0) {
+      return { content: [{ type: 'text', text: 'WebUI video generation failed: ' + (json.msg || resp.statusText || resp.status) }], isError: true };
+    }
+    const data = json.data || {};
+    const outputs = Array.isArray(data.outputs) ? data.outputs : [];
+    const markdown = outputs.map((item, index) => {
+      const url = item.publicUrl || item.url || '';
+      return url ? '[Generated video ' + (index + 1) + '](' + url + ')' : '';
+    }).filter(Boolean).join('\n\n');
+    const payload = {
+      success: true,
+      type: 'webui_video_generate_result',
+      markdown,
+      videoUrl: outputs[0]?.publicUrl || outputs[0]?.url || '',
+      taskId: data.taskId || '',
+      status: data.status || '',
+      taskStatus: data.taskStatus || data.status || '',
+      outputs,
+      inputs: Array.isArray(data.inputs) ? data.inputs : [],
+      prompt: data.prompt || text,
+      sourcePrompt: data.sourcePrompt || sourceText,
+      mode: data.mode || 'text-to-video',
+      model: data.model || 'auto',
+      provider: data.provider || '',
+      content: data.content || markdown,
+    };
+    return {
+      content: [{
+        type: 'text',
+        text: JSON.stringify(payload),
+      }],
+    };
+  }
+);
+
+
+server.registerTool(
+  'webui_markdown_insert_image',
+  {
+    description: 'Insert a WebUI generated/uploaded image into a Markdown document in the WebUI MD output library. Copies the image beside the target document into an images/ folder and writes a relative Markdown image reference. Use this when the user asks to put an image into a report/document/Markdown file. Do not claim success unless this tool returns success.',
+    inputSchema: {
+      path: z.string().describe('Target Markdown path relative to the WebUI MD output library, e.g. report.md or folder/report.md.'),
+      imageId: z.string().describe('WebUI image id or image URL, e.g. out_xxx, in_xxx, or /api/images/file/out_xxx.'),
+      alt: z.string().optional().describe('Image alt text/caption. Default: image.'),
+      position: z.string().optional().describe('Insert position. Currently append is supported by WebUI fallback. Default: append.'),
+    },
+  },
+  async ({ path, imageId, alt = 'image', position = 'append' }) => {
+    const { resp } = await fetchWebui('/api/chats/tools/markdown/insert-image', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path, imageId, alt, position }),
+      signal: AbortSignal.timeout(120 * 1000),
+    });
+    const json = await resp.json().catch(() => ({}));
+    if (!resp.ok || json.code !== 0) {
+      return { content: [{ type: 'text', text: 'WebUI markdown insert image failed: ' + (json.msg || resp.statusText || resp.status) }], isError: true };
+    }
+    return { content: [{ type: 'text', text: JSON.stringify(json.data || {}) }] };
+  }
+);
+
+
+
+server.registerTool(
+  'webui_markdown_create',
+  {
+    description: 'Create and save a Markdown document into the WebUI MD output library and return an Artifact card preview. Use this when the user asks to output, generate, create, save, or write a document, report, note, tutorial, summary, card, article, or any Markdown content. The tool writes the file, then returns an artifact tag that the frontend renders as a clickable card.',
+    inputSchema: {
+      title: z.string().describe('Document title. Used as the card title and default filename. Max 80 chars.'),
+      path: z.string().optional().describe('Optional relative file path under the MD output library (e.g. folder/report.md). Defaults to sanitized title + .md.'),
+      content: z.string().describe('Full Markdown content of the document. Must include frontmatter and body.'),
+    },
+  },
+  async ({ title, path = '', content }) => {
+    const text = String(content || '').trim();
+    if (!text) {
+      return { content: [{ type: 'text', text: JSON.stringify({ success: false, error: 'content is required' }) }], isError: true };
+    }
+    const { resp } = await fetchWebui('/api/chats/tools/markdown/create', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        title: String(title || '输出文档').trim().slice(0, 80),
+        path: String(path || '').trim(),
+        content: text,
+      }),
+      signal: AbortSignal.timeout(120 * 1000),
+    });
+    const json = await resp.json().catch(() => ({}));
+    if (!resp.ok || json.code !== 0) {
+      return { content: [{ type: 'text', text: 'WebUI markdown create failed: ' + (json.msg || resp.statusText || resp.status) }], isError: true };
+    }
+    return { content: [{ type: 'text', text: JSON.stringify(json.data || {}) }] };
+  }
+);
 server.connect(new StdioServerTransport()).catch((error) => {
   console.error('[hermes-webui-image-mcp]', error);
   process.exit(1);

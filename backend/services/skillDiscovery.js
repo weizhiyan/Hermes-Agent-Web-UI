@@ -1,10 +1,10 @@
 const fs = require('fs');
 const path = require('path');
+const paths = require('./paths');
 
 const DEFAULT_EXTERNAL_SKILL_DIRS = [
   process.env.HERMES_WEBUI_SKILL_DIR,
-  '/mnt/e/AI/记忆/skills',
-  'E:\\AI\\记忆\\skills',
+  path.join(paths.dataRoot(), 'skills'),
 ].filter(Boolean);
 const EXTERNAL_SKILL_DIRS = (process.env.HERMES_WEBUI_SKILL_DIRS || '')
   .split(path.delimiter)

@@ -21,6 +21,7 @@ const memoryRoutes = require('./routes/memory');
 const imageRoutes = require('./routes/images');
 const relayRoutes = require('./routes/relay');
 const knowledgeRoutes = require('./routes/knowledge');
+const issueRoutes = require('./routes/issues');
 const feishuStream = require('./services/feishuStream');
 const paths = require('./services/paths');
 
@@ -112,6 +113,7 @@ app.use('/api/sse', modalRoutes);
 app.use('/api/memory', memoryRoutes);
 app.use('/api/images', imageRoutes);
 app.use('/api/knowledge', knowledgeRoutes);
+app.use('/api/issues', issueRoutes);
 
 // Protect sensitive directories
 app.use((req, res, next) => {

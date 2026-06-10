@@ -1,9 +1,22 @@
 const express = require('express');
 const store = require('../services/store');
+const { syncWebuiRelayProviderConfig } = require('../services/hermes');
+const { isTerminalChatModel } = require('../services/terminalModels');
 
 const router = express.Router();
 const KEY = 'models';
 const SCOPES = ['webui', 'agent'];
+const WEBUI_RELAY_PROVIDER = 'webui_relay';
+const WEBUI_RELAY_NAME = 'Web UI';
+const CCSWITCH_TOP_LEVEL_KEYS = new Set([
+  'current',
+  'scenarios',
+  'scope',
+  'params',
+  'providers',
+  'webui_provider',
+  'webuiProvider',
+]);
 
 const DEFAULTS = {
   params: { temperature: 0.7, maxTokens: 4096, topP: 1 },
@@ -14,6 +27,7 @@ const DEFAULTS = {
     reasoning: '',
     vision: '',
     image: '',
+    video: '',
     fallback: '',
   },
 };
@@ -30,6 +44,7 @@ function inferApiFormat(item = {}) {
   const provider = item.provider || '';
   const base = item.base || '';
   if (current === 'openai-image' || current === 'openai_image') return 'openai-image';
+  if (current === 'openai-video' || current === 'openai_video') return 'openai-video';
   if (looksLocalOllama(base, provider)) return 'ollama';
   if (current === 'ollama' && OPENAI_COMPAT_PROVIDERS.test(`${provider} ${base}`)) return 'openai-chat';
   if (current === 'anthropic') return 'anthropic_messages';
@@ -119,7 +134,7 @@ function normalizeApiBase(base = '') {
 function modelListUrl(base, apiFormat = 'openai-chat') {
   let clean = normalizeApiBase(base);
   if (!clean) return '';
-  if (apiFormat === 'openai-image' || apiFormat === 'openai_image') {
+  if (apiFormat === 'openai-image' || apiFormat === 'openai_image' || apiFormat === 'openai-video' || apiFormat === 'openai_video') {
     clean = clean.replace(/\/images\/(generations|edits)$/i, '');
     return clean.endsWith('/models') ? clean : (clean.endsWith('/v1') ? `${clean}/models` : `${clean}/v1/models`);
   }
@@ -133,7 +148,7 @@ function modelListUrl(base, apiFormat = 'openai-chat') {
 function chatUrl(base, apiFormat = 'openai-chat') {
   const clean = normalizeApiBase(base);
   if (!clean) return '';
-  if (apiFormat === 'openai-image' || apiFormat === 'openai_image') return modelListUrl(base, apiFormat);
+  if (apiFormat === 'openai-image' || apiFormat === 'openai_image' || apiFormat === 'openai-video' || apiFormat === 'openai_video') return modelListUrl(base, apiFormat);
   if (apiFormat === 'ollama') return clean.endsWith('/api/chat') ? clean : `${clean}/api/chat`;
   if (apiFormat === 'anthropic_messages') return clean.endsWith('/v1') ? `${clean}/messages` : `${clean}/v1/messages`;
   if (apiFormat !== 'openai-chat') return '';
@@ -219,7 +234,7 @@ function capabilityConfigSuggestion({ providerName = '', model = '', apiFormat =
   if (apiFormat === 'openai-image' || apiFormat === 'openai_image') tags.push('image');
   return {
     tags: uniqueTags(tags),
-    kind: (imageVisionOk || inferred.image) && !(apiFormat === 'openai-image' || apiFormat === 'openai_image') ? 'vision' : (apiFormat === 'openai-image' || apiFormat === 'openai_image' ? 'image' : 'chat'),
+    kind: (apiFormat === 'openai-video' || apiFormat === 'openai_video') ? 'video' : ((imageVisionOk || inferred.image) && !(apiFormat === 'openai-image' || apiFormat === 'openai_image') ? 'vision' : (apiFormat === 'openai-image' || apiFormat === 'openai_image' ? 'image' : 'chat')),
     scenarios: {
       chat: textOk,
       vision: !!(imageVisionOk || inferred.image),
@@ -264,6 +279,7 @@ function normalizeScenarios(scenarios = {}, library = []) {
     reasoning: ids.has(scenarios.reasoning) ? scenarios.reasoning : '',
     vision: ids.has(scenarios.vision) ? scenarios.vision : '',
     image: ids.has(scenarios.image) ? scenarios.image : '',
+    video: ids.has(scenarios.video) ? scenarios.video : '',
     fallback: ids.has(scenarios.fallback) ? scenarios.fallback : '',
   };
 }
@@ -321,62 +337,153 @@ function saveScope(scope, cfg) {
   return root[SCOPES.includes(scope) ? scope : 'webui'];
 }
 
+function scheduleHermesRelaySync() {
+  syncWebuiRelayProviderConfig().catch(error => {
+    console.warn('[models] failed to sync Hermes Web UI relay:', error.message);
+  });
+}
+
+function ccswitchModelItem(item = {}, scope = 'agent', providerOverride = '') {
+  const sourceProvider = item.provider || 'custom';
+  const provider = providerOverride || sourceProvider;
+  return {
+    id: item.id,
+    provider,
+    source_provider: sourceProvider,
+    sourceProvider,
+    scope,
+    name: item.name,
+    model: item.name,
+    base_url: normalizeApiBase(item.base || ''),
+    api_key: item.key || '',
+    api_format: item.apiFormat || 'openai-chat',
+    auth_type: item.authType || 'bearer',
+    auth_header: item.authHeader || '',
+    enabled: item.enabled !== false,
+    tags: item.tags || [],
+    kind: item.kind || 'chat',
+  };
+}
+
+function addCcSwitchModel(providers, providerKey, displayName, item, scope = 'agent', providerOverride = '') {
+  if (!item || !item.name) return;
+  const key = providerKey || item.provider || 'custom';
+  const group = providers[key] || {
+    name: displayName || key,
+    display_name: displayName || key,
+    displayName: displayName || key,
+    models: [],
+  };
+  const next = ccswitchModelItem(item, scope, providerOverride);
+  const dedupeKey = String(next.id || next.name || '').toLowerCase();
+  if (!dedupeKey || !group.models.some(model => String(model.id || model.name || '').toLowerCase() === dedupeKey)) {
+    group.models.push(next);
+  }
+  providers[key] = group;
+}
+
+function ccswitchCurrent(root = {}) {
+  const agent = root.agent || {};
+  const webui = root.webui || {};
+  return agent.current || agent.scenarios?.chat || webui.current || webui.scenarios?.chat || '';
+}
 
 function toCcSwitch(root = loadAll()) {
   const cfg = root.agent || root.webui || DEFAULTS;
+  const webui = root.webui || cfg;
   const providers = {};
   for (const item of cfg.library || []) {
     if (!item || !item.name) continue;
     const provider = item.provider || 'custom';
-    providers[provider] = providers[provider] || { name: provider, models: [] };
-    providers[provider].models.push({
-      id: item.id,
-      name: item.name,
-      model: item.name,
-      base_url: normalizeApiBase(item.base || ''),
-      api_key: item.key || '',
-      api_format: item.apiFormat || 'openai-chat',
-      auth_type: item.authType || 'bearer',
-      auth_header: item.authHeader || '',
-      enabled: item.enabled !== false,
-      tags: item.tags || [],
-    });
+    addCcSwitchModel(providers, provider, provider, item, 'agent');
   }
-  return { current: cfg.current || cfg.scenarios?.chat || '', scenarios: cfg.scenarios || {}, providers };
+  for (const item of webui.library || []) {
+    if (!isTerminalChatModel(item)) continue;
+    addCcSwitchModel(providers, WEBUI_RELAY_PROVIDER, WEBUI_RELAY_NAME, item, 'webui', WEBUI_RELAY_PROVIDER);
+  }
+  return { current: ccswitchCurrent(root), scenarios: cfg.scenarios || {}, providers };
 }
+
+function providersFromCcSwitchBody(body = {}) {
+  if (body.providers && typeof body.providers === 'object' && !Array.isArray(body.providers)) return body.providers;
+  const providers = {};
+  for (const [key, value] of Object.entries(body || {})) {
+    if (CCSWITCH_TOP_LEVEL_KEYS.has(key)) continue;
+    if (!value || (typeof value !== 'object' && !Array.isArray(value))) continue;
+    providers[key] = value;
+  }
+  return Object.keys(providers).length ? providers : null;
+}
+
+function resolveModelId(value = '', library = []) {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  const found = library.find(item => item.id === raw || item.name === raw);
+  return found?.id || raw;
+}
+
+function syncCurrentSelectionFromAllScopes(cfg, body = {}) {
+  const raw = String(body.current || '').trim();
+  if (!raw || !Array.isArray(cfg.library)) return;
+  const exists = cfg.library.some(item => item.id === raw || item.name === raw);
+  if (exists) return;
+  const root = loadAll();
+  const source = [...(root.webui?.library || []), ...(root.agent?.library || [])]
+    .find(item => item && item.enabled !== false && (item.id === raw || item.name === raw));
+  if (!source) return;
+  cfg.library = normalizeLibrary({ ...cfg, library: [...cfg.library, source] });
+}
+
+function resolveScenarioModelIds(scenarios = {}, library = []) {
+  const next = {};
+  for (const [key, value] of Object.entries(scenarios || {})) {
+    next[key] = resolveModelId(value, library);
+  }
+  return next;
+}
+
 function fromCcSwitch(body = {}, scope = 'agent') {
   const cfg = load(scope);
-  const next = [];
-  const providers = body.providers || body;
-  for (const [provider, value] of Object.entries(providers || {})) {
-    const models = Array.isArray(value) ? value : Array.isArray(value.models) ? value.models : [value];
-    for (const item of models) {
-      const name = item.name || item.model || item.id;
-      if (!name) continue;
-      next.push({
-        id: item.id || provider + ':' + name,
-        provider: item.provider || provider,
-        name,
-        base: item.base || item.base_url || item.api_base || '',
-        key: item.key || item.api_key || '',
-        enabled: item.enabled !== false,
-        tags: Array.isArray(item.tags) ? item.tags : ['chat'],
-        kind: item.kind || 'chat',
-        apiFormat: item.apiFormat || item.api_format || 'openai-chat',
-        authType: item.authType || item.auth_type || 'bearer',
-        authHeader: item.authHeader || item.auth_header || '',
-      });
+  const providers = providersFromCcSwitchBody(body);
+  if (providers) {
+    const next = [];
+    for (const [provider, value] of Object.entries(providers || {})) {
+      const models = Array.isArray(value) ? value : Array.isArray(value.models) ? value.models : [value];
+      for (const item of models) {
+        if (!item || typeof item !== 'object') continue;
+        const name = item.name || item.model || item.id;
+        if (!name) continue;
+        next.push({
+          id: item.id || provider + ':' + name,
+          provider: item.sourceProvider || item.source_provider || item.provider || provider,
+          name,
+          base: item.base || item.base_url || item.api_base || '',
+          key: item.key || item.api_key || '',
+          enabled: item.enabled !== false,
+          tags: Array.isArray(item.tags) ? item.tags : ['chat'],
+          kind: item.kind || 'chat',
+          apiFormat: item.apiFormat || item.api_format || 'openai-chat',
+          authType: item.authType || item.auth_type || 'bearer',
+          authHeader: item.authHeader || item.auth_header || '',
+        });
+      }
     }
+    cfg.library = normalizeLibrary({ ...cfg, library: next });
   }
-  cfg.library = normalizeLibrary({ ...cfg, library: next });
-  cfg.scenarios = normalizeScenarios(body.scenarios || cfg.scenarios || DEFAULTS.scenarios, cfg.library);
-  cfg.current = body.current || cfg.current || cfg.scenarios.chat || cfg.library[0]?.id || '';
+  syncCurrentSelectionFromAllScopes(cfg, body);
+  cfg.scenarios = normalizeScenarios(
+    resolveScenarioModelIds(body.scenarios || cfg.scenarios || DEFAULTS.scenarios, cfg.library),
+    cfg.library
+  );
+  cfg.current = resolveModelId(body.current, cfg.library) || cfg.current || cfg.scenarios.chat || cfg.library[0]?.id || '';
   return saveScope(scope, cfg);
 }
 router.get('/ccswitch', (req, res) => res.ok(toCcSwitch(loadAll())));
 router.put('/ccswitch', (req, res) => {
   const scope = requestedScope(req) || 'agent';
-  res.ok(fromCcSwitch(req.body || {}, scope));
+  const saved = fromCcSwitch(req.body || {}, scope);
+  scheduleHermesRelaySync();
+  res.ok(saved);
 });
 
 router.get('/', (req, res) => {
@@ -389,7 +496,9 @@ router.put('/', (req, res) => {
   const body = { ...(req.body || {}) };
   delete body.scope;
   const merged = { ...load(scope), ...body };
-  res.ok(saveScope(scope, merged));
+  const saved = saveScope(scope, merged);
+  scheduleHermesRelaySync();
+  res.ok(saved);
 });
 
 router.post('/library', (req, res) => {
@@ -416,7 +525,9 @@ router.post('/library', (req, res) => {
   cfg.library = normalizeLibrary({ ...cfg, library: next });
   cfg.scenarios = normalizeScenarios(cfg.scenarios || DEFAULTS.scenarios, cfg.library);
   if (!cfg.current && cfg.library.length) cfg.current = cfg.library[0].id;
-  res.ok(saveScope(scope, cfg));
+  const saved = saveScope(scope, cfg);
+  scheduleHermesRelaySync();
+  res.ok(saved);
 });
 
 router.delete('/library/:id', (req, res) => {
@@ -427,7 +538,9 @@ router.delete('/library/:id', (req, res) => {
     if (id === req.params.id) cfg.scenarios[scene] = '';
   }
   if (cfg.current === req.params.id) cfg.current = '';
-  res.ok(saveScope(scope, cfg));
+  const saved = saveScope(scope, cfg);
+  scheduleHermesRelaySync();
+  res.ok(saved);
 });
 
 /** 代理获取远程模型列表（避免前端 CORS 问题） */
@@ -503,7 +616,7 @@ router.post('/test', async (req, res) => {
         hints: testHints({ apiFormat, authType, base, provider: providerName }),
       });
     }
-    if (apiFormat === 'openai-image' || apiFormat === 'openai_image') {
+    if (apiFormat === 'openai-image' || apiFormat === 'openai_image' || apiFormat === 'openai-video' || apiFormat === 'openai_video') {
       const result = await fetch(url, {
         method: 'GET',
         headers: authHeaders({ key, authType, authHeader }),
@@ -531,10 +644,10 @@ router.post('/test', async (req, res) => {
         ok: found,
         status: result.status,
         model,
-        response: found ? `图片接口认证正常${models.length ? `，模型列表 ${models.length} 个` : ''}` : '',
+        response: found ? `${apiFormat === 'openai-video' || apiFormat === 'openai_video' ? 'Video' : 'Image'} API auth OK${models.length ? `, models: ${models.length}` : ''}` : '',
         bodySnippet: models.length ? models.slice(0, 12).join(', ') : snippet(JSON.stringify(json)),
         error: found ? '' : '接口可访问，但模型列表里没有找到当前模型名。',
-        hints: found ? [] : ['请确认图像模型名称是 Provider 返回的精确 ID，或在获取模型列表后重新勾选保存。'],
+        hints: found ? [] : ['Please confirm the model name is the exact ID returned by the Provider, or fetch the model list and save again.'],
       });
     }
     const requestHeaders = apiFormat === 'anthropic_messages'

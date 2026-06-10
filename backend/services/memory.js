@@ -159,7 +159,7 @@ const CORE_FILES = [
 
 - WebUI 默认端口：3381。
 - 推荐外部数据目录：F:\\AI\\Hermes Agent\\记忆。
-- WebUI 对话会导出为 Markdown，默认保存在 history-md。
+- history-md is only for manual chat export; never auto-write normal chats into output documents.
 - 图片默认分为 images/inputs 和 images/outputs。`,
   },
 ];
@@ -239,6 +239,108 @@ function writeCoreFile(id, content) {
   const target = path.join(paths.coreMemoryDir(), item.file);
   fs.writeFileSync(target, String(content || ''), 'utf8');
   return readCoreFile(id);
+}
+
+function safeAgentMemoryDir(agentId = 'default') {
+  const dirs = paths.ensureAgentDirs(agentId);
+  return dirs.memoryDir;
+}
+
+function safeAgentMemoryPath(agentId = 'default', file = 'MEMORY.md') {
+  const root = path.resolve(safeAgentMemoryDir(agentId));
+  const clean = String(file || 'MEMORY.md').trim().replace(/^[/\\]+/, '') || 'MEMORY.md';
+  if (clean.includes('\0')) return null;
+  const target = path.resolve(root, clean);
+  if (target === root || !target.startsWith(root + path.sep)) return null;
+  if (!target.toLowerCase().endsWith('.md')) return null;
+  return target;
+}
+
+function ensureAgentMemoryStore(agentId = 'default') {
+  const dir = safeAgentMemoryDir(agentId);
+  const target = safeAgentMemoryPath(agentId, 'MEMORY.md');
+  if (target && !fs.existsSync(target)) {
+    fs.writeFileSync(target, [
+      '# Agent Memory',
+      '',
+      '这里记录这个 Agent 自己的长期记忆、偏好、任务上下文和注意事项。',
+      '可以手动维护，也可以后续接入自动沉淀。',
+      '',
+    ].join('\n'), 'utf8');
+  }
+  return dir;
+}
+
+function listAgentMemoryFiles(agentId = 'default') {
+  ensureAgentMemoryStore(agentId);
+  const root = safeAgentMemoryDir(agentId);
+  const items = [];
+  function walk(dir) {
+    if (!fs.existsSync(dir)) return;
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const target = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        walk(target);
+        continue;
+      }
+      if (!entry.isFile() || !entry.name.toLowerCase().endsWith('.md')) continue;
+      const stat = safeStat(target);
+      if (!stat) continue;
+      const rel = path.relative(root, target);
+      const content = fs.readFileSync(target, 'utf8');
+      items.push({
+        id: encodeMemoryId(rel),
+        type: 'agent',
+        agentId: paths.safeAgentId(agentId),
+        title: path.basename(target, '.md'),
+        file: entry.name,
+        path: target,
+        relativePath: rel,
+        size: stat.size,
+        mtime: stat.mtimeMs,
+        preview: summarizeMarkdown(content),
+        editable: true,
+      });
+    }
+  }
+  walk(root);
+  return items.sort((a, b) => b.mtime - a.mtime || a.relativePath.localeCompare(b.relativePath));
+}
+
+function readAgentMemoryFile(agentId = 'default', idOrFile = 'MEMORY.md') {
+  ensureAgentMemoryStore(agentId);
+  const decoded = decodeMemoryId(idOrFile);
+  const file = decoded && decoded.endsWith('.md') ? decoded : idOrFile;
+  const target = safeAgentMemoryPath(agentId, file);
+  if (!target || !fs.existsSync(target)) return null;
+  const stat = fs.statSync(target);
+  const content = fs.readFileSync(target, 'utf8');
+  const root = safeAgentMemoryDir(agentId);
+  const rel = path.relative(root, target);
+  return {
+    id: encodeMemoryId(rel),
+    type: 'agent',
+    agentId: paths.safeAgentId(agentId),
+    title: path.basename(target, '.md'),
+    file: path.basename(target),
+    path: target,
+    relativePath: rel,
+    size: stat.size,
+    mtime: stat.mtimeMs,
+    preview: summarizeMarkdown(content),
+    editable: true,
+    content,
+  };
+}
+
+function writeAgentMemoryFile(agentId = 'default', file = 'MEMORY.md', content = '') {
+  ensureAgentMemoryStore(agentId);
+  const decoded = decodeMemoryId(file);
+  const target = safeAgentMemoryPath(agentId, decoded && decoded.endsWith('.md') ? decoded : (file || 'MEMORY.md'));
+  if (!target) return null;
+  ensureDir(path.dirname(target));
+  fs.writeFileSync(target, String(content || ''), 'utf8');
+  return readAgentMemoryFile(agentId, path.relative(safeAgentMemoryDir(agentId), target));
 }
 
 function encodeMemoryId(relPath) {
@@ -463,6 +565,28 @@ function readAgentRulesPrompt(options = {}) {
   return sections.filter(Boolean).join('\n\n');
 }
 
+function readAgentMemoryPrompt(agentId = 'default', options = {}) {
+  const limit = Math.max(1000, Number(options.limit || process.env.HERMES_AGENT_MEMORY_PROMPT_LIMIT || 8000));
+  const files = listAgentMemoryFiles(agentId)
+    .map(item => readAgentMemoryFile(agentId, item.relativePath))
+    .filter(item => item && String(item.content || '').trim())
+    .slice(0, 12);
+  if (!files.length) return '';
+  const sections = files.map(item => {
+    const content = String(item.content || '').trim();
+    return `## ${item.title}\n${content}`;
+  }).join('\n\n');
+  const clipped = sections.length > limit
+    ? sections.slice(0, Math.floor(limit * 0.75)).trim() + '\n\n[Agent 记忆过长，已截断]\n\n' + sections.slice(-Math.floor(limit * 0.25)).trim()
+    : sections;
+  return [
+    `以下是当前 Agent（${paths.safeAgentId(agentId)}）自己的长期记忆。`,
+    '这部分只属于当前 Agent；回答时可参考，但不要把它当作所有 Agent 的共享记忆。',
+    '',
+    clipped,
+  ].join('\n');
+}
+
 module.exports = {
   get MEMORY_DIR() { return paths.memoryRoot(); },
   get CORE_DIR() { return paths.coreMemoryDir(); },
@@ -475,7 +599,11 @@ module.exports = {
   listCoreFiles,
   readCoreFile,
   writeCoreFile,
+  listAgentMemoryFiles,
+  readAgentMemoryFile,
+  writeAgentMemoryFile,
   readConversationFile,
   readCoreMemoryPrompt,
+  readAgentMemoryPrompt,
   readAgentRulesPrompt,
 };

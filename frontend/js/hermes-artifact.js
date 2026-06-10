@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Hermes Agent — Artifact 面板 + 流式解析（参考 Claude Artifact 机制，适配 Hermes UI）
  * 依赖（由 index.html 引入）：marked, hljs, mermaid
  */
@@ -280,6 +280,50 @@
     } catch (_) {}
     if (global.location && /^https?:$/.test(global.location.protocol)) return '';
     return 'http://127.0.0.1:3381';
+  }
+
+  function isExternalAssetUrl(src) {
+    return /^(?:[a-z][a-z0-9+.-]*:|#|\/\/)/i.test(String(src || '').trim());
+  }
+
+  function dirnamePath(filePath) {
+    const text = String(filePath || '').replace(/\\/g, '/');
+    const idx = text.lastIndexOf('/');
+    return idx >= 0 ? text.slice(0, idx) : '';
+  }
+
+  function normalizeRelativeAssetPath(baseDir, src) {
+    const parts = [];
+    const raw = String(src || '').replace(/\\/g, '/');
+    const joined = raw.startsWith('/') ? raw : [baseDir, raw].filter(Boolean).join('/');
+    joined.split('/').forEach(part => {
+      if (!part || part === '.') return;
+      if (part === '..') parts.pop();
+      else parts.push(part);
+    });
+    if (/^[A-Za-z]:$/.test(parts[0] || '')) return parts.shift() + '\\' + parts.join('\\');
+    return parts.join('\\');
+  }
+
+  function resolveMarkdownAssetUrl(src) {
+    const raw = String(src || '').trim();
+    if (!raw || isExternalAssetUrl(raw)) return raw;
+    const match = raw.match(/^([^?#]*)([?#].*)?$/);
+    const pathPart = match ? match[1] : raw;
+    const suffix = match && match[2] ? match[2] : '';
+    const baseDir = dirnamePath(currentFilePath || '');
+    if (!baseDir && !/^[A-Za-z]:[\\/]/.test(pathPart)) return raw;
+    const fullPath = normalizeRelativeAssetPath(baseDir, pathPart);
+    return apiBase() + '/api/system/file-raw?path=' + encodeURIComponent(fullPath) + suffix;
+  }
+
+  function rewriteMarkdownImageUrls(root) {
+    if (!root) return;
+    root.querySelectorAll('img[src]').forEach(img => {
+      const src = img.getAttribute('src') || '';
+      const next = resolveMarkdownAssetUrl(src);
+      if (next && next !== src) img.setAttribute('src', next);
+    });
   }
 
   function publicApiBase() {
@@ -626,8 +670,8 @@
   }
 
   function artifactDisplayTitle() {
-    if (currentTab === 'history' && historyPreview) return historyPreview.title || fileNameFromPath(historyPreview.path || '') || '?????';
-    return currentTitle || '?????';
+    if (currentTab === 'history' && historyPreview) return historyPreview.title || fileNameFromPath(historyPreview.path || '') || '\u672a\u547d\u540d';
+    return currentTitle || '\u672a\u547d\u540d';
   }
 
   function notifyArtifactContextChanged() {
@@ -1097,6 +1141,7 @@
     const m = getMarked();
     if (m) {
       el.innerHTML = m.parse(stripLooseMarkdownMeta(md || ''), { breaks: true });
+      rewriteMarkdownImageUrls(el);
     } else {
       el.innerHTML = '<pre class="artifact-fallback">' + esc(md || '') + '</pre>';
     }
@@ -2409,7 +2454,6 @@
       ${categoryButtons ? `<div class="doc-library-menu-sep"></div>${categoryButtons}` : ''}
       <div class="doc-library-menu-sep"></div>
       <button class="${historyMode === 'category:images' ? 'active' : ''}" onclick="HermesArtifact.setHistoryMode('category:images')">输出图片<span>${images.length || ''}</span></button>
-      <button class="${historyMode === 'graph' ? 'active' : ''}" onclick="HermesArtifact.setHistoryMode('graph')">知识图谱</button>
     `;
     menu.style.display = historyCategoryMenuOpen ? 'flex' : 'none';
   }
@@ -2486,7 +2530,7 @@
       return;
     }
     if (historyMode === 'category:images') {
-      hist.innerHTML = viewHeader + '<div class="image-waterfall-loading" style="text-align:center;padding:20px;color:var(--c-ink-muted)">加载图片中...</div>';
+      hist.innerHTML = viewHeader + '<div class="image-waterfall-toolbar"><button type="button" class="btn btn-xs btn-secondary" onclick="HermesArtifact.refreshImageWaterfall({rescan:true,silent:false})">\u91cd\u65b0\u626b\u63cf</button></div><div class="image-waterfall-loading" style="text-align:center;padding:20px;color:var(--c-ink-muted)">\u52a0\u8f7d\u56fe\u7247\u4e2d...</div>';
       loadImageWaterfall();
       return;
     }
@@ -2541,6 +2585,7 @@
     </div>`;
   }
   function setHistoryMode(mode) {
+    if (mode === 'graph') mode = 'category:outputs';
     if (_kgResizeObs && mode !== 'graph') { _kgResizeObs.disconnect(); _kgResizeObs = null; }
     historyMode = mode;
     historySubFilter = 'all';
@@ -2559,6 +2604,20 @@
   // --- Image waterfall ---
   let imageWaterfallData = null;
 
+  async function refreshImageWaterfall({ rescan = false, silent = true } = {}) {
+    const hist = $('#artifactHistory');
+    if (!hist) return;
+    try {
+      if (rescan) {
+        await fetch(apiBase() + '/api/images/rescan', { method: 'POST', cache: 'no-store' }).catch(() => null);
+      }
+      await loadImageWaterfall();
+      if (!silent) showToast(rescan ? '\u5df2\u91cd\u65b0\u626b\u63cf\u56fe\u7247' : '\u5df2\u5237\u65b0\u56fe\u7247');
+    } catch (e) {
+      if (!silent) showToast('\u5237\u65b0\u56fe\u7247\u5931\u8d25\uff1a' + e.message);
+    }
+  }
+
   async function loadImageWaterfall() {
     const hist = $('#artifactHistory');
     if (!hist) return;
@@ -2574,6 +2633,42 @@
     }
   }
 
+  function formatImageCreatedAt(value) {
+    const n = Number(value || 0);
+    if (!Number.isFinite(n) || n <= 0) return '';
+    const d = new Date(n);
+    if (Number.isNaN(d.getTime())) return '';
+    const pad = v => String(v).padStart(2, '0');
+    return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()) + ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes());
+  }
+
+  function imageMonthKey(value) {
+    const n = Number(value || 0);
+    const d = Number.isFinite(n) && n > 0 ? new Date(n) : new Date(0);
+    const year = Number.isNaN(d.getTime()) || d.getTime() === 0 ? '\u672a\u8bb0\u5f55\u65f6\u95f4' : d.getFullYear();
+    const month = Number.isNaN(d.getTime()) || d.getTime() === 0 ? '' : String(d.getMonth() + 1).padStart(2, '0');
+    return month ? `${year}-${month}` : String(year);
+  }
+
+  function imageMonthTitle(key) {
+    if (key === '\u672a\u8bb0\u5f55\u65f6\u95f4') return key;
+    const [year, month] = String(key).split('-');
+    return `${year} \u5e74 ${Number(month || 0)} \u6708`;
+  }
+
+  function renderImageCard(img) {
+    const imgUrl = getImagePreviewUrl(img);
+    const promptText = img.prompt || img.sourcePrompt || '\u65e0\u63d0\u793a\u8bcd';
+    const prompt = esc(promptText);
+    const created = formatImageCreatedAt(img.createdAt);
+    const meta = [created, img.model || '', img.provider || ''].filter(Boolean).join(' / ');
+    return `<div class="image-waterfall-card history-card" data-url="${esc(imgUrl)}" data-prompt="${prompt}" onclick="HermesArtifact.openImageLightboxFromCard(this)">
+      <div class="image-waterfall-thumb image-preview-wrap"><img src="${esc(imgUrl)}" alt="${prompt}" loading="lazy" /></div>
+      ${meta ? `<div class="image-waterfall-meta history-card-meta">${esc(meta)}</div>` : ''}
+      <div class="image-waterfall-prompt" title="\u70b9\u51fb\u590d\u5236\u63d0\u793a\u8bcd" onclick="event.stopPropagation();HermesArtifact.copyImagePrompt(this.closest('.image-waterfall-card'))">${prompt}</div>
+    </div>`;
+  }
+
   function renderImageWaterfall(images) {
     const hist = $('#artifactHistory');
     if (!hist) return;
@@ -2582,19 +2677,21 @@
     const head = hist.querySelector('.doc-library-head');
     const headHtml = head ? head.outerHTML : '';
     if (!images || !images.length) {
-      hist.innerHTML = headHtml + tabsHtml + '<div class="history-empty-docs"><h3>暂无图片</h3><p>生成图片后会出现在这里。</p></div>';
+      hist.innerHTML = headHtml + tabsHtml + '<div class="history-empty-docs"><h3>\u6682\u65e0\u56fe\u7247</h3><p>\u751f\u6210\u56fe\u7247\u540e\u4f1a\u51fa\u73b0\u5728\u8fd9\u91cc\u3002</p></div>';
       return;
     }
-    const cards = images.map(img => {
-      const imgUrl = getImagePreviewUrl(img);
-      const promptText = img.prompt || img.sourcePrompt || '无提示词';
-      const prompt = esc(promptText);
-      return `<div class="image-waterfall-card" data-url="${esc(imgUrl)}" data-prompt="${prompt}" onclick="HermesArtifact.openImageLightboxFromCard(this)">
-        <div class="image-waterfall-thumb"><img src="${esc(imgUrl)}" alt="${prompt}" loading="lazy" /></div>
-        <div class="image-waterfall-prompt" title="点击复制提示词" onclick="event.stopPropagation();HermesArtifact.copyImagePrompt(this.closest('.image-waterfall-card'))">${prompt}</div>
-      </div>`;
-    }).join('');
-    hist.innerHTML = headHtml + tabsHtml + '<div class="image-waterfall">' + cards + '</div>';
+    const sorted = [...images].sort((a, b) => Number(b.createdAt || 0) - Number(a.createdAt || 0));
+    const groups = new Map();
+    sorted.forEach(img => {
+      const key = imageMonthKey(img.createdAt);
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(img);
+    });
+    const html = [...groups.entries()].map(([key, list]) => `<div class="history-month-group image-month-group">
+      <div class="history-month-title"><span>${esc(imageMonthTitle(key))}</span><em>${list.length}</em></div>
+      <div class="history-cards image-waterfall">${list.map(renderImageCard).join('')}</div>
+    </div>`).join('');
+    hist.innerHTML = headHtml + tabsHtml + html;
   }
 
   function getImagePreviewUrl(img) {
@@ -3494,6 +3591,7 @@
     closeImageLightbox,
     copyImagePrompt,
     copyLightboxPrompt,
+    refreshImageWaterfall,
     insertLocalEditPrompt,
     getLocalEditContext,
     clearLocalEditContext,
@@ -3509,9 +3607,10 @@
     global.addEventListener('message', (event) => {
       const msg = event && event.data;
       if (!msg || typeof msg !== 'object') return;
-      if (msg.type === 'artifact-refresh') {
+      if (msg.type === 'artifact-refresh' || msg.type === 'artifact-refresh-images') {
         try {
-          if (currentTab === 'history') loadHistory();
+          if (msg.type === 'artifact-refresh-images') refreshImageWaterfall({ rescan: true, silent: true });
+          else if (currentTab === 'history') loadHistory();
           else refreshCurrentView();
         } catch (_) {}
       }
@@ -3519,9 +3618,3 @@
   }
   global.HermesArtifact = API;
 })(typeof window !== 'undefined' ? window : this);
-
-
-
-
-
-

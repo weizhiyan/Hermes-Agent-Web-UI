@@ -25,11 +25,21 @@ http://127.0.0.1:3381/api/health
 
 ## 3. Windows 快速启动
 
-推荐直接双击：
+第一次使用推荐直接双击：
+
+```bat
+install.bat
+```
+
+它会检查 Node.js / npm / Git，安装依赖；如果默认 npm 源失败，会自动尝试 `https://registry.npmmirror.com`。安装完成后可以直接启动 WebUI。
+
+日常启动直接双击：
 
 ```bat
 start.bat
 ```
+
+如果只是修复依赖，也可以在 WebUI 设置页的“更新中心”点击“修复依赖”。
 
 或者使用 PowerShell：
 
@@ -67,7 +77,15 @@ http://127.0.0.1:3381
 update.bat
 ```
 
-它会执行：
+它会先检查：
+
+- Git / Node.js / npm 是否可用。
+- 当前目录是否是 Git 克隆项目。
+- 本地是否有未提交改动。
+- 当前分支是否绑定 upstream。
+- 公司网络是否能访问远端。
+
+通过检查后会执行：
 
 ```text
 git pull --ff-only
@@ -82,6 +100,8 @@ npm install
 ```
 
 更新后重启 WebUI。
+
+也可以在设置页的“更新中心”点击“检查远端 / 安全更新”。如果失败，WebUI 会显示更具体的原因，例如 Git 未安装、公司网络拦截 GitHub、npm registry 访问失败、本地文件有改动或分支没有 upstream。
 
 ## 6. 版本切换
 

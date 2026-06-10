@@ -1,7 +1,11 @@
 const express = require('express');
-const store = require('../services/store');
+const { collectTerminalChatModels, hasTerminalRelayAuth } = require('../services/terminalModels');
 
 const router = express.Router();
+
+function collectRelayModels(options = {}) {
+  return collectTerminalChatModels({ includeAgent: options.includeAgent === true });
+}
 
 function chatUrl(base = '') {
   const clean = String(base || '').replace(/\/+$/, '');
@@ -11,15 +15,11 @@ function chatUrl(base = '') {
 }
 
 function findRelayModel(modelName = '') {
-  const root = store.read('models', {});
-  const configs = [root.agent, root.webui].filter(Boolean);
-  for (const cfg of configs) {
-    const item = (cfg.library || []).find(model => {
-      if (!model || model.enabled === false) return false;
-      const aliases = [model.name, model.id].filter(Boolean).map(String);
-      return aliases.includes(String(modelName || ''));
-    });
-    if (item?.base && item?.key) return item;
+  const requested = String(modelName || '');
+  if (!requested) return null;
+  for (const item of collectRelayModels({ includeAgent: true })) {
+    const aliases = [item.name, item.id].filter(Boolean).map(String);
+    if (aliases.includes(requested) && item?.base && hasTerminalRelayAuth(item)) return item;
   }
   return null;
 }
@@ -141,6 +141,18 @@ async function proxyChatCompletion(req, res, options = {}) {
   }
 }
 
+router.get('/models', (req, res) => {
+  res.json({
+    object: 'list',
+    data: collectRelayModels().map(model => ({
+      id: model.name,
+      object: 'model',
+      created: 0,
+      owned_by: model.provider || 'webui',
+      webui_id: model.id || model.name,
+    })),
+  });
+});
 router.post('/messages', (req, res) => proxyChatCompletion(req, res, { anthropic: true }));
 router.post('/v1/messages', (req, res) => proxyChatCompletion(req, res, { anthropic: true }));
 router.post('/chat/completions', async (req, res) => {
